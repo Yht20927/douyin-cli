@@ -1,0 +1,54 @@
+function generateDashboardHTML(videoId, days) {
+  const title = videoId ? `视频 ${videoId} 评论仪表盘` : '抖音评论运营仪表盘';
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+  h1 { color: #1a1a1a; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 20px 0; }
+  .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .card .label { color: #666; font-size: 13px; }
+  .card .value { font-size: 28px; font-weight: 700; color: #1a1a1a; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 16px; margin: 20px 0; }
+  .chart-box { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .empty { text-align: center; padding: 60px; color: #999; }
+  .empty h3 { font-weight: normal; }
+</style>
+</head>
+<body>
+<h1>${title}</h1>
+<p>生成时间: ${new Date().toLocaleString('zh-CN')} | 时间范围: 最近 ${days} 天</p>
+
+<div class="cards">
+  <div class="card"><div class="label">评论总数</div><div class="value" id="total-comments">—</div></div>
+  <div class="card"><div class="label">待回复</div><div class="value" id="pending-replies">—</div></div>
+  <div class="card"><div class="label">已回复</div><div class="value" id="replied-count">—</div></div>
+  <div class="card"><div class="label">今日新增</div><div class="value" id="today-new">—</div></div>
+</div>
+
+<div class="charts">
+  <div class="chart-box"><canvas id="sentiment-chart"></canvas></div>
+  <div class="chart-box"><canvas id="trend-chart"></canvas></div>
+</div>
+
+<div class="empty">
+  <h3>📊 仪表盘已就绪</h3>
+  <p>运行 analyze 和 suggest 命令后将填充实际数据。</p>
+</div>
+
+<script>
+  // 数据占位 — 实际数据需从 audit.json 和 analysis/ 中读取
+  // 此模板为自包含 HTML，agent 可替换其中的占位数据
+  const ctx1 = document.getElementById('sentiment-chart');
+  new Chart(ctx1, { type: 'doughnut', data: { labels: ['正面','中性','负面'], datasets: [{ data: [0,0,0], backgroundColor: ['#4CAF50','#FFC107','#F44336'] }] }, options: { responsive: true, plugins: { title: { display: true, text: '情感分布' } } } });
+  const ctx2 = document.getElementById('trend-chart');
+  new Chart(ctx2, { type: 'line', data: { labels: ['Day1','Day2','Day3','Day4','Day5','Day6','Day7'], datasets: [{ label: '评论数', data: [0,0,0,0,0,0,0], borderColor: '#2196F3', fill: false }] }, options: { responsive: true, plugins: { title: { display: true, text: '评论趋势（7天）' } } } });
+</script>
+</body>
+</html>`;
+}

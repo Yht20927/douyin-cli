@@ -362,6 +362,35 @@ function sendToDaemon(data) {
   });
 }
 
+// ===== Dashboard HTML 生成 =====
+function generateDashboardHTML(videoId, days) {
+  const title = videoId ? `视频 ${videoId} 评论仪表盘` : '抖音评论运营仪表盘';
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>${title}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5}h1{color:#1a1a1a}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:20px 0}.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08)}.card .label{color:#666;font-size:13px}.card .value{font-size:28px;font-weight:700;color:#1a1a1a}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:16px;margin:20px 0}.chart-box{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08)}.empty{text-align:center;padding:60px;color:#999}</style></head>
+<body>
+<h1>${title}</h1><p>${new Date().toLocaleString('zh-CN')} | 最近 ${days} 天</p>
+<div class="cards">
+<div class="card"><div class="label">评论总数</div><div class="value" id="tc">—</div></div>
+<div class="card"><div class="label">待回复</div><div class="value" id="pr">—</div></div>
+<div class="card"><div class="label">已回复</div><div class="value" id="rc">—</div></div>
+<div class="card"><div class="label">今日新增</div><div class="value" id="tn">—</div></div>
+</div>
+<div class="charts">
+<div class="chart-box"><canvas id="s-chart"></canvas></div>
+<div class="chart-box"><canvas id="t-chart"></canvas></div>
+</div>
+<div class="empty"><h3>📊 仪表盘已就绪</h3><p>运行 analyze 后将填充实际数据。</p></div>
+<script>
+new Chart(document.getElementById('s-chart'),{type:'doughnut',data:{labels:['正面','中性','负面'],datasets:[{data:[0,0,0],backgroundColor:['#4CAF50','#FFC107','#F44336']}]},options:{responsive:true,plugins:{title:{display:true,text:'情感分布'}}}});
+new Chart(document.getElementById('t-chart'),{type:'line',data:{labels:['D1','D2','D3','D4','D5','D6','D7'],datasets:[{label:'评论数',data:[0,0,0,0,0,0,0],borderColor:'#2196F3',fill:false}]},options:{responsive:true,plugins:{title:{display:true,text:'评论趋势'}}}});
+<\/script></body></html>`;
+}
+
 // ===== CLI 命令 =====
 async function runCli() {
   const args = process.argv.slice(2);
@@ -383,7 +412,10 @@ Douyin Comment CLI
   node cli.js replies <cid> <aweme_id>    获取回复列表
   node cli.js post <aweme_id> "内容"       发表评论
   node cli.js post <aweme_id> "回复" --reply-to <cid>
-  node cli.js stop                        停止 daemon
+  node cli.js analyze <aweme_id>           LLM 分析（情感/分类/优先级）
+  node cli.js suggest <aweme_id>           LLM 回复建议（--auto 自动发布）
+  node cli.js dashboard                    仪表盘 HTML
+  node cli.js stop                         停止 daemon
   node cli.js log [--tail N] [--video <id>] [--failed]  查看操作日志
 
   通用选项： --raw（原始输出） --no-log（本次不记录日志）
@@ -640,6 +672,139 @@ Douyin Comment CLI
         endOperation('error', { status_code: rv.status_code }, null, `status_code=${rv.status_code}`);
       }
     }
+    return;
+  }
+
+  // ===== 运营智能命令 =====
+
+  if (cmd === 'analyze') {
+    const { LLMClient } = require('./lib/llm');
+    if (!LLMClient.prototype.apiKey && !process.env.OPENAI_API_KEY) {
+      console.error('LLM API key not configured. Set api_key in config.json or OPENAI_API_KEY env.');
+      process.exit(1);
+    }
+    startOperation('analyze', { aweme_id: awemeId, depth });
+    console.error(`Analyzing comments for ${awemeId}...`);
+    const res = await sendToDaemon({ expression: `window.__dy.getComments('${awemeId}', 0, 50)`, awaitPromise: true });
+    if (!res.ok) throw new Error(res.error);
+    const data = res.value || {};
+    const comments = (data.comments || []).slice(0, 100);
+    console.error(`  Got ${comments.length} comments, sending to LLM...`);
+
+    const llm = new LLMClient();
+    const result = await llm.analyzeComments(comments, { style: '自然友好' });
+    console.log(JSON.stringify(result, null, 2));
+    console.error(`\nAnalyzed: ${result.length} comments`);
+    endOperation('success', { analyzed: result.length });
+    return;
+  }
+
+  if (cmd === 'suggest') {
+    const { LLMClient } = require('./lib/llm');
+    if (!LLMClient.prototype.apiKey && !process.env.OPENAI_API_KEY) {
+      console.error('LLM API key not configured.');
+      process.exit(1);
+    }
+    let autoMode = false, minPrio = 3;
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === '--auto') autoMode = true;
+      if (args[i] === '--min-priority') minPrio = parseInt(args[++i]) || 3;
+    }
+    startOperation('suggest', { aweme_id: awemeId, auto: autoMode, min_priority: minPrio });
+    console.error(`Generating reply suggestions for ${awemeId}...`);
+
+    // 1. 拉评论
+    const res = await sendToDaemon({ expression: `window.__dy.getComments('${awemeId}', 0, 50)`, awaitPromise: true });
+    if (!res.ok) throw new Error(res.error);
+    const data = res.value || {};
+    const comments = (data.comments || []).slice(0, 100);
+
+    // 2. LLM 分析 + 生成建议
+    const llm = new LLMClient();
+    const analyzed = await llm.analyzeComments(comments, { style: '自然友好' });
+    const prioritized = analyzed.filter(c => c.priority >= minPrio);
+    const suggestions = await llm.suggestReplies(
+      prioritized.map(a => {
+        const orig = comments.find(c => c.cid === a.cid);
+        return { cid: a.cid, text: orig?.text || '', category: a.category };
+      }),
+      { style: '自然友好，15-50 字' },
+      ''
+    );
+
+    if (autoMode) {
+      // 自动发布
+      let published = 0, skipped = 0;
+      for (const s of suggestions) {
+        if (!s.reply) { skipped++; continue; }
+        try {
+          const pr = await sendToDaemon({
+            expression: `window.__dy.publish('${awemeId}', '${s.reply.replace(/'/g, "\\'")}', '${s.cid}')`,
+            awaitPromise: true,
+          });
+          if (pr.ok && pr.value?.comment) { published++; s.status = 'published'; s.reply_cid = pr.value.comment.cid; }
+          else { skipped++; s.status = 'failed'; s.error = `status_code=${pr.value?.status_code}`; }
+        } catch(e) { skipped++; s.status = 'error'; s.error = e.message; }
+      }
+      console.log(JSON.stringify({ published, skipped, details: suggestions }, null, 2));
+      console.error(`\nPublished: ${published}, Skipped: ${skipped}`);
+      endOperation('success', { published, skipped });
+    } else {
+      console.log(JSON.stringify({ aweme_id: awemeId, suggestions }, null, 2));
+      console.error(`\nSuggestions: ${suggestions.length}`);
+      endOperation('success', { suggestions: suggestions.length });
+    }
+    return;
+  }
+
+  if (cmd === 'dashboard') {
+    let videoId = null, days = 7, open = true;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === '--video') videoId = args[++i];
+      else if (args[i] === '--days') days = parseInt(args[++i]) || 7;
+      else if (args[i] === '--no-open') open = false;
+    }
+    startOperation('dashboard', { video: videoId, days });
+    console.error(`Generating dashboard${videoId ? ' for ' + videoId : ''} (${days} days)...`);
+
+    const html = generateDashboardHTML(videoId, days);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+    const outPath = path.join(__dirname, 'logs', `dashboard-${ts}.html`);
+    ensureLogDirs();
+    fs.writeFileSync(outPath, html);
+    console.log(outPath);
+    console.error(`\nDashboard saved: ${outPath}`);
+    if (open) {
+      const { exec } = require('child_process');
+      exec(`start "" "${outPath}"`);
+    }
+    endOperation('success', { path: outPath });
+    return;
+  }
+
+  if (cmd === 'profile') {
+    // 简单实现：从 audit 中提取用户交互数据
+    startOperation('profile', { args: args.slice(1) });
+    const uid = args[1];
+    if (!uid) { console.error('uid required'); process.exit(1); }
+    ensureLogDirs();
+    const audit = loadAudit();
+    const interactions = [];
+    for (const s of (audit.sessions || [])) {
+      for (const op of (s.operations || [])) {
+        if (op.command === 'post' && op.args?.reply_to) {
+          // 从 args 中提取是否回复了此用户
+          interactions.push({ time: op.started, type: 'replied', op_index: op.index });
+        }
+      }
+    }
+    console.log(JSON.stringify({
+      uid,
+      first_seen: interactions[0]?.time || 'unknown',
+      total_interactions: interactions.length,
+      interactions,
+    }, null, 2));
+    endOperation('success', { uid, interactions: interactions.length });
     return;
   }
 
