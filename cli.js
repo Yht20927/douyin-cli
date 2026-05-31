@@ -678,21 +678,23 @@ Douyin Comment CLI
   // ===== 运营智能命令 =====
 
   if (cmd === 'analyze') {
+    const analyzeAwemeId = args[1];
+    if (!analyzeAwemeId) { console.error('aweme_id required'); process.exit(1); }
     const { LLMClient } = require('./lib/llm');
-    if (!LLMClient.prototype.apiKey && !process.env.OPENAI_API_KEY) {
+    const llmCheck = new LLMClient();
+    if (!llmCheck.apiKey) {
       console.error('LLM API key not configured. Set api_key in config.json or OPENAI_API_KEY env.');
       process.exit(1);
     }
-    startOperation('analyze', { aweme_id: awemeId, depth });
-    console.error(`Analyzing comments for ${awemeId}...`);
-    const res = await sendToDaemon({ expression: `window.__dy.getComments('${awemeId}', 0, 50)`, awaitPromise: true });
+    startOperation('analyze', { aweme_id: analyzeAwemeId });
+    console.error(`Analyzing comments for ${analyzeAwemeId}...`);
+    const res = await sendToDaemon({ expression: `window.__dy.getComments('${analyzeAwemeId}', 0, 50)`, awaitPromise: true });
     if (!res.ok) throw new Error(res.error);
     const data = res.value || {};
     const comments = (data.comments || []).slice(0, 100);
     console.error(`  Got ${comments.length} comments, sending to LLM...`);
 
-    const llm = new LLMClient();
-    const result = await llm.analyzeComments(comments, { style: '自然友好' });
+    const result = await llmCheck.analyzeComments(comments, { style: '自然友好' });
     console.log(JSON.stringify(result, null, 2));
     console.error(`\nAnalyzed: ${result.length} comments`);
     endOperation('success', { analyzed: result.length });
@@ -700,21 +702,19 @@ Douyin Comment CLI
   }
 
   if (cmd === 'suggest') {
+    const suggestAwemeId = args[1];
+    if (!suggestAwemeId) { console.error('aweme_id required'); process.exit(1); }
     const { LLMClient } = require('./lib/llm');
-    if (!LLMClient.prototype.apiKey && !process.env.OPENAI_API_KEY) {
-      console.error('LLM API key not configured.');
-      process.exit(1);
-    }
     let autoMode = false, minPrio = 3;
     for (let i = 2; i < args.length; i++) {
       if (args[i] === '--auto') autoMode = true;
       if (args[i] === '--min-priority') minPrio = parseInt(args[++i]) || 3;
     }
-    startOperation('suggest', { aweme_id: awemeId, auto: autoMode, min_priority: minPrio });
-    console.error(`Generating reply suggestions for ${awemeId}...`);
+    startOperation('suggest', { aweme_id: suggestAwemeId, auto: autoMode, min_priority: minPrio });
+    console.error(`Generating reply suggestions for ${suggestAwemeId}...`);
 
     // 1. 拉评论
-    const res = await sendToDaemon({ expression: `window.__dy.getComments('${awemeId}', 0, 50)`, awaitPromise: true });
+    const res = await sendToDaemon({ expression: `window.__dy.getComments('${suggestAwemeId}', 0, 50)`, awaitPromise: true });
     if (!res.ok) throw new Error(res.error);
     const data = res.value || {};
     const comments = (data.comments || []).slice(0, 100);
