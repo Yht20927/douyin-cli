@@ -7,8 +7,11 @@ const path = require('path');
 const os = require('os');
 
 const DAEMON_PORT = 19422;
-const PID_FILE = path.join(__dirname, '.douyin_daemon.pid');
 const DAEMON = process.argv[2] === 'daemon';
+
+// Daemon 健壮性模块
+const { acquireLock, releaseLock, ReconnectManager, PageMonitor, HeartbeatMonitor } = require('./lib/daemon');
+const { CDPClient } = require('./lib/cdp');
 
 // ===== 审计日志 =====
 const LOG_DIR = path.join(__dirname, 'logs');
@@ -225,26 +228,75 @@ async function findAndConnect() {
 
 // ===== Daemon =====
 async function runDaemon() {
-  if (fs.existsSync(PID_FILE)) {
-    const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
-    try { process.kill(oldPid, 0); console.log('Daemon already running.'); process.exit(0); }
-    catch(e) { fs.unlinkSync(PID_FILE); }
+  // PID JSON 锁（含僵尸检测）
+  acquireLock();
+
+  // 用指数退避重连包装连接逻辑
+  const reconnect = new ReconnectManager();
+  const pageState = { value: 'running' }; // shared state for PageMonitor
+  let cdpClient = null;
+  let sessionId = null;
+
+  async function doConnect() {
+    console.error('[daemon] Connecting to Chrome...');
+    const { ws, sessionId: sid, page } = await findAndConnect();
+    sessionId = sid;
+    cdpClient = new CDPClient(ws);
+    console.error(`[daemon] Connected: ${page.title || page.url?.substring(0, 50)}`);
+
+    // Bridge 注入
+    await cdpClient.send('Runtime.enable', {}, sessionId);
+    await cdpClient.send('Runtime.evaluate', {
+      expression: `delete window.__dy; ${BRIDGE}`, awaitPromise: false,
+    }, sessionId);
+    console.error('[daemon] Bridge injected');
+
+    // 页面感知
+    const monitor = new PageMonitor(pageState);
+    await cdpClient.send('Page.enable', {}, sessionId);
+    cdpClient.on('Page.frameNavigated', (params) => {
+      if (params.frame) monitor.handleNavigation(cdpClient, params.frame.url);
+    });
+
+    // 心跳
+    const heartbeat = new HeartbeatMonitor({
+      interval: 60000, failureThreshold: 3,
+    });
+    heartbeat.onConnectionLost = () => {
+      console.error('[daemon] Heartbeat lost, starting reconnect...');
+      cdpClient.close();
+      reconnect.attempt(doConnect).catch(e => {
+        console.error(`[daemon] Fatal: ${e.message}`);
+        cleanup();
+      });
+    };
+    heartbeat.start(cdpClient, sessionId);
+
+    return { cdpClient, sessionId, heartbeat };
   }
-  fs.writeFileSync(PID_FILE, String(process.pid));
 
-  console.error('[daemon] Connecting to Chrome...');
-  const { ws, sessionId, page } = await findAndConnect();
-  console.error(`[daemon] Connected: ${page.title || page.url?.substring(0, 50)}`);
-
-  await cdp(ws, 'Runtime.enable', {}, sessionId);
-  await cdp(ws, 'Runtime.evaluate', { expression: `delete window.__dy; ${BRIDGE}`, awaitPromise: false }, sessionId);
-  console.error('[daemon] Bridge injected');
+  // 首次连接（带重试）
+  try {
+    await reconnect.attempt(doConnect);
+  } catch(e) {
+    console.error(`[daemon] Initial connection failed: ${e.message}`);
+    releaseLock();
+    process.exit(1);
+  }
 
   let lastActivity = Date.now();
   const INACTIVE_TIMEOUT = 20 * 60 * 1000;
 
   const server = http.createServer(async (req, res) => {
     lastActivity = Date.now();
+
+    // 页面离开时拒绝操作
+    if (pageState.value !== 'running' && req.url !== '/ping' && req.url !== '/stop') {
+      res.writeHead(503);
+      res.end(JSON.stringify({ ok: false, error: 'Daemon paused — page navigated away from Douyin' }));
+      return;
+    }
+
     res.setHeader('Content-Type', 'application/json');
     if (req.method === 'GET' && req.url === '/ping') { res.end(JSON.stringify({ ok: true })); return; }
     if (req.method === 'POST' && req.url === '/eval') {
@@ -253,7 +305,7 @@ async function runDaemon() {
       req.on('end', async () => {
         try {
           const { expression, awaitPromise } = JSON.parse(body);
-          const result = await cdp(ws, 'Runtime.evaluate', {
+          const result = await cdpClient.send('Runtime.evaluate', {
             expression, returnByValue: true, awaitPromise: awaitPromise !== false,
           }, sessionId);
           res.end(JSON.stringify({ ok: true, value: result.result?.value }));
@@ -281,9 +333,9 @@ async function runDaemon() {
 
   function cleanup() {
     clearInterval(timer);
-    try { ws.close(); } catch(e) {}
+    try { cdpClient?.close(); } catch(e) {}
     try { server.close(); } catch(e) {}
-    try { fs.unlinkSync(PID_FILE); } catch(e) {}
+    releaseLock();
     process.exit(0);
   }
   process.on('SIGINT', cleanup);
