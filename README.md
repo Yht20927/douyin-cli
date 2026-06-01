@@ -1,6 +1,14 @@
-# 抖音评论 CLI v2.0
+# 🎵 Douyin Comment CLI v2.0
 
-基于 Chrome DevTools Protocol 的抖音全自动评论管理工具。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/Platform-Windows-blue.svg)]()
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
+
+> **English** | Fully automated Douyin (TikTok China) comment management via Chrome DevTools Protocol.
+> Search videos, fetch all comments (with nested replies), auto-reply with AI, and generate dashboards — no API key required for core features.
+
+基于 Chrome DevTools Protocol 的抖音全自动评论管理工具。搜索视频、爬取全量评论（含嵌套回复）、AI 智能回复、运营仪表盘。
 
 **功能**：作品列表 / 搜索视频 / 获取评论（含嵌套回复） / 发表回复评论 / AI 智能分析 / 运营仪表盘
 
