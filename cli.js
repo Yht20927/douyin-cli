@@ -365,29 +365,129 @@ function sendToDaemon(data) {
 // ===== Dashboard HTML 生成 =====
 function generateDashboardHTML(videoId, days) {
   const title = videoId ? `视频 ${videoId} 评论仪表盘` : '抖音评论运营仪表盘';
+
+  // 从审计日志中提取真实数据
+  let totalComments = 0, repliedCount = 0, todayNew = 0;
+  const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
+  const dailyComments = {};
+  const now = Date.now();
+  const cutoffMs = now - days * 24 * 60 * 60 * 1000;
+
+  try {
+    const a = loadAudit();
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0); const todayTs = todayStart.getTime() / 1000;
+
+    // 遍历所有操作，统计评论数和回复数
+    for (const s of (a.sessions || [])) {
+      for (const op of (s.operations || [])) {
+        if (op.status !== 'success') continue;
+        const opTime = op.started ? new Date(op.started).getTime() : 0;
+        if (opTime < cutoffMs) continue;
+        if (videoId && op.args?.aweme_id !== videoId) continue;
+
+        // 评论获取 — 累加评论数
+        if (op.command === 'get' && op.summary?.comments) {
+          totalComments += op.summary.comments;
+          // 按天统计
+          const dayKey = op.started ? op.started.substring(0, 10) : 'unknown';
+          dailyComments[dayKey] = (dailyComments[dayKey] || 0) + op.summary.comments;
+          // 今日新增
+          if (op.args?.since && op.args.since >= todayTs) {
+            todayNew += op.summary.comments;
+          }
+        }
+        // 回复发布 — 统计已回复
+        if (op.command === 'post' && op.result?.status === 'published') {
+          repliedCount++;
+        }
+        // LLM 分析结果 — 提取情感分布
+        if (op.command === 'analyze' && op.resultFile) {
+          try {
+            const fp = path.join(__dirname, op.resultFile);
+            if (fs.existsSync(fp)) {
+              const analysisData = JSON.parse(fs.readFileSync(fp, 'utf8'));
+              const items = Array.isArray(analysisData) ? analysisData : [];
+              for (const item of items) {
+                if (item.sentiment === 'positive') sentimentCounts.positive++;
+                else if (item.sentiment === 'negative') sentimentCounts.negative++;
+                else sentimentCounts.neutral++;
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // 如果没有 get 操作但有 results 文件，尝试从 results 文件中直接统计
+    if (totalComments === 0) {
+      try {
+        const resultsDir = path.join(__dirname, 'logs', 'results');
+        if (fs.existsSync(resultsDir)) {
+          const files = fs.readdirSync(resultsDir).filter(f => f.startsWith('get-') && f.endsWith('.json'));
+          for (const f of files) {
+            if (videoId && !f.includes(videoId)) continue;
+            try {
+              const data = JSON.parse(fs.readFileSync(path.join(resultsDir, f), 'utf8'));
+              const cmts = data.comments || [];
+              totalComments += cmts.length;
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+
+  const pendingReplies = Math.max(0, totalComments - repliedCount);
+
+  // 构建趋势数据
+  const dayLabels = [];
+  const dayValues = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now - i * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().substring(0, 10);
+    dayLabels.push(key.substring(5)); // MM-DD
+    dayValues.push(dailyComments[key] || 0);
+  }
+
+  // 如果没有分析数据，提供默认分布
+  const hasSentiment = sentimentCounts.positive + sentimentCounts.neutral + sentimentCounts.negative > 0;
+  const sPos = hasSentiment ? sentimentCounts.positive : 0;
+  const sNeu = hasSentiment ? sentimentCounts.neutral : 0;
+  const sNeg = hasSentiment ? sentimentCounts.negative : 0;
+
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${title}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5}h1{color:#1a1a1a}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:20px 0}.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08)}.card .label{color:#666;font-size:13px}.card .value{font-size:28px;font-weight:700;color:#1a1a1a}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:16px;margin:20px 0}.chart-box{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08)}.empty{text-align:center;padding:60px;color:#999}</style></head>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:1200px;margin:0 auto;padding:20px;background:#f5f5f5}
+h1{color:#1a1a1a}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:20px 0}
+.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.card .label{color:#666;font-size:13px}.card .value{font-size:28px;font-weight:700;color:#1a1a1a}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:16px;margin:20px 0}
+.chart-box{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.hint{text-align:center;padding:20px;color:#999;font-size:14px}
+</style></head>
 <body>
-<h1>${title}</h1><p>${new Date().toLocaleString('zh-CN')} | 最近 ${days} 天</p>
+<h1>${title}</h1>
+<p>${new Date().toLocaleString('zh-CN')} | 最近 ${days} 天${videoId ? ' | 视频 ' + videoId : ''}</p>
 <div class="cards">
-<div class="card"><div class="label">评论总数</div><div class="value" id="tc">—</div></div>
-<div class="card"><div class="label">待回复</div><div class="value" id="pr">—</div></div>
-<div class="card"><div class="label">已回复</div><div class="value" id="rc">—</div></div>
-<div class="card"><div class="label">今日新增</div><div class="value" id="tn">—</div></div>
+<div class="card"><div class="label">评论总数</div><div class="value">${totalComments || '—'}</div></div>
+<div class="card"><div class="label">待回复</div><div class="value">${pendingReplies || '—'}</div></div>
+<div class="card"><div class="label">已回复</div><div class="value">${repliedCount || '—'}</div></div>
+<div class="card"><div class="label">今日新增</div><div class="value">${todayNew || '—'}</div></div>
 </div>
 <div class="charts">
 <div class="chart-box"><canvas id="s-chart"></canvas></div>
 <div class="chart-box"><canvas id="t-chart"></canvas></div>
 </div>
-<div class="empty"><h3>📊 仪表盘已就绪</h3><p>运行 analyze 后将填充实际数据。</p></div>
+${!hasSentiment ? '<div class="hint">💡 运行 analyze 命令后，情感分布图表将展示真实数据</div>' : ''}
 <script>
-new Chart(document.getElementById('s-chart'),{type:'doughnut',data:{labels:['正面','中性','负面'],datasets:[{data:[0,0,0],backgroundColor:['#4CAF50','#FFC107','#F44336']}]},options:{responsive:true,plugins:{title:{display:true,text:'情感分布'}}}});
-new Chart(document.getElementById('t-chart'),{type:'line',data:{labels:['D1','D2','D3','D4','D5','D6','D7'],datasets:[{label:'评论数',data:[0,0,0,0,0,0,0],borderColor:'#2196F3',fill:false}]},options:{responsive:true,plugins:{title:{display:true,text:'评论趋势'}}}});
+new Chart(document.getElementById('s-chart'),{type:'doughnut',data:{labels:['正面','中性','负面'],datasets:[{data:[${sPos},${sNeu},${sNeg}],backgroundColor:['#4CAF50','#FFC107','#F44336']}]},options:{responsive:true,plugins:{title:{display:true,text:'情感分布'}}}});
+new Chart(document.getElementById('t-chart'),{type:'line',data:{labels:${JSON.stringify(dayLabels)},datasets:[{label:'评论数',data:${JSON.stringify(dayValues)},borderColor:'#2196F3',fill:false,tension:0.3}]},options:{responsive:true,plugins:{title:{display:true,text:'评论趋势（' + days + '天）'}},scales:{y:{beginAtZero:true}}}});
 <\/script></body></html>`;
 }
 
@@ -687,17 +787,22 @@ Douyin Comment CLI
       process.exit(1);
     }
     startOperation('analyze', { aweme_id: analyzeAwemeId });
-    console.error(`Analyzing comments for ${analyzeAwemeId}...`);
-    const res = await sendToDaemon({ expression: `window.__dy.getComments('${analyzeAwemeId}', 0, 50)`, awaitPromise: true });
-    if (!res.ok) throw new Error(res.error);
-    const data = res.value || {};
-    const comments = (data.comments || []).slice(0, 100);
-    console.error(`  Got ${comments.length} comments, sending to LLM...`);
+    try {
+      console.error(`Analyzing comments for ${analyzeAwemeId}...`);
+      const res = await sendToDaemon({ expression: `window.__dy.getComments('${analyzeAwemeId}', 0, 50)`, awaitPromise: true });
+      if (!res.ok) throw new Error(res.error);
+      const data = res.value || {};
+      const comments = (data.comments || []).slice(0, 100);
+      console.error(`  Got ${comments.length} comments, sending to LLM...`);
 
-    const result = await llmCheck.analyzeComments(comments, { style: '自然友好' });
-    console.log(JSON.stringify(result, null, 2));
-    console.error(`\nAnalyzed: ${result.length} comments`);
-    endOperation('success', { analyzed: result.length });
+      const result = await llmCheck.analyzeComments(comments, { style: '自然友好' });
+      console.log(JSON.stringify(result, null, 2));
+      console.error(`\nAnalyzed: ${result.length} comments`);
+      endOperation('success', { analyzed: result.length });
+    } catch(e) {
+      endOperation('error', {}, null, e.message);
+      throw e;
+    }
     return;
   }
 
@@ -739,7 +844,7 @@ Douyin Comment CLI
         if (!s.reply) { skipped++; continue; }
         try {
           const pr = await sendToDaemon({
-            expression: `window.__dy.publish('${awemeId}', '${s.reply.replace(/'/g, "\\'")}', '${s.cid}')`,
+            expression: `window.__dy.publish('${suggestAwemeId}', '${s.reply.replace(/'/g, "\\'")}', '${s.cid}')`,
             awaitPromise: true,
           });
           if (pr.ok && pr.value?.comment) { published++; s.status = 'published'; s.reply_cid = pr.value.comment.cid; }
@@ -750,7 +855,7 @@ Douyin Comment CLI
       console.error(`\nPublished: ${published}, Skipped: ${skipped}`);
       endOperation('success', { published, skipped });
     } else {
-      console.log(JSON.stringify({ aweme_id: awemeId, suggestions }, null, 2));
+      console.log(JSON.stringify({ aweme_id: suggestAwemeId, suggestions }, null, 2));
       console.error(`\nSuggestions: ${suggestions.length}`);
       endOperation('success', { suggestions: suggestions.length });
     }
