@@ -233,15 +233,17 @@ async function runDaemon() {
 
   // 用指数退避重连包装连接逻辑
   const reconnect = new ReconnectManager();
-  const pageState = { value: 'running' }; // shared state for PageMonitor
+  const pageState = { value: 'running', lastActivity: Date.now() };
   let cdpClient = null;
   let sessionId = null;
+  let heartbeat = null;
 
   async function doConnect() {
     console.error('[daemon] Connecting to Chrome...');
     const { ws, sessionId: sid, page } = await findAndConnect();
     sessionId = sid;
     cdpClient = new CDPClient(ws);
+    pageState.value = 'running';
     console.error(`[daemon] Connected: ${page.title || page.url?.substring(0, 50)}`);
 
     // Bridge 注入
@@ -251,19 +253,38 @@ async function runDaemon() {
     }, sessionId);
     console.error('[daemon] Bridge injected');
 
-    // 页面感知
+    // 页面感知 — 离开暂停，回来自动恢复
     const monitor = new PageMonitor(pageState);
     await cdpClient.send('Page.enable', {}, sessionId);
-    cdpClient.on('Page.frameNavigated', (params) => {
-      if (params.frame) monitor.handleNavigation(cdpClient, params.frame.url);
+    cdpClient.on('Page.frameNavigated', async (params) => {
+      if (!params.frame) return;
+      const url = params.frame.url || '';
+      monitor.handleNavigation(cdpClient, url);
+      // 回到 Douyin 后验证 bridge，失败则重连
+      if (pageState.value === 'recovering' || pageState.value === 'running') {
+        const ok = await monitor.verifyBridge(cdpClient, sessionId);
+        if (!ok) {
+          console.error('[daemon] Bridge lost after navigation, reconnecting...');
+          if (heartbeat) heartbeat.stop();
+          cdpClient.close();
+          reconnect.attempt(doConnect).catch(e => {
+            console.error(`[daemon] Fatal: ${e.message}`);
+            cleanup();
+          });
+        } else {
+          pageState.value = 'running';
+          console.error('[daemon] Bridge recovered, resuming operations');
+        }
+      }
     });
 
     // 心跳
-    const heartbeat = new HeartbeatMonitor({
+    heartbeat = new HeartbeatMonitor({
       interval: 60000, failureThreshold: 3,
     });
     heartbeat.onConnectionLost = () => {
-      console.error('[daemon] Heartbeat lost, starting reconnect...');
+      console.error('[daemon] Heartbeat lost, reconnecting...');
+      heartbeat.stop();
       cdpClient.close();
       reconnect.attempt(doConnect).catch(e => {
         console.error(`[daemon] Fatal: ${e.message}`);
@@ -298,7 +319,14 @@ async function runDaemon() {
     }
 
     res.setHeader('Content-Type', 'application/json');
-    if (req.method === 'GET' && req.url === '/ping') { res.end(JSON.stringify({ ok: true })); return; }
+    if (req.method === 'GET' && req.url === '/ping') {
+      if (pageState.value !== 'running') {
+        res.end(JSON.stringify({ ok: true, status: pageState.value }));
+      } else {
+        res.end(JSON.stringify({ ok: true }));
+      }
+      return;
+    }
     if (req.method === 'POST' && req.url === '/eval') {
       let body = '';
       req.on('data', c => body += c);
@@ -526,8 +554,8 @@ Douyin Comment CLI
   if (cmd === 'ping') {
     startOperation('ping', {});
     try {
-      const res = await loggedSend('ping', {}, '1', false);
-      console.log('pong');
+      const res = await sendToDaemon({ expression: '1', awaitPromise: false });
+      console.log('pong (daemon alive)');
       endOperation('success', {}, { result: 'pong' });
     } catch(e) {
       console.log('Daemon not running');
