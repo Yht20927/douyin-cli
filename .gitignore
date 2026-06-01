@@ -1,4 +1,4 @@
 node_modules/
 .idea/
+logs/
 *.pid
-!logs/.gitkeep
