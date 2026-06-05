@@ -92,7 +92,7 @@ function getFlag(args, flag, defaultValue) {
 }
 
 function formatComment(c) {
-  return {
+  const out = {
     cid: c.cid,
     text: (c.text || '').substring(0, 120),
     likes: c.digg_count || c.likes || 0,
@@ -100,6 +100,8 @@ function formatComment(c) {
     time: c.create_time || c.time || 0,
     user: c.user ? { nickname: c.user.nickname, uid: c.user.uid || c.user.uid_str, avatar: c.user.avatar_thumb?.url_list?.[0] || c.user.avatar_medium?.url_list?.[0] || '' } : null,
   };
+  if (c.children) out.children = c.children;
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -134,6 +136,7 @@ async function cmdGet(args) {
 
   const all = args.includes('--all');
   const depth = getFlag(args, '--depth', 0);
+  const perPage = getFlag(args, '--count', 20);
   const pages = getFlag(args, '--pages', all ? Infinity : 1);
   const isNew = args.includes('--new');
   const since = getFlag(args, '--since', null);
@@ -155,8 +158,8 @@ async function cmdGet(args) {
   let pageCount = 0;
 
   while (pageCount < pages) {
-    const expr = `window.__bridge.getComments('${awemeId}', ${cursor}, 20)`;
-    const data = await loggedCall('get', { aweme_id: awemeId, cursor, count: 20 }, expr);
+    const expr = `window.__bridge.getComments('${awemeId}', ${cursor}, ${perPage})`;
+    const data = await loggedCall('get', { aweme_id: awemeId, cursor, count: perPage }, expr);
     const comments = data.comments || [];
     pageCount++;
 
@@ -185,7 +188,7 @@ async function cmdGet(args) {
     allComments.push(...filtered);
 
     if (!data.has_more) break;
-    cursor = data.cursor || cursor + 20;
+    cursor = data.cursor || cursor + perPage;
   }
 
   const result = allComments.map(formatComment);
