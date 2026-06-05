@@ -272,9 +272,18 @@ async function cmdPost(args) {
   const expr = `window.__bridge.publish('${esc(awemeId)}', '${esc(text)}', ${replyTo ? `'${esc(replyTo)}'` : 'null'}, ${rrid ? `'${esc(rrid)}'` : 'null'}, ${mentions})`;
   const data = await loggedCall('post', { aweme_id: awemeId, text }, expr);
 
+  // 检查外层 status_code（非 0 即为失败）
   if (data.status_code !== undefined && data.status_code !== 0) {
     const err = new Error(`status_code=${data.status_code}`);
     audit.endOperation('error', { status_code: data.status_code }, null, err.message);
+    throw err;
+  }
+
+  // 有 comment 对象即视为发布成功（与旧 CDP 版本行为一致）
+  // comment.status 可能是 1(可见) 或 7(审核中)，不影响发布结果
+  if (!data.comment) {
+    const err = new Error('publish returned no comment');
+    audit.endOperation('error', {}, null, err.message);
     throw err;
   }
 
