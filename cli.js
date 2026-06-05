@@ -137,6 +137,7 @@ async function cmdGet(args) {
   const all = args.includes('--all');
   const depth = getFlag(args, '--depth', 0);
   const perPage = getFlag(args, '--count', 20);
+  const replyLimit = getFlag(args, '--reply-limit', 50);
   const pages = getFlag(args, '--pages', all ? Infinity : 1);
   const isNew = args.includes('--new');
   const since = getFlag(args, '--since', null);
@@ -179,7 +180,7 @@ async function cmdGet(args) {
         const c = filtered[i];
         const replyCount = c.reply_comment_total || 0;
         if (replyCount > 0) {
-          const children = await fetchAllReplies(c.cid, awemeId);
+          const children = await fetchAllReplies(c.cid, awemeId, replyLimit);
           c.children = children.map(formatComment);
         }
       }
@@ -196,18 +197,20 @@ async function cmdGet(args) {
   return result;
 }
 
-async function fetchAllReplies(cid, awemeId) {
+async function fetchAllReplies(cid, awemeId, limit = 50) {
   const all = [];
   let cursor = 0;
-  while (true) {
-    const expr = `window.__bridge.replies('${cid}', '${awemeId}', ${cursor}, 10)`;
+  const pageSize = Math.min(20, limit);  // 每页最多 20，不超过 limit
+  while (all.length < limit) {
+    const expr = `window.__bridge.replies('${cid}', '${awemeId}', ${cursor}, ${pageSize})`;
     const data = await bridgeCall(expr);
     const comments = data.comments || [];
     all.push(...comments);
-    if (!data.has_more) break;
-    cursor = data.cursor || cursor + 10;
+    if (!data.has_more || comments.length === 0) break;
+    cursor = data.cursor || cursor + pageSize;
   }
-  return all;
+  // 截断到 limit
+  return all.slice(0, limit);
 }
 
 async function cmdReplies(args) {

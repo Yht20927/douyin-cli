@@ -88,7 +88,8 @@ node cli.js search "周杰伦" --offset 10 --count 20
 node cli.js get 7629735841874726179                  # 默认 1 页 20 条
 node cli.js get 7629735841874726179 --pages 5        # 指定页数
 node cli.js get 7629735841874726179 --all             # 全部一级评论
-node cli.js get 7629735841874726179 --all --depth 1   # 含嵌套回复
+node cli.js get 7629735841874726179 --all --depth 1   # 含嵌套回复（每条最多50条回复）
+node cli.js get 7629735841874726179 --all --depth 1 --reply-limit 20   # 限制每条最多20条回复
 node cli.js get 7629735841874726179 --new             # 增量：只拉上次获取之后的新评论
 node cli.js get 7629735841874726179 --new --depth 1   # 增量 + 嵌套回复
 node cli.js get 7629735841874726179 --since 1780238354  # 增量：指定 Unix 时间戳
