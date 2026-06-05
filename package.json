@@ -1,17 +1,17 @@
 {
   "name": "douyin-comment-cli",
-  "version": "1.0.0",
-  "description": "抖音评论 CLI 工具 — CDP 全自动方案",
+  "version": "2.0.0",
+  "description": "抖音评论 CLI 工具 — Bridge Framework 版（油猴 + WebSocket）",
   "scripts": {
-    "chrome": "start \"\" \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --remote-debugging-port=9222 https://www.douyin.com",
-    "daemon": "node cli.js daemon",
-    "my": "node cli.js my",
+    "search": "node cli.js search",
     "get": "node cli.js get",
     "post": "node cli.js post",
-    "ping": "node cli.js ping",
-    "stop": "node cli.js stop"
+    "my": "node cli.js my",
+    "analyze": "node cli.js analyze",
+    "suggest": "node cli.js suggest",
+    "dashboard": "node cli.js dashboard",
+    "log": "node cli.js log"
   },
-  "dependencies": {
-    "ws": "^8.16.0"
-  }
+  "dependencies": {},
+  "devDependencies": {}
 }

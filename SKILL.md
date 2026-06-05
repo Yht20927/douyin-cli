@@ -1,15 +1,16 @@
 ---
 name: douyin-comment
-description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含嵌套回复) / 发表回复评论。CDP daemon 生命周期自动管理。
+description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含嵌套回复) / 发表回复评论。Bridge Framework（油猴+WebSocket）方案。
 ---
 
 # 抖音评论 Skill
 
 ## 前置条件
 
-- 用户已打开 Chrome 并**登录抖音**
-- Chrome 已启用 `chrome://inspect/#remote-debugging` 开关
-- 依赖已安装：`cd skill-douyin && npm install`
+- **Bridge Server 运行中**：`node D:\projects\tools\socketServers\server.js`
+- 浏览器已安装 Tampermonkey + `scripts/douyin.user.js` 油猴脚本
+- 浏览器已打开 `douyin.com` 任意页面并**登录抖音**
+- 零依赖：无需 `npm install`
 
 ## 通用选项
 
@@ -20,43 +21,26 @@ description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含
 | `--raw` | 输出完整 API 原始 JSON（调试用） |
 | `--no-log` | 本次执行不写入审计日志 |
 
-## Daemon 生命周期（关键）
+## Bridge Server 前置条件
 
-**一个 session 只启动一次 daemon。代理必须严格管理其生命周期。**
+**Bridge Server 必须独立启动**（不在本 skill 管理范围内）。
 
-```
-操作顺序: daemon → 探活 → 操作... → stop
-                └─ 失败则重启 ─┘
-```
-
-### 启动
-
+启动方式：
 ```bash
-cd <项目根目录> && node cli.js daemon
+node D:\projects\tools\socketServers\server.js
 ```
 
-用 `run_background` 运行，等待输出 `[daemon] Listening on http://127.0.0.1:19422` 表示就绪。
+用 `run_background` 运行，等待输出 `[server] Bridge Server ready — http://127.0.0.1:19422`。
 
-首次连接时 Chrome 会弹出"允许调试"对话框，**通知用户点击一次"允许"**。后续不会再弹。
-
-> 如果输出 `Daemon already running.`，说明已有存活 daemon，直接继续。
-
-### 每次操作前探活
-
+验证可用：
 ```bash
-node cli.js ping
+node D:\projects\tools\socketServers\cli.js status
+# 应显示 douyin.com 连接在线
 ```
 
-- 输出 `pong` → daemon 正常，继续操作
-- 输出 `Daemon not running` 或超时 → **重新执行启动步骤**
+> Bridge Server 是常驻服务，不需要每次 stop。油猴脚本随页面自动建连，页面关闭/重开自动重连。
 
-### 操作完毕停止
-
-```bash
-node cli.js stop
-```
-
-**必须执行。** 否则 daemon 占用内存，20 分钟无活动自动退出也不应依赖。
+> **无需任何人工确认** — 油猴脚本随页面静默注入，不弹对话框。
 
 ---
 
@@ -314,16 +298,12 @@ node cli.js post <aweme_id> "真诚评论内容..."
 
 | 症状 | 原因 | 解法 |
 |------|------|------|
-| `Daemon not running` | daemon 进程不存在 | 重新启动 daemon |
-| daemon 启动后输出 `Daemon already running.` | 上次未 stop | 先 `stop` 再 `daemon`，或直接用 |
-| `No Douyin page found` | 浏览器未打开抖音页面 | 通知用户在 Chrome 中打开 `douyin.com` 任意视频页 |
-| Chrome 弹"允许调试" | 首次连接此 tab | 通知用户点击"允许"，仅需一次 |
+| `Bridge Server not running` | Bridge Server 未启动 | 启动 `node D:\projects\tools\socketServers\server.js` |
+| `No connection for site 'douyin.com'` | 浏览器未打开抖音页面或油猴脚本未安装 | 检查 Tampermonkey 是否启用 + 打开 douyin.com |
 | `status_code=8` | 评论被拦截 | 换内容重试（更长/更自然） |
-| 搜索/获取返回空数组 `[]` | daemon 未加载新 bridge | `stop` → `daemon` 重启 |
-| `Cannot connect to Chrome` | Chrome 调试开关未开 | 通知用户打开 `chrome://inspect/#remote-debugging` |
-| daemon 启动报 `Daemon already running.` 但实际已死 | PID 文件残留（上次异常退出） | 手动删除 `.douyin_daemon.pid` 后重启 |
-| daemon 中途无响应 | CDP 连接断开且无自动重连 | `stop` → `daemon` 重启 |
+| 搜索结果为空 `[]` | 油猴脚本 bridge 未加载 | 刷新 douyin.com 页面，等待脚本自动重连 |
 | `--new` 无历史记录仍拉全量 | 该视频未被拉取过 | 预期行为，首次执行 `--new` 等价于 `--all` |
+| 多个 douyin 连接 | 存在 iframe 或额外 tab | 正常现象，Server 自动选第一个活跃连接 |
 
 ---
 
