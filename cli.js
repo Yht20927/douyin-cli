@@ -88,7 +88,11 @@ function getFlag(args, flag, defaultValue) {
   if (idx === -1) return defaultValue;
   const val = args[idx + 1];
   if (val === undefined || val.startsWith('--')) return defaultValue;
-  return isNaN(Number(val)) ? val : Number(val);
+  const n = Number(val);
+  // 19 位抖音 ID 超过 JS 安全整数范围，必须保持字符串
+  if (isNaN(n)) return val;
+  if (n > Number.MAX_SAFE_INTEGER || n < Number.MIN_SAFE_INTEGER) return val;
+  return n;
 }
 
 function formatComment(c) {
