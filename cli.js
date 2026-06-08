@@ -4,56 +4,36 @@
 // 依赖 Bridge Server (server.js) 运行中，
 // 且浏览器已安装油猴脚本 scripts/douyin.user.js 并打开 douyin.com 页面。
 
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { AuditLogger } = require('./lib/audit');
 const { generateDashboardHTML } = require('./lib/dashboard');
+const { BridgeClient } = require('./lib/client/bridge-client');
 
 // ── 配置 ──
 let config = {};
 try { config = require('./config.json'); } catch (e) { /* use defaults */ }
-const BRIDGE_HOST = config.bridge?.host || '127.0.0.1';
-const BRIDGE_PORT = config.bridge?.port || 19422;
-const BRIDGE_TOKEN = config.bridge?.token || '';
 const SITE = 'douyin.com';
+
+// ── Bridge 客户端 ──
+const bridge = new BridgeClient({
+  host: config.bridge?.host || '127.0.0.1',
+  port: config.bridge?.port || 19422,
+  token: config.bridge?.token || '',
+});
 
 // ── 审计日志 ──
 const audit = new AuditLogger();
 let noLog = false;
 
 // ═══════════════════════════════════════════════════════════
-// Bridge 通信
+// Bridge 通信（通过 BridgeClient）
 // ═══════════════════════════════════════════════════════════
 
-function bridgeCall(expression, awaitPromise = true) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ site: SITE, expression, awaitPromise });
-    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
-    if (BRIDGE_TOKEN) headers['Authorization'] = `Bearer ${BRIDGE_TOKEN}`;
-    const req = http.request({
-      hostname: BRIDGE_HOST, port: BRIDGE_PORT, path: '/api/call',
-      method: 'POST',
-      headers,
-      timeout: 35000,
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try {
-          const obj = JSON.parse(data);
-          if (obj.ok) resolve(obj.value);
-          else reject(new Error(obj.error || 'Unknown error'));
-        } catch (e) {
-          reject(new Error(`Invalid response: ${data.slice(0, 200)}`));
-        }
-      });
-    });
-    req.on('error', (e) => reject(new Error(`Bridge Server not running (${BRIDGE_HOST}:${BRIDGE_PORT}) — ${e.message}`)));
-    req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-    req.write(body);
-    req.end();
-  });
+async function bridgeCall(expression, awaitPromise = true) {
+  const resp = await bridge.call({ site: SITE, expression, awaitPromise });
+  if (resp.ok) return resp.value;
+  throw new Error(resp.error || 'Unknown error');
 }
 
 async function loggedCall(endpoint, params, expression) {
