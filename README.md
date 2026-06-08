@@ -75,7 +75,8 @@ node cli.js post <aweme_id> "内容"
 ```
 douyin/
 ├── cli.js                    # CLI 入口（HTTP → Bridge Server）
-├── config.json               # Bridge + LLM 配置
+├── config.json               # Bridge + LLM 配置（已 gitignore）
+├── config.example.json       # 配置模板
 ├── lib/
 │   ├── audit.js              # 审计日志（sessions → operations）
 │   ├── dashboard.js          # Chart.js 仪表盘 HTML 生成
@@ -90,7 +91,11 @@ douyin/
 
 ## 配置
 
-`config.json`：
+```bash
+cp config.example.json config.json   # 首次使用时复制模板
+```
+
+`config.json`（已加入 `.gitignore`，不会提交到版本控制）：
 
 ```json
 {
@@ -109,7 +114,13 @@ douyin/
 }
 ```
 
-LLM key 也可用环境变量 `OPENAI_API_KEY`。
+**LLM API Key**（推荐使用环境变量，避免明文存储）：
+
+```bash
+export OPENAI_API_KEY="sk-..."        # 优先级最高
+export OPENAI_BASE_URL="https://..."  # 可选，自定义 API 地址
+export OPENAI_MODEL="gpt-4o-mini"     # 可选，模型名称
+```
 
 ## 前置条件
 
