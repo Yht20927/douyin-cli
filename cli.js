@@ -136,11 +136,7 @@ async function main() {
   try {
     const result = await handler(ctx, args.slice(1));
     if (result !== undefined) {
-      if (rawMode) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        console.log(JSON.stringify(result, null, 2));
-      }
+      console.log(JSON.stringify(result, null, 2));
     }
   } catch (e) {
     if (!noLog && audit._currentOp) {

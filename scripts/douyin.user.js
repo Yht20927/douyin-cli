@@ -25,6 +25,8 @@
 
   let connected = false;
   let registered = false;
+  let retryCount = 0;          // 连续重试次数（指数退避用）
+  let pollFailCount = 0;       // 连续 poll 失败次数
 
   function gmFetch(url, opts) {
     // 自动注入 Authorization header
@@ -58,13 +60,17 @@
         if (r.status === 200) {
           registered = true;
           connected = true;
+          retryCount = 0; // 成功后重置
           console.log('[Bridge] ✓ Registered with Bridge Server');
         } else {
           throw new Error('status ' + r.status);
         }
       } catch (err) {
-        console.warn('[Bridge] Registration failed, retrying:', err.message);
-        setTimeout(connect, CONFIG.reconnectDelay);
+        retryCount++;
+        // 指数退避: 2s, 4s, 8s, 16s, 最大 60s
+        var delay = Math.min(CONFIG.reconnectDelay * Math.pow(2, retryCount - 1), 60000);
+        console.warn('[Bridge] Registration failed, retry in ' + Math.round(delay/1000) + 's:', err.message);
+        setTimeout(connect, delay);
         return;
       }
     }
@@ -80,6 +86,7 @@
 
       if (msg.type === 'eval') {
         connected = true;
+        pollFailCount = 0;
         try {
           // 在页面上下文执行 eval
           var result = (0, unsafeWindow.eval)(msg.expression);
@@ -100,13 +107,22 @@
         poll();
       } else {
         connected = true;
+        pollFailCount = 0;
         poll();
       }
     } catch (err) {
-      console.warn('[Bridge] Poll error:', err.message);
-      connected = false;
-      registered = false;
-      setTimeout(connect, CONFIG.reconnectDelay);
+      pollFailCount++;
+      // 连续失败 3 次后才断开重连，避免偶发超时误判
+      if (pollFailCount >= 3) {
+        console.warn('[Bridge] Poll failed ' + pollFailCount + ' times, reconnecting:', err.message);
+        connected = false;
+        registered = false;
+        pollFailCount = 0;
+        setTimeout(connect, CONFIG.reconnectDelay);
+      } else {
+        // 单次失败：短暂等待后重试
+        setTimeout(poll, 1000);
+      }
     }
   }
 

@@ -25,6 +25,8 @@
 
   var connected = false;
   var registered = false;
+  var retryCount = 0;
+  var pollFailCount = 0;
 
   function gmFetch(url, opts) {
     var headers = Object.assign({}, opts && opts.headers);
@@ -61,12 +63,14 @@
           }),
         });
         if (r.status === 200) {
-          registered = true; connected = true;
+          registered = true; connected = true; retryCount = 0;
           console.log('[Bridge] ✓ Registered with Bridge Server');
         } else { throw new Error('status ' + r.status); }
       } catch (err) {
-        console.warn('[Bridge] Registration failed, retrying:', err.message);
-        setTimeout(connect, CONFIG.reconnectDelay);
+        retryCount++;
+        var delay = Math.min(CONFIG.reconnectDelay * Math.pow(2, retryCount - 1), 60000);
+        console.warn('[Bridge] Registration failed, retry in ' + Math.round(delay/1000) + 's:', err.message);
+        setTimeout(connect, delay);
         return;
       }
     }
@@ -81,6 +85,7 @@
       var msg = JSON.parse(r.responseText);
       if (msg.type === 'eval') {
         connected = true;
+        pollFailCount = 0;
         try {
           // 在页面上下文执行 eval
           var result = (0, unsafeWindow.eval)(msg.expression);
@@ -100,12 +105,18 @@
         poll();
       } else {
         connected = true;
+        pollFailCount = 0;
         poll();
       }
     } catch (err) {
-      console.warn('[Bridge] Poll error:', err.message);
-      connected = false; registered = false;
-      setTimeout(connect, CONFIG.reconnectDelay);
+      pollFailCount++;
+      if (pollFailCount >= 3) {
+        console.warn('[Bridge] Poll failed ' + pollFailCount + ' times, reconnecting:', err.message);
+        connected = false; registered = false; pollFailCount = 0;
+        setTimeout(connect, CONFIG.reconnectDelay);
+      } else {
+        setTimeout(poll, 1000);
+      }
     }
   }
 
