@@ -19,6 +19,7 @@
   const CONFIG = {
     server: 'http://127.0.0.1:19422',
     site: 'douyin.com',
+    token: '',  // 填入 config.json 中的 bridge.token
     reconnectDelay: 2000,
   };
 
@@ -26,8 +27,12 @@
   let registered = false;
 
   function gmFetch(url, opts) {
+    // 自动注入 Authorization header
+    var headers = Object.assign({}, opts && opts.headers);
+    if (CONFIG.token) headers['Authorization'] = 'Bearer ' + CONFIG.token;
     return new Promise(function(resolve, reject) {
       GM_xmlhttpRequest(Object.assign({ url: url, timeout: 35000 }, opts, {
+        headers: headers,
         onload: function(r) { resolve(r); },
         onerror: function(e) { reject(new Error('GM_xmlhttpRequest failed')); },
         ontimeout: function() { reject(new Error('GM_xmlhttpRequest timeout')); },

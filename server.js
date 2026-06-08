@@ -4,6 +4,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const { ConnectionRegistry } = require('./lib/server/registry');
 const { WebSocketHub } = require('./lib/server/ws-hub');
@@ -11,7 +12,21 @@ const { Router } = require('./lib/server/router');
 
 // 加载配置
 const configPath = path.join(__dirname, 'config.json');
-const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+let config;
+try {
+  config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+} catch (e) {
+  console.error('[server] 未找到 config.json，请先复制 config.example.json 并填写配置：');
+  console.error('[server]   cp config.example.json config.json');
+  process.exit(1);
+}
+
+// 自动生成 token（如果未配置）
+if (!config.bridge.token) {
+  config.bridge.token = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  console.error('[server] 已自动生成 access token 并写入 config.json');
+}
 
 // 初始化组件
 const registry = new ConnectionRegistry();
@@ -27,6 +42,7 @@ const router = new Router({
   registry,
   wsHub,
   requestTimeout: config.bridge.requestTimeout || 30000,
+  token: config.bridge.token,
 });
 
 // 创建 HTTP Server

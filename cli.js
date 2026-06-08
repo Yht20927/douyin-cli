@@ -15,6 +15,7 @@ let config = {};
 try { config = require('./config.json'); } catch (e) { /* use defaults */ }
 const BRIDGE_HOST = config.bridge?.host || '127.0.0.1';
 const BRIDGE_PORT = config.bridge?.port || 19422;
+const BRIDGE_TOKEN = config.bridge?.token || '';
 const SITE = 'douyin.com';
 
 // ── 审计日志 ──
@@ -28,10 +29,12 @@ let noLog = false;
 function bridgeCall(expression, awaitPromise = true) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ site: SITE, expression, awaitPromise });
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+    if (BRIDGE_TOKEN) headers['Authorization'] = `Bearer ${BRIDGE_TOKEN}`;
     const req = http.request({
       hostname: BRIDGE_HOST, port: BRIDGE_PORT, path: '/api/call',
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers,
       timeout: 35000,
     }, (res) => {
       let data = '';
