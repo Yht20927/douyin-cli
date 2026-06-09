@@ -19,7 +19,7 @@
   const CONFIG = {
     server: 'http://127.0.0.1:19422',
     site: 'douyin.com',
-    token: '',  // 填入 config.json 中的 bridge.token
+    token: '096c1715be805831a142fcea288b42675833bb3bed8bf50c',  // 填入 config.json 中的 bridge.token
     reconnectDelay: 2000,
   };
 
@@ -156,6 +156,43 @@
   var BRIDGE_CODE = (function(){/*
 var PAGE_LOAD_TIME = Date.now();
 function getCookie(name) { var match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([\.$?*|{}\(\)\[\]\\+/^])/g, '\\$1') + '=([^;]*)')); return match ? decodeURIComponent(match[1]) : ''; }
+// 统一 fetch+JSON 解析：失败时抛出含状态码/Content-Type/响应前 200 字的友好错误。
+// readOnly=true 的请求在非 JSON 响应时自动重试 1 次（间隔 1s），写操作绝不重试。
+async function bridgeFetchJson(label, url, init, readOnly){
+  var attempt = 0;
+  while (true) {
+    attempt++;
+    var r, text, ct;
+    try {
+      r = await fetch(url, init || {});
+      ct = (r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
+      text = await r.text();
+    } catch (netErr) {
+      if (readOnly && attempt === 1) { await new Promise(function(res){setTimeout(res,1000);}); continue; }
+      throw new Error('['+label+'] 网络请求失败: ' + (netErr && netErr.message ? netErr.message : netErr));
+    }
+    if (!r.ok) {
+      // 4xx/5xx：抖音风控页通常是 200+HTML，所以这里多半是网关错误
+      var snippet = text.length > 200 ? text.substring(0,200) + '...' : text;
+      throw new Error('['+label+'] HTTP ' + r.status + ' (' + ct + '): ' + snippet);
+    }
+    // 空响应（抖音偶发，常见于被限流）
+    if (!text || !text.trim()) {
+      if (readOnly && attempt === 1) { await new Promise(function(res){setTimeout(res,1000);}); continue; }
+      throw new Error('['+label+'] 服务器返回空响应 (HTTP 200, content-type: ' + ct + ') — 可能被限流或登录态失效');
+    }
+    try {
+      return JSON.parse(text);
+    } catch (parseErr) {
+      // 非 JSON：通常是 HTML 风控/登录页
+      var snippet2 = text.length > 200 ? text.substring(0,200) + '...' : text;
+      var isHtml = /^\s*</.test(text) || /text\/html/i.test(ct);
+      var hint = isHtml ? '抖音返回了 HTML 页面（可能登录态失效/被风控/账号校验中），请刷新 douyin.com 并重新登录' : '响应不是合法 JSON';
+      if (readOnly && attempt === 1) { await new Promise(function(res){setTimeout(res,1000);}); continue; }
+      throw new Error('['+label+'] '+hint+' (content-type: ' + ct + '): ' + snippet2);
+    }
+  }
+}
 window.__bridge = {
   _q: function() {
     var conn = navigator.connection || {}; return {
@@ -174,21 +211,21 @@ window.__bridge = {
   },
   replies: async function(cid,awemeId,cursor,count){
     var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:awemeId,comment_id:cid,cursor:cursor||0,count:count||10,item_type:'0',pc_img_format:'webp',cut_version:'1'}));
-    var r=await fetch('/aweme/v1/web/comment/list/reply/?'+p,{credentials:'include'});return await r.json();
+    return await bridgeFetchJson('replies','/aweme/v1/web/comment/list/reply/?'+p,{credentials:'include'},true);
   },
   getComments: async function(id,c,n){
     var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:id,cursor:c||0,count:n||20,item_type:'0',pc_img_format:'webp',cut_version:'1'}));
-    var r=await fetch('/aweme/v1/web/comment/list/?'+p,{credentials:'include'});return await r.json();
+    return await bridgeFetchJson('getComments','/aweme/v1/web/comment/list/?'+p,{credentials:'include'},true);
   },
   myPosts: async function(cursor,count){
-    var info=await(await fetch('/aweme/v1/web/query/user/?device_platform=webapp&aid=6383&channel=channel_pc_web',{credentials:'include'})).json();
+    var info=await bridgeFetchJson('myPosts.userinfo','/aweme/v1/web/query/user/?device_platform=webapp&aid=6383&channel=channel_pc_web',{credentials:'include'},true);
     var secUid=(info.user||{}).sec_uid||'';
     var p=new URLSearchParams(Object.assign(this._q(),{sec_user_id:secUid,max_cursor:cursor||0,count:count||18,locate_query:'false',show_live_replay_strategy:'1',need_time_list:'1',time_list_query:'0',whale_cut_token:'',cut_version:'1',publish_video_strategy_type:'2',from_user_page:'0'}));
-    var r=await fetch('/aweme/v1/web/aweme/post/?'+p,{credentials:'include'});return await r.json();
+    return await bridgeFetchJson('myPosts','/aweme/v1/web/aweme/post/?'+p,{credentials:'include'},true);
   },
   search: async function(kw,offset,count){
     var p=new URLSearchParams(Object.assign(this._q(),{keyword:kw,offset:offset||0,count:count||10,search_channel:'aweme_general',search_source:'normal_search',query_correct_type:'1',is_filter_search:'0',need_filter_settings:'0',list_type:'single'}));
-    var r=await fetch('/aweme/v1/web/general/search/single/?'+p,{credentials:'include'});return await r.json();
+    return await bridgeFetchJson('search','/aweme/v1/web/general/search/single/?'+p,{credentials:'include'},true);
   },
   publish: async function(id,text,rid,rrid,mentions){
     var extras=mentions?JSON.stringify(mentions):'[]';var now=Date.now();
@@ -200,8 +237,8 @@ window.__bridge = {
     var fp=this._q();for(var k in fp){if(fp.hasOwnProperty(k))qParams[k]=fp[k];}
     qParams.webid=getCookie('s_v_web_id')||getCookie('webid')||'';qParams.uifid=getCookie('UIFID')||'';
     var q=new URLSearchParams();for(var key in qParams){if(qParams.hasOwnProperty(key))q.set(key,qParams[key]);}
-    var r=await fetch('/aweme/v1/web/comment/publish/?'+q,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b.toString(),credentials:'include'});
-    return await r.json();
+    // publish 是写操作，readOnly=false，绝不自动重试（避免重复发布）
+    return await bridgeFetchJson('publish','/aweme/v1/web/comment/publish/?'+q,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b.toString(),credentials:'include'},false);
   }
 };
 console.log('[Bridge:Douyin] __bridge API ready');

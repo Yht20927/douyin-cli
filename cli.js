@@ -148,6 +148,10 @@ async function main() {
       console.error('  node server.js');
     } else if (e.message.includes('Unauthorized')) {
       console.error('错误: 认证失败 — 请检查 config.json 中的 bridge.token');
+    } else if (/HTML 页面|非 JSON|空响应/.test(e.message)) {
+      // 油猴端 bridgeFetchJson 抛出的友好错误，原样输出（已含 hint）
+      console.error(`错误: ${e.message}`);
+      console.error('提示: 若反复出现，请刷新 douyin.com 页面并确认仍处于登录态；写操作短时间内频繁失败通常是触发了风控，建议间隔 30 分钟后再试。');
     } else {
       console.error(`错误: ${e.message}`);
     }

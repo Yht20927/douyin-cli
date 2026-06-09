@@ -5,7 +5,8 @@
     "heartbeatInterval": 30000,
     "heartbeatTimeout": 10000,
     "heartbeatMaxFailures": 3,
-    "requestTimeout": 30000
+    "requestTimeout": 30000,
+    "token": "096c1715be805831a142fcea288b42675833bb3bed8bf50c"
   },
   "llm": {
     "api_key": "",

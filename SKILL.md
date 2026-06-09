@@ -327,3 +327,38 @@ logs/
 - 大结果（`get`/`search`/`my`/`replies`）落地为独立 JSON 文件
 - 小结果（`post`/`ping`/`stop`）内联在 audit.json
 - `--no-log` 可跳过记录
+
+
+## 请求速率限制
+
+为避免触发抖音风控，**每次调用 CLI 命令之间必须插入随机等待**。
+
+### 规则
+
+| 操作类型 | 最小间隔 | 说明 |
+|----------|----------|------|
+| 读操作（`get` / `search` / `replies` / `my`） | 30-50 秒 | 数据拉取类 |
+| 写操作（`post` 评论/回复） | 40-60 秒 | 发布类，风控更严 |
+| 混合场景（先读后写） | 写操作单独计时 | 读写各自满足对应间隔 |
+
+### 执行方式
+
+在 Bash 命令前加 `sleep`，间隔值从上述范围中**随机选取**，不要固定同一个值：
+
+```bash
+# ✅ 正确：随机间隔 38 秒
+sleep 38 && cd ~/.claude/skills/douyin && node cli.js search "AI编程" --count 5
+
+# ✅ 正确：随机间隔 47 秒
+sleep 47 && cd ~/.claude/skills/douyin && node cli.js post <aweme_id> "内容"
+
+# ❌ 错误：无间隔连续调用
+node cli.js search "AI编程" && node cli.js search "Claude Code"
+```
+
+### 批量执行注意事项
+
+- **单轮上限**：连续操作不超过 10 次，之后暂停 3-5 分钟
+- **日上限**：同一账号一天不超过 2 轮（共 20 次写操作）
+- **超时设置**：带 `sleep` 的命令需设置 `timeout: 120000`（2 分钟）
+- **并行禁止**：不要同时发起多个 CLI 调用，严格串行执行
