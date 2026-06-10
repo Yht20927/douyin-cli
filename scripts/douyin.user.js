@@ -13,7 +13,7 @@
 // unsafeWindow 用于页面上下文的 eval 和 __bridge API
 // ═══════════════════════════════════════════════════════════
 
-(function() {
+(function () {
   'use strict';
 
   const CONFIG = {
@@ -32,12 +32,12 @@
     // 自动注入 Authorization header
     var headers = Object.assign({}, opts && opts.headers);
     if (CONFIG.token) headers['Authorization'] = 'Bearer ' + CONFIG.token;
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
       GM_xmlhttpRequest(Object.assign({ url: url, timeout: 35000 }, opts, {
         headers: headers,
-        onload: function(r) { resolve(r); },
-        onerror: function(e) { reject(new Error('GM_xmlhttpRequest failed')); },
-        ontimeout: function() { reject(new Error('GM_xmlhttpRequest timeout')); },
+        onload: function (r) { resolve(r); },
+        onerror: function (e) { reject(new Error('GM_xmlhttpRequest failed')); },
+        ontimeout: function () { reject(new Error('GM_xmlhttpRequest timeout')); },
       }));
     });
   }
@@ -69,7 +69,7 @@
         retryCount++;
         // 指数退避: 2s, 4s, 8s, 16s, 最大 60s
         var delay = Math.min(CONFIG.reconnectDelay * Math.pow(2, retryCount - 1), 60000);
-        console.warn('[Bridge] Registration failed, retry in ' + Math.round(delay/1000) + 's:', err.message);
+        console.warn('[Bridge] Registration failed, retry in ' + Math.round(delay / 1000) + 's:', err.message);
         setTimeout(connect, delay);
         return;
       }
@@ -91,7 +91,7 @@
           // 在页面上下文执行 eval
           var result = (0, unsafeWindow.eval)(msg.expression);
           if (msg.awaitPromise !== false) result = await Promise.resolve(result);
-          console.log('[Bridge] eval result type:', typeof result, 'keys:', result ? Object.keys(result).slice(0,5) : 'null/undefined');
+          console.log('[Bridge] eval result type:', typeof result, 'keys:', result ? Object.keys(result).slice(0, 5) : 'null/undefined');
           await gmFetch(CONFIG.server + '/api/result', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -130,7 +130,7 @@
   function safeSerialize(value) {
     try {
       return JSON.parse(JSON.stringify(value === undefined ? null : value));
-    } catch(e) {
+    } catch (e) {
       return null;
     }
   }
@@ -144,8 +144,8 @@
   }
   var _pushState = unsafeWindow.history.pushState;
   var _replaceState = unsafeWindow.history.replaceState;
-  unsafeWindow.history.pushState = function() { _pushState.apply(this, arguments); checkUrlChange(); };
-  unsafeWindow.history.replaceState = function() { _replaceState.apply(this, arguments); checkUrlChange(); };
+  unsafeWindow.history.pushState = function () { _pushState.apply(this, arguments); checkUrlChange(); };
+  unsafeWindow.history.replaceState = function () { _replaceState.apply(this, arguments); checkUrlChange(); };
   unsafeWindow.addEventListener('popstate', checkUrlChange);
   unsafeWindow.addEventListener('hashchange', checkUrlChange);
 
@@ -153,7 +153,7 @@
   // 抖音 Bridge API — 注入到页面上下文（用页面的 fetch/cookie）
   // ═══════════════════════════════════════════════════════════
 
-  var BRIDGE_CODE = (function(){/*
+  var BRIDGE_CODE = (function () {/*
 var PAGE_LOAD_TIME = Date.now();
 function getCookie(name) { var match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([\.$?*|{}\(\)\[\]\\+/^])/g, '\\$1') + '=([^;]*)')); return match ? decodeURIComponent(match[1]) : ''; }
 // 统一 fetch+JSON 解析：失败时抛出含状态码/Content-Type/响应前 200 字的友好错误。
@@ -239,6 +239,19 @@ window.__bridge = {
     var q=new URLSearchParams();for(var key in qParams){if(qParams.hasOwnProperty(key))q.set(key,qParams[key]);}
     // publish 是写操作，readOnly=false，绝不自动重试（避免重复发布）
     return await bridgeFetchJson('publish','/aweme/v1/web/comment/publish/?'+q,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b.toString(),credentials:'include'},false);
+  },
+  digg: async function(awemeId,type){
+    var p=new URLSearchParams(Object.assign(this._q(),{}));
+    var b=new URLSearchParams({aweme_id:awemeId,item_type:'0',type:String(type)});
+    return await bridgeFetchJson('digg','/aweme/v1/web/commit/item/digg/?'+p,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:b.toString(),credentials:'include'},false);
+  },
+  deleteComment: async function(cid){
+    var p=new URLSearchParams(Object.assign(this._q(),{cid:cid,channel_id:'0',app_name:'aweme'}));
+    return await bridgeFetchJson('deleteComment','/aweme/v1/web/comment/delete?'+p,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},body:'',credentials:'include'},false);
+  },
+  getDetail: async function(awemeId){
+    var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:awemeId}));
+    return await bridgeFetchJson('getDetail','/aweme/v1/web/aweme/detail/?'+p,{credentials:'include'},true);
   }
 };
 console.log('[Bridge:Douyin] __bridge API ready');

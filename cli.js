@@ -94,6 +94,12 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js post <aweme_id> "内容"           发表评论
   node cli.js post <aweme_id> "回复" --reply-to <cid>
   node cli.js post <aweme_id> "@1179139456380456 内容" --reply-to <cid> --at <uid> <sec_uid>
+  node cli.js like <aweme_id>                 点赞视频
+  node cli.js like <aweme_id> --unlike        取消点赞
+  node cli.js delete-comment <cid>            删除评论
+  node cli.js download <aweme_id>             下载视频（含音频）
+  node cli.js download <aweme_id> --audio-only  仅下载音频（BGM）
+  node cli.js download <aweme_id> --out <dir>   指定输出目录
   node cli.js analyze <aweme_id>              LLM 分析（情感/分类/优先级）
   node cli.js suggest <aweme_id>              LLM 回复建议（--auto 自动发布）
   node cli.js dashboard                       仪表盘 HTML

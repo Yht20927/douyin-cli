@@ -1,6 +1,6 @@
 ---
 name: douyin
-description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含嵌套回复) / 发表回复评论。Bridge Framework（油猴+HTTP轮询）方案。
+description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含嵌套回复) / 发表回复评论 / 点赞取消点赞 / 删除评论 / 下载视频(含音频)。Bridge Framework（油猴+HTTP轮询）方案。
 ---
 
 # 抖音评论 Skill
@@ -180,6 +180,56 @@ node cli.js post 7629735841874726179 "说得对" --reply-to 7646065507817734949
 
 > **注意**：评论内容中的引号会被自动转义。`status_code=8` 通常表示内容过短、重复或被风控拦截，换内容重试。
 
+### 点赞/取消点赞
+
+```bash
+node cli.js like 7629735841874726179              # 点赞
+node cli.js like 7629735841874726179 --unlike      # 取消点赞
+```
+
+输出：
+```json
+{ "aweme_id": "7629735841874726179", "action": "liked", "status": "success", "status_code": 0 }
+```
+
+### 删除评论
+
+```bash
+node cli.js delete-comment 7649651851377640192
+```
+
+输出：
+```json
+{ "cid": "7649651851377640192", "status": "deleted", "status_code": 0 }
+```
+
+> **注意**：只能删除自己发表的评论。删除他人评论会返回错误。
+
+### 下载视频
+
+```bash
+node cli.js download 7629735841874726179              # 下载视频 + 音频
+node cli.js download 7629735841874726179 --audio-only  # 仅下载 BGM
+node cli.js download 7629735841874726179 --out ~/Videos  # 指定输出目录
+```
+
+默认保存到 `./downloads/` 目录，文件名格式：`<aweme_id>_<作者>_<标题>.mp4`
+
+输出：
+```json
+{
+  "awemeId": "7629735841874726179",
+  "title": "视频标题",
+  "author": "作者昵称",
+  "files": [
+    { "type": "video", "path": "./downloads/xxx.mp4", "size": 12345678 },
+    { "type": "audio", "path": "./downloads/xxx_audio.mp3", "size": 1234567 }
+  ]
+}
+```
+
+> **说明**：视频 URL 通常带水印，音频（BGM）通过 `music.play_url` 单独提取。`--out` 目录不存在时会自动创建。
+
 ### LLM 分析
 
 ```bash
@@ -306,6 +356,10 @@ node cli.js post <aweme_id> "真诚评论内容..."
 | 多个 douyin 连接 | 存在 iframe 或额外 tab | 正常现象，Server 自动选第一个活跃连接 |
 | 发布评论返回 published 但看不到 | 正常延迟（comment.status:7 审核中） | 等待 1-2 分钟再查，不是错误 |
 | 回复贴纸评论看不到 | 抖音限制，贴纸评论不支持文字回复 | 跳过纯贴纸评论，只回复文字评论 |
+| 点赞/取消点赞 `status_code` 非 0 | 风控或参数错误 | 等待 30 分钟后重试，确认 aweme_id 正确 |
+| 删除评论失败 | 无权限（非自己的评论）或 cid 已删除 | 确认 cid 来源于 `get` 命令的返回值 |
+| 下载视频无 URL | 视频已删除、私密或被限流 | 确认视频可正常播放，重试或换视频 |
+| 下载超时 | 网络不稳或视频文件过大 | 检查网络，大文件耐心等待；默认超时 120s |
 
 ---
 
@@ -325,7 +379,7 @@ logs/
 - 每个操作记录：命令、参数、开始/结束时间、耗时、成功/失败、摘要
 - 每个 API 调用记录：端点、参数、耗时、返回条数
 - 大结果（`get`/`search`/`my`/`replies`）落地为独立 JSON 文件
-- 小结果（`post`/`ping`/`stop`）内联在 audit.json
+- 小结果（`post`/`like`/`delete-comment`/`download`/`ping`/`stop`）内联在 audit.json
 - `--no-log` 可跳过记录
 
 
@@ -337,8 +391,8 @@ logs/
 
 | 操作类型 | 最小间隔 | 说明 |
 |----------|----------|------|
-| 读操作（`get` / `search` / `replies` / `my`） | 30-50 秒 | 数据拉取类 |
-| 写操作（`post` 评论/回复） | 40-60 秒 | 发布类，风控更严 |
+| 读操作（`get` / `search` / `replies` / `my` / `download`） | 30-50 秒 | 数据拉取类 |
+| 写操作（`post` / `like` / `delete-comment`） | 40-60 秒 | 发布/删除/点赞，风控更严 |
 | 混合场景（先读后写） | 写操作单独计时 | 读写各自满足对应间隔 |
 
 ### 执行方式
