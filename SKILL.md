@@ -1,5 +1,5 @@
 ---
-name: douyin
+name: douyin-cli
 description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含嵌套回复) / 发表回复评论 / 点赞取消点赞 / 删除评论 / 下载视频(含音频)。Bridge Framework（油猴+HTTP轮询）方案。
 ---
 
@@ -7,10 +7,10 @@ description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含
 
 ## 前置条件
 
-- **Bridge Server 运行中**：`node server.js`（本目录）
 - 浏览器已安装 Tampermonkey + `scripts/douyin.user.js` 油猴脚本
 - 浏览器已打开 `douyin.com` 任意页面并**登录抖音**
 - 零依赖：无需 `npm install`
+
 ## 通用选项
 
 所有命令均支持以下选项：
@@ -20,24 +20,44 @@ description: 抖音评论 CLI — 作品列表 / 搜索视频 / 获取评论(含
 | `--raw` | 输出完整 API 原始 JSON（调试用） |
 | `--no-log` | 本次执行不写入审计日志 |
 
-## Bridge Server 前置条件
+## Bridge Server 启动协议（强约束）
 
-**Bridge Server 必须独立启动**（不在本 skill 管理范围内）。
+Bridge Server 是常驻 HTTP/WebSocket 桥接服务，必须**和主会话解耦**地运行。
+不要：在主会话直接 `node server.js`（会阻塞 agent，所有后续 CLI 调用都卡住）；
+不要：把启动甩给用户（用户不知道端口、PID、日志位置）。
 
-启动方式：
+**唯一正确做法**：使用本目录提供的 `scripts/bridge.sh`，它通过 `setsid + nohup` 双重 detach，
+PID 文件 + `/api/status` 探测保证幂等，启动一次后跨多个 agent session 可复用。
+
+### 每轮工作开始前（必做一次）
+
 ```bash
-node server.js
+cd ~/.claude/skills/douyin-cli && bash scripts/bridge.sh ensure
 ```
 
-用 `run_background` 运行，等待输出 `[server] Bridge Server ready — http://127.0.0.1:19422`。
+`ensure` = `status || start`。返回 0 即代表 server 在线（http://127.0.0.1:19422）；
+返回非 0 时按提示读 `logs/bridge-server.log` 定位（最常见原因：未 `cp config.example.json config.json`）。
 
-验证可用：
+### 验证油猴已连接
+
+server 在线只代表 HTTP 桥可用，**还要确认浏览器侧的油猴脚本已上线**：
+
 ```bash
-curl http://127.0.0.1:19422/api/status
-# 应显示 douyin.com 连接在线
+curl -s http://127.0.0.1:19422/api/status | grep -o '"douyin.com"' || echo "OFFLINE"
 ```
 
-> Bridge Server 是常驻服务，不需要每次 stop。油猴脚本随页面自动建连，页面关闭/重开自动重连。
+如果输出 `OFFLINE`，引导用户：(1) 打开/刷新 `douyin.com` 任一页面；(2) 检查 Tampermonkey 是否启用；(3) 必要时手动重装 `scripts/douyin.user.js`。**不要在 server.js 上反复重启来"修"这个**——油猴未连接和 server 进程无关。
+
+### 何时停止
+
+通常**不需要**停止——server 是常驻的，跨多个 Claude session 复用。
+仅在以下情况执行 `bash scripts/bridge.sh stop`：
+
+- 端口要让给别的进程
+- 升级 server.js 代码
+- 怀疑 server 进程卡死（`status` 返回非 200 但 PID 文件存在 → 直接 stop 再 start）
+
+> **跨目录注意**：本 skill 同时在 `~/.claude/skills/douyin-cli/` 和 `~/project/douyin-cli/` 部署。`bridge.sh` 通过 `/api/status` 探测端口共享同一个 server——但 `stop` 只能从**首次 `start` 的那个目录**执行（PID 文件在哪边）。从另一目录看会显示 `online (pid=unknown)`，那是预期行为。
 
 > **无需任何人工确认** — 油猴脚本随页面静默注入，不弹对话框。
 
@@ -270,77 +290,7 @@ node cli.js dashboard --video <aweme_id> --days 14
 
 ---
 
-## 智能回复工作流
-
-配合策略文件 `reply-strategy.md`，agent 可自动判断哪些评论需要回复、生成回复内容并发布。
-
-### 首次执行
-
-```
-1. 读取策略文件（reply-strategy.md）
-2. node cli.js get <aweme_id> --all --depth 1
-3. 根据策略逐条判断：
-     → 跳过 → 记录原因
-     → 需回复 → 根据风格指南生成回复内容
-              → node cli.js post <aweme_id> "内容" --reply-to <cid>
-4. 输出执行报告
-```
-
-### 后续增量执行
-
-```
-1. 读取策略文件
-2. node cli.js get <aweme_id> --new --depth 1   # 只拉新评论
-3. 对新评论逐条判断并回复
-4. 输出执行报告（标注增量模式 + 跳过旧评论数）
-```
-
-> `--new` 自动从审计日志中找到上次拉取时间，通常只需 1-2 次 API 请求。
-
-### 策略文件
-
-项目根目录 `reply-strategy.md` 包含完整策略模板：优先回复规则、跳过条件、风格指南、限制参数、特殊需求占位区。每次使用前可根据场景编辑"特殊需求"部分。
-
-### 限制遵循
-
-agent 在执行时必须遵守策略中的硬限制：
-- 每视频最多回复 30 条：达到上限立即停止
-- 同一用户不重复回复：不回复自己或已回复过的评论
-- 连续 5 条不匹配则停止：避免无效遍历
-
----
-
-## 推广引流
-
-利用自身 CLI 在相关视频下评论，自然引流到 GitHub 项目。
-
-### 策略
-
-1. **选视频** — 搜索 AI 编程/自动化/自媒体运营/开源项目 关键词，找近期活跃视频
-2. **筛选** — 优先评论数 <100 的视频（自己的评论不会被淹没）
-3. **风格轮换** — 每轮 10 条，不要全部用同一模板：
-   - 🗣️ 自然聊天 — "我也做了个类似的..."
-   - 🤔 提问式 — "有人做过这个方向吗？"
-   - 😂 自嘲式 — "打工人帮自己写了个工具..."
-   - 💡 技术对比 — "CDP 方案比 xxx 更轻量..."
-   - 🙏 价值分享 — "免费开源的，欢迎交流"
-4. **节奏** — 每轮 ≤10 条，间隔 ≥1 分钟，一天不超过 2 轮
-5. **绝不做** — 纯广告、刷屏、竞品攻击、诱导点击
-
-### 执行
-
-```bash
-# 搜索目标视频
-node cli.js search "AI编程效率提升" --count 5
-node cli.js search "程序员副业" --count 5
-
-# 逐条评论（间隔自然）
-node cli.js post <aweme_id> "真诚评论内容..."
-```
-
-### 追踪
-
-所有推广记录在 `logs/audit.json` 中，可通过 `profile <uid>` 查看是否引来了新的关注/评论。
+> **业务策略与工作流（评论区运营、推广引流、个人信息、硬性禁令）见 [`reply-strategy.md`](./reply-strategy.md)。** 本文件只描述 CLI 工具如何调用，不包含"做什么 / 不做什么"的策略判断。
 
 ---
 
@@ -385,34 +335,11 @@ logs/
 
 ## 请求速率限制
 
-为避免触发抖音风控，**每次调用 CLI 命令之间必须插入随机等待**。
+**所有发布/读取类操作的间隔与并发约束统一在 [`reply-strategy.md` §2.4](./reply-strategy.md) 定义。**
+SKILL.md 不再重复，避免两份说明漂移。
 
-### 规则
+要点：
 
-| 操作类型 | 最小间隔 | 说明 |
-|----------|----------|------|
-| 读操作（`get` / `search` / `replies` / `my` / `download`） | 30-50 秒 | 数据拉取类 |
-| 写操作（`post` / `like` / `delete-comment`） | 40-60 秒 | 发布/删除/点赞，风控更严 |
-| 混合场景（先读后写） | 写操作单独计时 | 读写各自满足对应间隔 |
-
-### 执行方式
-
-在 Bash 命令前加 `sleep`，间隔值从上述范围中**随机选取**，不要固定同一个值：
-
-```bash
-# ✅ 正确：随机间隔 38 秒
-sleep 38 && cd ~/.claude/skills/douyin && node cli.js search "AI编程" --count 5
-
-# ✅ 正确：随机间隔 47 秒
-sleep 47 && cd ~/.claude/skills/douyin && node cli.js post <aweme_id> "内容"
-
-# ❌ 错误：无间隔连续调用
-node cli.js search "AI编程" && node cli.js search "Claude Code"
-```
-
-### 批量执行注意事项
-
-- **单轮上限**：连续操作不超过 10 次，之后暂停 3-5 分钟
-- **日上限**：同一账号一天不超过 2 轮（共 20 次写操作）
-- **超时设置**：带 `sleep` 的命令需设置 `timeout: 120000`（2 分钟）
-- **并行禁止**：不要同时发起多个 CLI 调用，严格串行执行
+- 串行执行，禁并发
+- 每条命令之间 sleep 随机 40–55 秒（写操作）/ 30–50 秒（读操作）
+- 带 sleep 的 Bash 调用记得设 `timeout: 120000`
