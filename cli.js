@@ -112,6 +112,8 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js corpus <search|recent|stats> [...]   回复语料库
   node cli.js failures [--limit N] [--recent]      失败模式 top-N（避雷清单）
   node cli.js dedup "<候选回复文本>"                  检查文本是否曾经发过
+  node cli.js replied                                已回复 cid 列表（--json --aweme <id>）
+  node cli.js replied --count                        已回复总数
 
   通用选项： --raw（原始输出） --no-log（本次不记录日志）
 
