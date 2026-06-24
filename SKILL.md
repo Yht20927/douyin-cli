@@ -111,23 +111,16 @@ fi
 
 ## 前置条件
 
-<<<<<<< HEAD
 - 浏览器已安装 Tampermonkey + `scripts/douyin.user.js` 油猴脚本
 - 浏览器已打开 `douyin.com` 任意页面并**登录抖音**
 - 零依赖：无需 `npm install`
 
 ## 通用选项
-=======
-- 已安装并启动 `douyin-cli`（Bridge Server 运行中）
-- 油猴脚本已连接（`node cli.js status` 确认）
-- 用户已在 Chrome 中登录抖音
->>>>>>> 246cfa7 (重构提示词文件)
 
 ## 文件结构
 
 本 Skill 由以下模块组成，执行前按顺序加载：
 
-<<<<<<< HEAD
 ## Bridge Server 启动协议（强约束）
 
 Bridge Server 是常驻 HTTP/WebSocket 桥接服务，必须**和主会话解耦**地运行。
@@ -177,7 +170,7 @@ curl -s http://127.0.0.1:19422/api/status | grep -o '"douyin.com"' || echo "OFFL
 
 ```bash
 node cli.js my
-node cli.js my --count 30
+node cli.js my --count 20
 ```
 
 输出（清洁模式）：
@@ -451,7 +444,9 @@ SKILL.md 不再重复，避免两份说明漂移。
 - 串行执行，禁并发
 - 每条命令之间 sleep 随机 40–55 秒（写操作）/ 30–50 秒（读操作）
 - 带 sleep 的 Bash 调用记得设 `timeout: 120000`
-=======
+
+## 文件结构
+
 | 文件 | 作用 | 何时加载 |
 |------|------|----------|
 | `用户配置.md` | 账号信息、基础配置 | 每次执行 |
