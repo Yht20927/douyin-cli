@@ -31,6 +31,7 @@
 |------|------|
 | 🔍 视频搜索 | 关键词搜索视频 |
 | 💬 评论获取 | 获取评论及嵌套回复，`--new` 增量拉取 |
+| 🖼️ **图片评论** | 发表带图评论/回复（ImageX 上传链路，`--image` 可多张） |
 | 🧠 **ReplyEngine** | 独立评论生成引擎，3 种模式 + 人格绑定 + 上下文隔离 |
 | 🤖 **AI 人格化回复** | 7 种人格自动轮换，A-F 六类回复策略，避免"AI 味" |
 | 📝 **草稿管理** | 回复草稿 save/list/show/post/delete 完整生命周期 |
@@ -41,6 +42,44 @@
 | 📥 视频下载 | 下载视频+音频（BGM），支持 ffmpeg 截图多模态分析 |
 | 📊 运营仪表盘 | 本地 HTML 可视化，含推广活动卡片 |
 | 💾 持久化记忆 | SQLite schema v8（events / users / videos / comments / corpus / failures / campaigns / llm_usage / drafts） |
+
+---
+
+## 🖼️ 图片评论
+
+发表带图评论或回复。`--image` 可重复，也可用逗号分隔一次传多张：
+
+```bash
+# 图片评论
+node cli.js post <aweme_id> "这个封面做得真好" --image cover.jpg
+
+# 图片回复（回复某条评论）
+node cli.js post <aweme_id> "看下我的版本" --reply-to <cid> --image v1.png
+
+# 多张
+node cli.js post <aweme_id> "对比一下" --image a.jpg,b.jpg,c.jpg
+
+# 只上传不发（拿 uri 复用 / 调试）
+node cli.js upload-image --image cover.jpg
+```
+
+**上传链路**（`scripts/douyin.user.js` 内实现，CLI 只负责递数据）：
+
+| 步骤 | 接口 | 说明 |
+|------|------|------|
+| 1 | `GET /aweme/v1/web/comment/upload/auth/` | 取 ImageX STS 临时凭证（`service_id` / `upload_domain` / 密钥） |
+| 2 | `GET imagex.bytedanceapi.com/?Action=ApplyImageUpload` | AWS SigV4 签名，换上传地址 + `StoreUri` |
+| 3 | `PUT https://<UploadHost>/<StoreUri>` | 传字节，带 `Content-CRC32` 与 `X-Storage-U` |
+| 4 | `POST ?Action=CommitImageUpload` | 提交，返回 `ImageUri` / 宽 / 高 / 格式 |
+| 5 | `POST /aweme/v1/web/comment/publish/` | 文本 + `image_uri_list` / `image_formats` / `image_widths` / `image_heights` |
+
+要点与限制：
+
+- **格式**：`jpg` / `jpeg` / `png` / `webp` / `gif` / `bmp` / `heic`（按扩展名校验），单张上限 10MB，超过 4MB 建议先压缩
+- **签名**：全链路在浏览器页面上下文完成，`crypto.subtle` 做 SHA-256 / HMAC；签名算法对齐抖音前端内置的 ImageX SDK（region `cn-north-1`、service `imagex`）
+- **base64 分块递送**：图片按 512KB 分片经 Bridge 送进页面缓冲，避免单条 eval 表达式塞进数 MB 字符串
+- **结果自检**：发布后用服务端回包的 `image_list` 校验图片张数，不符会在结果里给出 `warning`
+- **功能可用性**：图片评论是抖音灰度的能力，账号/视频未开放时接口会拒绝；若发布结果出现 `image_count: 0` 警告，说明图片没挂上
 
 ---
 
@@ -169,6 +208,8 @@ node cli.js browse 穿搭 美食 --max-notes 3
 | `get` | 获取评论 | `node cli.js get <id> --pages 1 --count 5` |
 | `replies` | 获取回复列表 | `node cli.js replies <cid> <aweme_id>` |
 | `post` | 发表评论/回复 | `node cli.js post <id> "内容" --reply-to <cid>` |
+| `post --image` | 发表图片评论/回复 | `node cli.js post <id> "内容" --image cover.jpg` |
+| `upload-image` | 仅上传图片取 uri（不发评论） | `node cli.js upload-image --image cover.jpg` |
 | `like` | 点赞视频 | `node cli.js like <id>` |
 | `delete-comment` | 删除评论 | `node cli.js delete-comment <cid>` |
 | `download` | 下载视频+音频 | `node cli.js download <id> [--audio-only]` |
@@ -306,8 +347,9 @@ douyin-cli/
 ├── SECURITY.md               # 安全策略
 ├── DISCLAIMER.md             # 免责声明
 ├── lib/
-│   ├── commands/             # 命令模块（32 个命令，注册在 index.js）
+│   ├── commands/             # 命令模块（33 个命令，注册在 index.js）
 │   │   ├── get/post/like/delete-comment.js    # 核心 CRUD
+│   │   ├── upload-image.js                    # 仅上传图片取 uri（图片评论辅助）
 │   │   ├── search/my/user/replies/download.js # 读取类
 │   │   ├── analyze/suggest.js                 # LLM 分析与回复
 │   │   ├── getReply.js                        # ReplyEngine 评论/回复生成
@@ -338,6 +380,7 @@ douyin-cli/
 │   │   └── caseConvert.js    # camelCase → snake_case（v4 新增）
 │   ├── client/               # Bridge 客户端
 │   ├── server/               # WS Hub + Router + Registry
+│   ├── comment-image.js      # 评论图片：校验 / 分块 / 经 Bridge 上传
 │   ├── risk-control.js       # 请求节奏守卫 + 自适应风控
 │   ├── llm.js                # LLM 客户端（OpenAI + Anthropic + Token 追踪）
 │   ├── personas.js           # 7 种人格模板池

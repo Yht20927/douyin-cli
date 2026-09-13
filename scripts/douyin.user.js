@@ -954,12 +954,19 @@ window.__bridge = {
     var p=new URLSearchParams(Object.assign(this._q(),{keyword:kw,offset:offset||0,count:count||10,search_channel:'aweme_general',search_source:'normal_search',query_correct_type:'1',is_filter_search:'0',need_filter_settings:'0',list_type:'single'}));
     return await bridgeFetchJson('search','/aweme/v1/web/general/search/single/?'+p,{credentials:'include'},true);
   },
-  publish: async function(id,text,rid,rrid,mentions){
+  publish: async function(id,text,rid,rrid,mentions,images){
     var extras=mentions?JSON.stringify(mentions):'[]';var now=Date.now();
     var sendCelltime=String(Math.floor((now-PAGE_LOAD_TIME)/1000)*1000);
     var videoCelltime=String(Number(sendCelltime)+5000+Math.floor(Math.random()*30000));
     var b=new URLSearchParams();b.set('aweme_id',id);b.set('comment_send_celltime',sendCelltime);b.set('comment_video_celltime',videoCelltime);b.set('one_level_comment_rank',rid?'1':'-1');b.set('paste_edit_method',Math.random()<0.9?'non_paste':'paste');
     if(rid)b.set('reply_id',rid);if(rrid)b.set('reply_to_reply_id',rrid);b.set('text',text);b.set('text_extra',extras);
+    // 图片评论：多个字段以逗号分隔（实测确认字段名，单一图片同样适用）
+    if(images&&images.length){
+      b.set('image_uri_list',images.map(function(x){return x.uri;}).join(','));
+      b.set('image_formats',images.map(function(x){return x.format||'jpeg';}).join(','));
+      b.set('image_widths',images.map(function(x){return String(x.width||0);}).join(','));
+      b.set('image_heights',images.map(function(x){return String(x.height||0);}).join(','));
+    }
     var qParams={};qParams.app_name='aweme';qParams.enter_from=Math.random()<0.85?'others_homepage':'search_result';qParams.previous_page=Math.random()<0.85?'others_homepage':'homepage';qParams.aweme_id=id;qParams.item_type='0';
     var fp=this._q();for(var k in fp){if(fp.hasOwnProperty(k))qParams[k]=fp[k];}
     qParams.webid=getCookie('s_v_web_id')||getCookie('webid')||'';qParams.uifid=getCookie('UIFID')||'';
@@ -1090,6 +1097,131 @@ window.__bridge = {
   getDMs: function(){
     window.__dmQueue=window.__dmQueue||[];
     return window.__dmQueue.splice(0);
+  },
+  // ═══════════════════════════════════════════════════════════
+  // 评论图片上传（ImageX，AWS SigV4）
+  // 链路：comment/upload/auth → ApplyImageUpload → PUT TOS → CommitImageUpload
+  // 全程用页面 fetch：授权接口同源自动带 cookie，上传域名跨域但服务端放行 CORS
+  // ═══════════════════════════════════════════════════════════
+  _imgx: (function(){
+    var enc=new TextEncoder();
+    function toHex(buf){var u=new Uint8Array(buf),s='';for(var i=0;i<u.length;i++)s+=(u[i]<16?'0':'')+u[i].toString(16);return s;}
+    async function sha256Hex(data){
+      var bytes=typeof data==='string'?enc.encode(data):data;
+      return toHex(await crypto.subtle.digest('SHA-256',bytes));
+    }
+    async function hmacRaw(keyBytes,msg){
+      var k=await crypto.subtle.importKey('raw',keyBytes,{name:'HMAC',hash:'SHA-256'},false,['sign']);
+      return new Uint8Array(await crypto.subtle.sign('HMAC',k,typeof msg==='string'?enc.encode(msg):msg));
+    }
+    async function hmacHex(keyBytes,msg){return toHex(await hmacRaw(keyBytes,msg));}
+    // AWS 规范 URI 编码（保留 A-Za-z0-9-_.~）
+    function uriEncode(s){return encodeURIComponent(s).replace(/[!'()*]/g,function(c){return '%'+c.charCodeAt(0).toString(16).toUpperCase();});}
+    function canonQuery(p){
+      return Object.keys(p).sort().map(function(k){return uriEncode(k)+'='+uriEncode(p[k]);}).join('&');
+    }
+    function crc32(u8){
+      var crc=0xFFFFFFFF,c,i,j;
+      for(i=0;i<u8.length;i++){
+        c=(crc^u8[i])&0xFF;
+        for(j=0;j<8;j++)c=c&1?(c>>>1)^0xEDB88320:c>>>1;
+        crc=(crc>>>8)^c;
+      }
+      return ((crc^0xFFFFFFFF)>>>0).toString(16).padStart(8,'0');
+    }
+    async function signingKey(secret,dateStamp){
+      var k=await hmacRaw(enc.encode('AWS4'+secret),dateStamp);
+      k=await hmacRaw(k,'cn-north-1');k=await hmacRaw(k,'imagex');
+      return hmacRaw(k,'aws4_request');
+    }
+    // 签名并发送 ImageX 请求（region/service 固定 cn-north-1 / imagex）
+    async function sign(method,host,pathname,creds,params,bodyObj){
+      var amzDate=new Date().toISOString().replace(/\.\d{3}Z$/,'Z').replace(/[:\-]/g,'');
+      var dateStamp=amzDate.slice(0,8);
+      var cq=canonQuery(params||{});
+      var hdrs={'x-amz-date':amzDate,'x-amz-security-token':creds.sessionToken};
+      var body=null;
+      if(bodyObj){body=JSON.stringify(bodyObj);hdrs['X-Amz-Content-Sha256']=await sha256Hex(body);}
+      var bodyHash=hdrs['X-Amz-Content-Sha256']||(body?await sha256Hex(canonQuery(body)):await sha256Hex(''));
+      var lower={};Object.keys(hdrs).forEach(function(h){lower[h.toLowerCase()]=hdrs[h];});
+      var names=Object.keys(lower).sort();
+      var canonHeaders=names.map(function(n){return n+':'+lower[n]+'\n';}).join('');
+      var signedHeaders=names.join(';');
+      var canonReq=[method,pathname,cq,canonHeaders,signedHeaders,bodyHash].join('\n');
+      var scope=dateStamp+'/cn-north-1/imagex/aws4_request';
+      var sts=['AWS4-HMAC-SHA256',amzDate,scope,await sha256Hex(canonReq)].join('\n');
+      var sig=await hmacHex(await signingKey(creds.secretAccessKey,dateStamp),sts);
+      var auth='AWS4-HMAC-SHA256 Credential='+creds.accessKeyId+'/'+scope+', SignedHeaders='+signedHeaders+', Signature='+sig;
+      var url='https://'+host+pathname+(cq?'?'+cq:'');
+      var init={method:method,headers:Object.assign({Authorization:auth},hdrs)};
+      if(body){init.body=body;init.headers['Content-Type']='application/json';}
+      var r=await fetch(url,init);
+      var text=await r.text();
+      var json;try{json=JSON.parse(text);}catch(e){json=text.slice(0,300);}
+      return {http:r.status,body:json};
+    }
+    return {sha256Hex:sha256Hex,crc32:crc32,canonQuery:canonQuery,uriEncode:uriEncode,sign:sign};
+  })(),
+  // 分块传输缓冲：避免单条 eval 表达式塞进数 MB base64 拖垮 WebSocket
+  _imgBuf: null,
+  _storageUidCache: null,
+  _getStorageUid: async function(){
+    if(this._storageUidCache)return this._storageUidCache;
+    try{
+      var info=await bridgeFetchJson('getStorageUid','/aweme/v1/web/query/user/?'+new URLSearchParams(this._q()),{credentials:'include'},true);
+      if(info&&info.user_uid){this._storageUidCache=String(info.user_uid);return this._storageUidCache;}
+    }catch(e){console.warn('[Bridge] getStorageUid failed:',e.message);}
+    return '';
+  },
+  imageBegin: function(expectedLen){this._imgBuf={parts:[],len:0,expected:expectedLen||0};return true;},
+  imageAppend: function(chunk){
+    if(!this._imgBuf)throw new Error('imageBegin() 未调用');
+    this._imgBuf.parts.push(chunk);this._imgBuf.len+=chunk.length;
+    return this._imgBuf.len;
+  },
+  imageReset: function(){this._imgBuf=null;return true;},
+  // 上传缓冲中的图片 → {uri,width,height,format,size}
+  imageUpload: async function(){
+    if(!this._imgBuf||!this._imgBuf.len)throw new Error('图片缓冲为空，请先 imageBegin/imageAppend');
+    var b64=this._imgBuf.parts.join('');
+    this._imgBuf=null;
+    var bin=atob(b64),u8=new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+
+    // 1) 取上传授权（同源，自动带 cookie）
+    var q=Object.assign(this._q(),{content_type:'0'});
+    var auth=await bridgeFetchJson('commentUploadAuth','/aweme/v1/web/comment/upload/auth/?'+new URLSearchParams(q),{credentials:'include'},true);
+    if(auth.status_code!==0||!auth.access_key)throw new Error('取图片上传授权失败: '+(auth.status_msg||('status_code='+auth.status_code)));
+    var creds={accessKeyId:auth.access_key,secretAccessKey:auth.secret_key,sessionToken:auth.session_token};
+
+    // 2) ApplyImageUpload
+    var apply=await this._imgx.sign('GET',auth.upload_domain,'/',creds,{
+      Action:'ApplyImageUpload',Version:'2018-08-01',ServiceId:auth.service_id,
+      s:Math.random().toString(36).slice(2)
+    });
+    var addr=apply.body&&apply.body.Result&&apply.body.Result.UploadAddress;
+    if(!addr||!addr.StoreInfos||!addr.StoreInfos.length)throw new Error('申请上传地址失败: '+JSON.stringify(apply.body).slice(0,200));
+
+    // 3) 上传字节到 TOS（无 /upload/v1 前缀，实测确认）
+    var store=addr.StoreInfos[0];
+    var uid=await this._getStorageUid();
+    var upRes=await fetch('https://'+addr.UploadHosts[0]+'/'+store.StoreUri,{
+      method:'PUT',
+      headers:{Authorization:store.Auth,'Content-CRC32':this._imgx.crc32(u8),'X-Storage-U':uid},
+      body:u8
+    });
+    var upText=await upRes.text();
+    if(upRes.status!==200||/"success"\s*:\s*[1-9]/.test(upText)){
+      throw new Error('图片上传失败 HTTP '+upRes.status+': '+upText.slice(0,200));
+    }
+
+    // 4) CommitImageUpload
+    var commit=await this._imgx.sign('POST',auth.upload_domain,'/',creds,
+      {Action:'CommitImageUpload',Version:'2018-08-01',ServiceId:auth.service_id},
+      {SessionKey:addr.SessionKey});
+    var pr=commit.body&&commit.body.Result&&commit.body.Result.PluginResult&&commit.body.Result.PluginResult[0];
+    if(!pr)throw new Error('图片提交失败: '+JSON.stringify(commit.body).slice(0,200));
+    return {uri:pr.ImageUri,width:pr.ImageWidth,height:pr.ImageHeight,format:pr.ImageFormat,size:pr.ImageSize};
   },
   getDetail: async function(awemeId){
     var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:awemeId}));

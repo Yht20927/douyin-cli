@@ -102,6 +102,8 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js post <aweme_id> "内容"           发表评论
   node cli.js post <aweme_id> "回复" --reply-to <cid>
   node cli.js post <aweme_id> "@1179139456380456 内容" --reply-to <cid> --at <uid> <sec_uid>
+  node cli.js post <aweme_id> "内容" --image <图片路径>     发表图片评论（--image 可重复/逗号分隔）
+  node cli.js upload-image --image <图片路径>               仅上传图片，返回 uri（不发评论）
   node cli.js like <aweme_id>                 点赞视频
   node cli.js like <aweme_id> --unlike        取消点赞
   node cli.js delete-comment <cid>            删除评论

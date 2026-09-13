@@ -413,6 +413,40 @@ node cli.js post 7629735841874726179 "说得对" --reply-to 7646065507817734949
 
 > **注意**：评论内容中的引号会被自动转义。`status_code=8` 通常表示内容过短、重复或被风控拦截，换内容重试。
 
+### 图片评论
+
+评论/回复可以带图。`--image` 可重复，也可逗号分隔一次传多张：
+
+```bash
+node cli.js post 7629735841874726179 "这个封面绝了" --image cover.jpg
+node cli.js post 7629735841874726179 "看下我的版本" --reply-to 7646065507817734949 --image v1.png
+node cli.js post 7629735841874726179 "对比一下" --image a.jpg,b.jpg,c.jpg
+
+# 只上传不发（拿 uri / 调试链路）
+node cli.js upload-image --image cover.jpg
+```
+
+输出（带图时多出 `images` 与 `image_count`）：
+```json
+{
+  "cid": "7646...", "text": "这个封面绝了", "status": "published",
+  "images": [{ "uri": "tos-cn-i-xxx/abc", "width": 240, "height": 180, "format": "jpeg" }],
+  "image_count": 1
+}
+```
+
+`upload-image` 输出：
+```json
+{ "uri": "tos-cn-i-p14lwwcsbr/abc", "width": 240, "height": 180, "format": "jpeg", "size": 494 }
+```
+
+约束与排障：
+
+- **格式**：`jpg` / `jpeg` / `png` / `webp` / `gif` / `bmp` / `heic`，单张 ≤ 10MB（> 4MB 建议先压缩）
+- **`image_count: 0` + `warning`**：服务端回包没带图，说明图片没挂上。此时评论已经发出去了（是纯文本），需要人工确认或删除重发
+- **图片评论是抖音灰度能力**：账号或该视频未开放时接口会拒绝，先手动在网页评论框确认有没有「图片」按钮
+- 带图发布同样是**写操作**，受 40-55s 随机间隔约束，也计入风控断路器
+
 ### 点赞/取消点赞
 
 ```bash
