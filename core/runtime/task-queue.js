@@ -30,6 +30,18 @@ const { getPolicy, WRITE_COMMANDS } = require('../policy');
 const MAX_HISTORY = 200;
 
 /**
+ * 单个任务的完整结果最多保留多大（字节，JSON 序列化后）。
+ *
+ * 有些操作的结果必须完整回传给界面 —— 比如"生成回复"的产出就是一段文本，
+ * 摘要（{kind:'object', keys:[...]}）对它毫无意义。而拉评论这种大数组则只需要
+ * 计数。所以小结果留着、大结果只留摘要。
+ *
+ * 不放进 list() 的常规推送里：那会在每次队列变化时把结果全量过一遍 IPC，
+ * 界面调用 queue.getResult(id) 按需取即可。
+ */
+const MAX_RESULT_BYTES = 64 * 1024;
+
+/**
  * 创建任务队列。
  *
  * @param {object} opts
@@ -278,6 +290,7 @@ function createTaskQueue(opts = {}) {
       task.endedAt = Date.now();
       task.progress = null;
       task.resultSummary = summarizeResult(result);
+      task.result = keepResult(result);
 
       if (isWrite) policy.afterWrite({ ok: true });
       rootLogger.info(`[queue] 完成 ${task.label}（${task.endedAt - task.startedAt}ms）`);
@@ -349,7 +362,7 @@ function createTaskQueue(opts = {}) {
     return false;
   }
 
-  /** 给界面用的结果摘要 —— 不把大数组塞进 IPC */
+  /** 给界面用的结果摘要 —— 不把大数组塞进常规推送 */
   function summarizeResult(result) {
     if (result === undefined || result === null) return null;
     if (Array.isArray(result)) return { kind: 'array', count: result.length };
@@ -360,12 +373,40 @@ function createTaskQueue(opts = {}) {
     return { kind: typeof result, value: String(result).slice(0, 200) };
   }
 
+  /**
+   * 决定是否为这个任务保留完整结果。
+   * 序列化不了或太大的都不留 —— 留着既占内存又会拖慢 IPC。
+   */
+  function keepResult(result) {
+    if (result === undefined || result === null) return null;
+    if (typeof result === 'function' || typeof result === 'symbol') return null;
+    try {
+      const s = JSON.stringify(result);
+      if (s === undefined) return null;
+      if (Buffer.byteLength(s) > MAX_RESULT_BYTES) return null;
+      // 过一遍序列化再存，确保能安全地经 IPC 传出去（structured clone）
+      return JSON.parse(s);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * 取某个任务的完整结果（按需调用，不随常规推送走）。
+   * 结果过大或不可序列化时返回 null，此时只能用 resultSummary。
+   */
+  function getResult(taskId) {
+    const t = byId.get(taskId);
+    return t && t.result !== undefined ? t.result : null;
+  }
+
   return {
     enqueue,
     cancel,
     cancelPending,
     list,
     get,
+    getResult,
     stats,
     /** 订阅队列变化，返回取消订阅函数 */
     subscribe(fn) {

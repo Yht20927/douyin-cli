@@ -9,6 +9,7 @@ const configModule = require('../../core/config');
 const paths = require('../../core/paths');
 const { sourceExists, sourcePath } = require('../../core/userscript');
 const { getPolicy } = require('../../core/policy');
+const views = require('../../core/data/views');
 
 /**
  * 注册全部 IPC 处理器。
@@ -84,6 +85,17 @@ function registerIpc(opts) {
   // 策略统计每次现算：它读 events 表，数据随时在变，缓存只会带来"界面显示的是旧的"。
   ipcMain.handle('policy:stats', () => getPolicy().stats());
 
+  // 发布前预检：界面在确认弹窗里展示"能不能发、为什么不能、还要等多久"。
+  // 只报告不等待 —— 与队列执行时的判定是同一个 beforeWrite，口径一致。
+  ipcMain.handle('policy:check', (_e, meta) => {
+    try {
+      const r = getPolicy().beforeWrite(meta && typeof meta === 'object' ? meta : {});
+      return { ok: true, check: r };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('queue:state', () => ({
     tasks: opts.queue.list(),
     stats: opts.queue.stats(),
@@ -109,6 +121,49 @@ function registerIpc(opts) {
   ipcMain.handle('queue:cancel', (_e, id) => ({ ok: opts.queue.cancel(String(id)) }));
 
   ipcMain.handle('queue:cancel-pending', () => ({ ok: true, count: opts.queue.cancelPending() }));
+
+  // 按需取完整结果：生成回复的产出就是一段文本，摘要对它没有意义。
+  // 不放进常规推送里，避免每次队列变化都把结果全量过一遍 IPC。
+  ipcMain.handle('queue:result', (_e, id) => ({ ok: true, result: opts.queue.getResult(String(id)) }));
+
+  // ── 本地数据（读 SQLite，不走队列：无风控风险，也不该占串行队列）──
+  // 每个 handle 都包一层 try：数据层出错应该是界面显示一条错误，而不是整个调用炸掉
+  const safe = (fn) => (_e, ...args) => {
+    try {
+      return { ok: true, data: fn(...args) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  };
+
+  ipcMain.handle('data:overview', safe(() => views.overview()));
+  ipcMain.handle('data:videos', safe((limit) => views.listMyVideos({ limit: Number(limit) || 50 })));
+  ipcMain.handle('data:video', safe((awemeId) => views.videoDetail(String(awemeId))));
+  ipcMain.handle('data:videoStats', safe((awemeId) => views.videoStats(String(awemeId))));
+  ipcMain.handle('data:comments', safe((awemeId, o) => views.listComments(String(awemeId), {
+    filter: o && o.filter,
+    limit: o && o.limit,
+    search: o && o.search,
+  })));
+  ipcMain.handle('data:comment', safe((cid) => views.commentDetail(String(cid))));
+  ipcMain.handle('data:drafts', safe(() => views.listDrafts()));
+
+  // ── 草稿箱的本地写操作（同样是本地库，不走队列）──
+  ipcMain.handle('draft:save', safe((spec) => {
+    const drafts = require('../../core/memory/drafts');
+    const id = drafts.save({
+      awemeId: String(spec.awemeId),
+      text: String(spec.text),
+      replyToCid: spec.replyToCid || null,
+      personaId: spec.personaId || null,
+    });
+    return { id };
+  }));
+
+  ipcMain.handle('draft:delete', safe((id) => {
+    const drafts = require('../../core/memory/drafts');
+    return { deleted: drafts.remove(Number(id)) };
+  }));
 }
 
 /**

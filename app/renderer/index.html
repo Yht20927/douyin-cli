@@ -4,10 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- 渲染层不需要联网，也不需要 eval；收紧 CSP 减少注入面。
-         注意 style-src 需要 unsafe-inline：Vite 在生产构建里会内联关键样式。 -->
+         注意两处放宽，都有明确理由：
+           style-src 'unsafe-inline' —— Vite 生产构建会内联关键样式
+           img-src https:           —— 视频封面存在抖音 CDN 上，只允许 'self' 会全裂
+                                      （封面加载失败时组件会降级成占位块，见 WorksView） -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:5173"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ws://localhost:5173"
     />
     <title>抖音评论运营助手</title>
   </head>

@@ -57,5 +57,23 @@ contextBridge.exposeInMainWorld('dy', {
   policy: {
     /** 只取策略统计（配额/轮次/熔断），不拉任务列表 */
     stats: () => ipcRenderer.invoke('policy:stats'),
+    /** 发布前预检：能不能发、为什么不能、还要等多久 */
+    check: (meta) => ipcRenderer.invoke('policy:check', meta),
+  },
+
+  /** 本地数据读取。都是同步读 SQLite，不走队列也不碰抖音。 */
+  data: {
+    overview: () => ipcRenderer.invoke('data:overview'),
+    videos: (limit) => ipcRenderer.invoke('data:videos', limit),
+    video: (awemeId) => ipcRenderer.invoke('data:video', awemeId),
+    videoStats: (awemeId) => ipcRenderer.invoke('data:videoStats', awemeId),
+    comments: (awemeId, opts) => ipcRenderer.invoke('data:comments', awemeId, opts),
+    comment: (cid) => ipcRenderer.invoke('data:comment', cid),
+    drafts: () => ipcRenderer.invoke('data:drafts'),
+  },
+
+  draft: {
+    save: (spec) => ipcRenderer.invoke('draft:save', spec),
+    remove: (id) => ipcRenderer.invoke('draft:delete', id),
   },
 });

@@ -1,15 +1,18 @@
 import React from 'react';
 import { describeStatus } from '../status.js';
 
-/** 目前真实存在的页面。后续（P3 起）会加：我的作品 / 评论工作台 / 草稿箱 / 私信 / 事件日志 / 设置 */
+/** 目前真实存在的页面。后续会加：私信 / 事件日志 / 设置 */
 const NAV = [
-  { key: 'queue', label: '队列' },
+  { key: 'queue', label: '队列', badge: 'queue' },
+  { key: 'works', label: '我的作品' },
+  { key: 'drafts', label: '草稿箱', badge: 'draft' },
   { key: 'connection', label: '连接' },
   { key: 'diagnostics', label: '诊断' },
 ];
 
-export default function Sidebar({ view, onNavigate, status, queueCount, version, onQuit }) {
+export default function Sidebar({ view, onNavigate, status, queueCount, draftCount, version, onQuit }) {
   const d = describeStatus(status);
+  const badges = { queue: queueCount, draft: draftCount };
 
   return (
     <aside className="sidebar">
@@ -28,9 +31,9 @@ export default function Sidebar({ view, onNavigate, status, queueCount, version,
           >
             <span className="nav-marker" />
             {item.label}
-            {/* 有任务在跑/在等时标一个数 —— 切到别的页面也能知道队列没空 */}
-            {item.key === 'queue' && queueCount > 0 && (
-              <span className="nav-badge num">{queueCount}</span>
+            {/* 有任务在跑/在等、或有待发草稿时标一个数 —— 切到别的页面也能看到 */}
+            {item.badge && badges[item.badge] > 0 && (
+              <span className="nav-badge num">{badges[item.badge]}</span>
             )}
           </button>
         ))}
