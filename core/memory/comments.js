@@ -252,6 +252,49 @@ function count(opts = {}) {
 }
 
 /**
+ * 某视频的评论统计（一次查询）。
+ *
+ * 与 count() 的区别：pending 会**排掉我自己发的评论**。
+ * 评论区里我以作者身份发出的回复也算评论，不排掉的话"待回复"会把
+ * 自己说过的话算进去 —— 实测某个视频 36 条评论里 25 条是自己发的，
+ * 于是"待回复 26"这个数字毫无参考价值。
+ *
+ * @param {string} awemeId
+ * @param {object} [opts]
+ * @param {string} [opts.excludeUid] - 我自己的 uid（来自 videos.myUid）
+ * @returns {{total:number, replied:number, pending:number, mine:number}}
+ */
+function statsForVideo(awemeId, opts = {}) {
+  const empty = { total: 0, replied: 0, pending: 0, mine: 0 };
+  if (!awemeId) return empty;
+  try {
+    const db = getDb();
+    const exclude = opts.excludeUid ? String(opts.excludeUid) : null;
+    const row = db.prepare(`
+      SELECT
+        count(*) AS total,
+        sum(CASE WHEN replied = 1 THEN 1 ELSE 0 END) AS replied,
+        sum(CASE WHEN replied = 0 AND (? IS NOT NULL AND uid = ?) THEN 1 ELSE 0 END) AS mine
+      FROM comments
+      WHERE platform = ? AND aweme_id = ?
+    `).get(exclude, exclude, PLATFORM, String(awemeId));
+
+    const total = row.total || 0;
+    const replied = row.replied || 0;
+    const mine = row.mine || 0;
+    return {
+      total,
+      replied,
+      mine,
+      // 待回复 = 未回复、且不是我发的
+      pending: Math.max(0, total - replied - mine),
+    };
+  } catch (e) {
+    return empty;
+  }
+}
+
+/**
  * 清理 last_seen 早于 ts 的评论（TTL）。dryRun 只计数。返回删除/命中数。
  */
 function cleanupBefore(ts, opts = {}) {
@@ -301,5 +344,5 @@ function listReplied(filters = {}, opts = {}) {
 
 module.exports = {
   upsert, upsertMany, get, markReplied, setAnalysis,
-  listByUid, listByVideo, listReplied, count, cleanupBefore, hashText, normalizeText,
+  listByUid, listByVideo, listReplied, count, statsForVideo, cleanupBefore, hashText, normalizeText,
 };

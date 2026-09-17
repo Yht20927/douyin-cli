@@ -665,3 +665,13 @@ code {
 .skip-wait { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
 .text-bad { color: var(--bad); }
 .text-strong { color: var(--text); font-weight: 600; }
+
+/* 作品行的右侧：发布时间（主）+ 最后拉取（次）
+   两者必须都可辨认 —— 一个没有标签的时间戳落在作品旁边会被读成发布时间，
+   而它其实是"我上次同步到哪了"。 */
+.work-side {
+  flex: none;
+  display: flex; align-items: center; gap: 12px;
+}
+.work-date { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.work-fetch { font-size: 11.5px; white-space: nowrap; }

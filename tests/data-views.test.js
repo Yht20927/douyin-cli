@@ -84,7 +84,19 @@ describe('我的作品', () => {
     const [v] = views.listMyVideos();
     expect(v.awemeId).toBe('v1');
     expect(v.title).toBe('第一个视频');
-    expect(v.commentStats).toEqual({ total: 3, replied: 1, pending: 2 });
+    expect(v.commentStats).toMatchObject({ total: 3, replied: 1, pending: 2 });
+  }));
+
+  it('待回复不把自己发的评论算进去', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, authorUid: 'me123' });
+    addComment(cmts, 'v1', 'other1', '这个怎么做的？', { uid: 'someone' });   // 别人的，待回
+    addComment(cmts, 'v1', 'mine1', '我自己的留言', { uid: 'me123' });        // 我自己发的
+    addComment(cmts, 'v1', 'mine2', '我发出的回复', { uid: 'me123', parentCid: 'other1' });
+    addComment(cmts, 'v1', 'done1', '已回过的', { uid: 'someone2', replied: true });
+
+    const [v] = views.listMyVideos();
+    // 4 条评论里：1 条我发的 + 1 条我的回复 + 1 条已回复，真正的待回复只有 1 条
+    expect(v.commentStats).toMatchObject({ total: 4, replied: 1, mine: 2, pending: 1 });
   }));
 
   it('只列自己的作品，不含别人的', withTempEnv({}, async ({ views, vids }) => {
@@ -103,6 +115,44 @@ describe('我的作品', () => {
 
   it('不存在的视频返回 null', withTempEnv({}, async ({ views }) => {
     expect(views.videoDetail('nope')).toBeNull();
+  }));
+
+  // ═══════════════════════════════════════════════════════════
+  // 排序
+  //
+  // 用户反馈"我最新的作品显示的时间是 11 分钟以前" —— 根因有两层：
+  // 一是那个位置显示的是**最后拉取时间**而不是发布时间（已在界面修掉，
+  // 两行都加了标签）；二是列表**按拉取时间排序**，于是 6/1 发的排在 6/19 前面。
+  // ═══════════════════════════════════════════════════════════
+
+  it('作品列表按发布时间倒序，而不是按拉取时间', withTempEnv({}, async ({ views, vids }) => {
+    // 6/1 发的但刚拉取过；6/19 发的但很久没拉 —— 按发布时间应然后者在先
+    vids.upsert({ awemeId: 'older', title: '六月一日发的', isMine: true, createTime: 1780272000, lastGetTs: Date.now() });
+    vids.upsert({ awemeId: 'newer', title: '六月十九发的', isMine: true, createTime: 1781827200, lastGetTs: Date.now() - 90 * 86400000 });
+
+    expect(views.listMyVideos().map(v => v.awemeId)).toEqual(['newer', 'older']);
+  }));
+
+  it('发布时间缺失时排在最后（不让未知时间挤到前面）', withTempEnv({}, async ({ views, vids }) => {
+    vids.upsert({ awemeId: 'known', title: 'A', isMine: true, createTime: 1781827200 });
+    vids.upsert({ awemeId: 'unknown', title: 'B', isMine: true });
+
+    expect(views.listMyVideos()[0].awemeId).toBe('known');
+  }));
+
+  it('createTime 原样带出（秒），由界面负责展示', withTempEnv({}, async ({ views, vids }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, createTime: 1781827200 });
+    const v = views.listMyVideos()[0];
+    expect(v.createTime).toBe(1781827200);
+    // 解出来是 2026 年，而不是被当成毫秒解到 1970
+    expect(new Date(v.createTime * 1000).getUTCFullYear()).toBe(2026);
+  }));
+
+  it('videos.list 默认仍按活跃度排序（其它视图依赖）', withTempEnv({}, async ({ vids }) => {
+    vids.upsert({ awemeId: 'old', title: 'A', isMine: true, createTime: 1781827200, lastGetTs: 1000 });
+    vids.upsert({ awemeId: 'recent', title: 'B', isMine: true, createTime: 1000000, lastGetTs: 9e12 });
+
+    expect(vids.list({ isMine: true }).map(v => v.awemeId)).toEqual(['recent', 'old']);
   }));
 });
 

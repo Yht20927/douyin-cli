@@ -104,37 +104,34 @@ function decideAll(rows) {
  */
 function listMyVideos(opts = {}) {
   const limit = opts.limit || 50;
-  const list = videos.list({ isMine: true, limit });
+  // 按发布时间排：翻自己的作品时，期待的是"最新发的在最前面"
+  const list = videos.list({ isMine: true, limit, order: 'publish' });
   const cutoff = opts.days ? Date.now() - opts.days * 24 * 3600 * 1000 : 0;
+  const myUid = safeMyUid();
 
   return list
     .filter(v => !cutoff || (v.lastGetTs || 0) >= cutoff)
-    .map(v => {
-      const total = comments.count({ awemeId: v.awemeId });
-      const replied = comments.count({ awemeId: v.awemeId, replied: true });
-      return {
-        ...v,
-        // 注意别叫 stats —— videos.list() 返回的 stats 是视频自身的互动数据
-        // （播放/点赞/评论/分享），两者语义完全不同，混用会互相覆盖
-        commentStats: {
-          total,
-          replied,
-          pending: Math.max(0, total - replied),
-        },
-      };
-    });
+    .map(v => ({
+      ...v,
+      // 注意别叫 stats —— videos.list() 返回的 stats 是视频自身的互动数据
+      // （播放/点赞/评论/分享），两者语义完全不同，混用会互相覆盖
+      commentStats: comments.statsForVideo(v.awemeId, { excludeUid: myUid }),
+    }));
 }
 
 /** 单个视频的详情 + 本地评论统计 */
 function videoDetail(awemeId) {
   const v = videos.get(awemeId);
   if (!v) return null;
-  const total = comments.count({ awemeId });
-  const replied = comments.count({ awemeId, replied: true });
   return {
     ...v,
-    commentStats: { total, replied, pending: Math.max(0, total - replied) },
+    commentStats: comments.statsForVideo(awemeId, { excludeUid: safeMyUid() }),
   };
+}
+
+/** 取我自己的 uid，拿不到就返回 null（调用方据此跳过相关判断） */
+function safeMyUid() {
+  try { return videos.myUid(); } catch (e) { return null; }
 }
 
 /** 界面上的筛选标签 → listByVideo 的参数 */

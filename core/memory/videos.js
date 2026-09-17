@@ -130,6 +130,15 @@ function get(awemeId) {
   } catch (e) { return null; }
 }
 
+/**
+ * @param {object} [opts]
+ * @param {number} [opts.limit]
+ * @param {boolean} [opts.isMine]
+ * @param {'activity'|'publish'} [opts.order='activity']
+ *   - activity：按"最近拉取/回复过"排。适合"我最近在忙哪个视频"这类视图
+ *   - publish ：按**作品发布时间**排。作品列表用这个 —— 用户翻自己的作品时
+ *     期待的是"最新发的在最前面"，而不是"最近拉取过的在最前面"
+ */
 function list(opts = {}) {
   try {
     const db = getDb();
@@ -137,12 +146,17 @@ function list(opts = {}) {
     const where = ['platform = ?'];
     const params = [PLATFORM];
     if (opts.isMine != null) { where.push('is_mine = ?'); params.push(opts.isMine ? 1 : 0); }
+    // 注意 create_time 是**秒**、last_get_ts 是**毫秒**（见 db.js 的单位约定）。
+    // 两者不在同一个排序键里混用，各自内部比大小没问题。
+    const orderBy = opts.order === 'publish'
+      ? 'COALESCE(create_time, 0) DESC, COALESCE(last_get_ts, last_post_ts, 0) DESC'
+      : 'COALESCE(last_get_ts, last_post_ts, 0) DESC';
     const rows = db.prepare(`
       SELECT aweme_id, title, desc, cover_url, author_uid, is_mine,
              total_comments_seen, last_get_ts, last_post_ts,
              play_count, digg_count, comment_count, share_count, create_time
       FROM videos WHERE ${where.join(' AND ')}
-      ORDER BY COALESCE(last_get_ts, last_post_ts, 0) DESC
+      ORDER BY ${orderBy}
       LIMIT ${limit}
     `).all(...params);
     return rows.map(r => ({

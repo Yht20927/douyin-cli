@@ -25,6 +25,32 @@ function ago(ts) {
 }
 
 /**
+ * 作品发布时间。
+ *
+ * 注意单位：videos.create_time 来自抖音的 create_time，是**秒**
+ * （见 core/memory/db.js 的时间戳约定），要乘 1000 才能交给 Date。
+ *
+ * 用绝对日期而不是"多久之前"：作品的发布时间是一个事实，
+ * 而"3 个月前"这种相对说法在作品列表里没有决策价值，
+ * 反而会和"这条评论多久没处理了"混在一起。
+ */
+function formatPublishDate(seconds) {
+  if (!seconds) return '发布时间未知';
+  const d = new Date(seconds * 1000);
+  if (Number.isNaN(d.getTime())) return '发布时间未知';
+  const now = new Date();
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  // 跨年时带上年份，否则会以为是今年发的
+  return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}年${md}`;
+}
+
+/** 最后拉取时间：这是"我上次同步到哪"，与作品发布时间是两回事，必须标明 */
+function fetchLabel(ms) {
+  if (!ms) return '从未拉取';
+  return `${ago(ms)}拉取`;
+}
+
+/**
  * 封面缩略图。
  *
  * 抖音的图存在 CDN 上，可能因防盗链或网络问题加载失败 —— 失败就降级成
@@ -107,15 +133,22 @@ export default function WorksView({ videos, loading, actions }) {
 
                     <div className="work-meta muted">
                       本地已存 <span className="num">{v.commentStats.total}</span> 条评论
-                      {v.commentStats.pending > 0 && (
-                        <> · <b className="text-strong">待回复 {v.commentStats.pending}</b></>
+                      {/* "我发的"单独标出来：它既不是待回复也不是已回复，
+                          不说明的话"本地 36 条 · 待回复 2"会让人对不上账 */}
+                      {v.commentStats.mine > 0 && (
+                        <> · 其中我发的 <span className="num">{v.commentStats.mine}</span> 条</>
                       )}
-                      {v.commentStats.pending === 0 && v.commentStats.total > 0 && ' · 全部已回复'}
+                      {v.commentStats.pending > 0
+                        ? <> · <b className="text-strong">待回复 {v.commentStats.pending}</b></>
+                        : (v.commentStats.total > 0 && ' · 没有待回复')}
                     </div>
                   </div>
 
+                  {/* 右侧两行都带明确标签。改造前这里只放一个没有标签的时间戳，
+                      而它是"最后拉取评论的时间" —— 落在作品旁边必然被读成发布时间。 */}
                   <div className="work-side">
-                    <div className="muted" style={{ fontSize: 12 }}>{ago(v.lastGetTs)}</div>
+                    <div className="work-date">{formatPublishDate(v.createTime)}</div>
+                    <div className="work-fetch muted">{fetchLabel(v.lastGetTs)}</div>
                     <div className="chev">›</div>
                   </div>
                 </button>
