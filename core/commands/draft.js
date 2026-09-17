@@ -9,6 +9,7 @@
 
 const drafts = require('../memory/drafts');
 const { getFlag } = require('./helpers');
+const logger = require('../runtime/logger');
 
 async function cmdDraft(ctx, args) {
   const sub = args[0];
@@ -19,12 +20,12 @@ async function cmdDraft(ctx, args) {
       const awemeId = getFlag(args, '--video', null);
       const items = drafts.list({ awemeId, posted: false });
       if (items.length === 0) {
-        console.error('没有待发布的草稿');
+        logger.info('没有待发布的草稿');
         return [];
       }
       for (const d of items) {
         const ts = new Date(d.created_at).toISOString().substring(0, 16);
-        console.error(`#${d.id} [${ts}] ${d.aweme_id}${d.reply_to_cid ? ' → ' + d.reply_to_cid : ''}: ${d.text.substring(0, 50)}`);
+        logger.error(`#${d.id} [${ts}] ${d.aweme_id}${d.reply_to_cid ? ' → ' + d.reply_to_cid : ''}: ${d.text.substring(0, 50)}`);
       }
       return items.map(d => ({ id: d.id, aweme_id: d.aweme_id, reply_to_cid: d.reply_to_cid, text: d.text, persona_id: d.persona_id, created_at: d.created_at, posted: d.posted }));
     }
@@ -39,7 +40,7 @@ async function cmdDraft(ctx, args) {
         replyToCid: getFlag(args, '--reply-to', null),
         personaId: getFlag(args, '--persona', null),
       });
-      console.error(`草稿已保存 #${id}`);
+      logger.info(`草稿已保存 #${id}`);
       return { id };
     }
 
@@ -48,7 +49,7 @@ async function cmdDraft(ctx, args) {
       if (!id) throw new Error('用法: node cli.js draft show <draft_id>');
       const d = drafts.get(Number(id));
       if (!d) throw new Error(`草稿 #${id} 不存在`);
-      console.error(JSON.stringify(d, null, 2));
+      logger.error(JSON.stringify(d, null, 2));
       return { id: d.id, aweme_id: d.aweme_id, reply_to_cid: d.reply_to_cid, text: d.text, persona_id: d.persona_id, created_at: d.created_at, posted: d.posted };
     }
 
@@ -63,7 +64,7 @@ async function cmdDraft(ctx, args) {
       if (d.reply_to_cid) postArgs.push('--reply-to', d.reply_to_cid);
       const result = await ctx.cmdPost(postArgs);
       drafts.markPosted(Number(id));
-      console.error(`草稿 #${id} 已发布`);
+      logger.info(`草稿 #${id} 已发布`);
       return result;
     }
 
@@ -71,7 +72,7 @@ async function cmdDraft(ctx, args) {
       const id = args[1];
       if (!id) throw new Error('用法: node cli.js draft delete <draft_id>');
       drafts.remove(Number(id));
-      console.error(`草稿 #${id} 已删除`);
+      logger.info(`草稿 #${id} 已删除`);
       return { deleted: true };
     }
 

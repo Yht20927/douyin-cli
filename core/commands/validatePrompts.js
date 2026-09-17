@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 
 const paths = require('../paths');
+const logger = require('../runtime/logger');
 
 /** 提取模板中的所有占位符 */
 function extractPlaceholders(text) {
@@ -81,7 +82,7 @@ async function cmdValidatePrompts(ctx, args) {
   }
 
   if (files.length === 0) {
-    console.error('没有找到模板文件');
+    logger.error('没有找到模板文件');
     return [];
   }
 
@@ -100,7 +101,7 @@ async function cmdValidatePrompts(ctx, args) {
     if (issue.severity === 'error') hasError = true;
   }
 
-  console.error(`\n共检查 ${new Set(allIssues.map(i => i.file)).size} 个模板`);
+  logger.error(`\n共检查 ${new Set(allIssues.map(i => i.file)).size} 个模板`);
   return { templates: allIssues, hasError };
 }
 

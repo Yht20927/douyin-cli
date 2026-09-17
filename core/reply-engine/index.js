@@ -14,6 +14,7 @@
 
 const { LLMClient } = require('../llm');
 const { PersonaBinder } = require('./persona-binder');
+const logger = require('../runtime/logger');
 const {
   buildGenerateCommentPrompt,
   buildGenerateReplyPrompt,
@@ -192,7 +193,7 @@ class ReplyEngine {
       try {
         return await loadVideoContext(this._bridgeCall, awemeId, { mode });
       } catch (e) {
-        console.warn(`[ReplyEngine] 视频上下文加载失败（${awemeId}），使用 text-only fallback: ${e.message}`);
+        logger.warn(`[ReplyEngine] 视频上下文加载失败（${awemeId}），使用 text-only fallback: ${e.message}`);
       }
     }
     // fallback: 尝试从 videos 表读取
@@ -272,7 +273,7 @@ class ReplyEngine {
       }
     } catch (_) {}
     // fallback：JSON 解析失败，返回空回复并告警
-    console.warn('[ReplyEngine] 无法从 LLM 响应中提取 JSON，返回空回复');
+    logger.warn('[ReplyEngine] 无法从 LLM 响应中提取 JSON，返回空回复');
     return comments.map(c => ({ cid: c.cid, reply: '' }));
   }
 

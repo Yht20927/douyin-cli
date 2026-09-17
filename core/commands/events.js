@@ -15,6 +15,7 @@
 
 const { getFlag } = require('./helpers');
 const events = require('../memory/events');
+const logger = require('../runtime/logger');
 
 async function cmdEvents(ctx, args) {
   const tail = getFlag(args, '--tail', 20);
@@ -40,7 +41,7 @@ async function cmdEvents(ctx, args) {
   }
 
   if (rows.length === 0) {
-    console.log('No matching events.');
+    logger.output('No matching events.');
     return;
   }
 
@@ -52,10 +53,10 @@ async function cmdEvents(ctx, args) {
     if (r.awemeId) tags.push(`v=${r.awemeId}`);
     if (r.uid) tags.push(`u=${r.uid}`);
     if (r.cid) tags.push(`c=${r.cid}`);
-    console.log(`#${r.id} ${icon} [${time}] ${r.command} (${dur}) ${tags.join(' ')}`);
-    if (r.summary && Object.keys(r.summary).length) console.log(`   summary: ${JSON.stringify(r.summary)}`);
-    if (r.error) console.log(`   error:   ${r.error}`);
-    if (r.resultPath) console.log(`   result:  ${r.resultPath}`);
+    logger.output(`#${r.id} ${icon} [${time}] ${r.command} (${dur}) ${tags.join(' ')}`);
+    if (r.summary && Object.keys(r.summary).length) logger.output(`   summary: ${JSON.stringify(r.summary)}`);
+    if (r.error) logger.output(`   error:   ${r.error}`);
+    if (r.resultPath) logger.output(`   result:  ${r.resultPath}`);
   }
 }
 

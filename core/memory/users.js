@@ -7,6 +7,7 @@
 // - 所有写操作 try/catch，SQL 失败返回 null，不影响主流程。
 
 const { getDb } = require('./db');
+const logger = require('../runtime/logger');
 
 const PLATFORM = 'douyin';
 
@@ -50,7 +51,7 @@ function upsert(fields) {
     });
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[users.upsert] failed:', e.message);
+    logger.debug('[users.upsert] failed: ' + e.message);
     return false;
   }
 }
@@ -93,7 +94,7 @@ function upsertMany(entries) {
     });
     return tx(entries);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[users.upsertMany] failed:', e.message);
+    logger.debug('[users.upsertMany] failed: ' + e.message);
     return 0;
   }
 }
@@ -125,7 +126,7 @@ function get(uid) {
       notes: row.notes,
     };
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[users.get] failed:', e.message);
+    logger.debug('[users.get] failed: ' + e.message);
     return null;
   }
 }
@@ -143,7 +144,7 @@ function setTier(uid, tier) {
       .run(tier || null, PLATFORM, uid);
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[users.setTier] failed:', e.message);
+    logger.debug('[users.setTier] failed: ' + e.message);
     return false;
   }
 }
@@ -166,7 +167,7 @@ function addTag(uid, tag) {
     `).run(t, t, t, PLATFORM, String(uid));
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[users.addTag] failed:', e.message);
+    logger.debug('[users.addTag] failed: ' + e.message);
     return false;
   }
 }

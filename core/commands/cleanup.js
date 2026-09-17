@@ -7,6 +7,7 @@ const events = require('../memory/events');
 const comments = require('../memory/comments');
 const corpus = require('../memory/corpus');
 const { withAudit } = require('./helpers');
+const logger = require('../runtime/logger');
 
 async function cmdCleanup(ctx, args) {
   const daysIdx = args.indexOf('--days');
@@ -26,7 +27,7 @@ async function cmdCleanup(ctx, args) {
       if (typeof t.mod.cleanupBefore !== 'function') { result[t.name] = { skipped: true }; continue; }
       const n = t.mod.cleanupBefore(cutoff, { dryRun, limit: 1000 });
       result[t.name] = dryRun ? { would_delete: n } : { deleted: n };
-      console.error(`[cleanup] ${t.name}: ${dryRun ? 'would delete' : 'deleted'} ${n}`);
+      logger.info(`[cleanup] ${t.name}: ${dryRun ? 'would delete' : 'deleted'} ${n}`);
     }
 
     return { summary: result, result: { result }, output: result };

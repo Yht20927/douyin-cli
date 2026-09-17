@@ -7,6 +7,7 @@
 //   node cli.js replied --count         只输出数量
 
 const { getFlag } = require('./helpers');
+const logger = require('../runtime/logger');
 
 let mem = null;
 function memory() {
@@ -14,7 +15,7 @@ function memory() {
     try {
       mem = { comments: require('../memory/comments') };
     } catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[replied] memory unavailable:', e.message);
+      logger.debug('[replied] memory unavailable: ' + e.message);
       mem = false;
     }
   }
@@ -30,7 +31,7 @@ async function cmdReplied(ctx, args) {
   if (!m) {
     const err = new Error('SQLite 记忆层不可用');
     if (asJson || asCount) return { error: err.message };
-    console.error('[replied]', err.message);
+    logger.error('[replied]' + ' ' + err.message);
     return;
   }
 
@@ -39,14 +40,14 @@ async function cmdReplied(ctx, args) {
   if (asCount) {
     const n = rows.length;
     if (asJson) return { count: n };
-    console.log(n);
+    logger.output(n);
     return;
   }
 
   if (asJson) return rows;
 
   // 默认：每行一个 cid（shell 可直接 > /tmp/replied_cids.txt）
-  for (const r of rows) console.log(r.cid);
+  for (const r of rows) logger.output(r.cid);
 }
 
 module.exports = cmdReplied;

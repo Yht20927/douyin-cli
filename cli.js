@@ -20,6 +20,9 @@ const { safeSerialize } = require('./core/shared/serialize');
 // 帮助
 // ═══════════════════════════════════════════════════════════
 
+// 说明：本文件刻意保留两处 console.log（help 文本与最终 JSON 结果）。
+// 它们是 CLI 与终端之间的**直接契约输出**，不是可路由的日志 —— 走 logger
+// 反而会让 help 之类的正常输出混进 app.log。诊断类输出一律经 logger。
 function printHelp() {
   console.log(`
 Douyin Comment CLI (Bridge Framework)

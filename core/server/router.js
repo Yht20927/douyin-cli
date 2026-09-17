@@ -7,6 +7,7 @@
 const { randomUUID } = require('crypto');
 const { validateCallRequest } = require('../shared/protocol');
 const { safeSerialize } = require('../shared/serialize');
+const logger = require('../runtime/logger');
 
 // 允许的 CORS 来源
 const ALLOWED_ORIGINS = [
@@ -124,7 +125,7 @@ class Router {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: 'Not found' }));
     } catch (e) {
-      console.error(`[router] Unhandled error: ${e.message}`);
+      logger.error(`[router] Unhandled error: ${e.message}`);
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: e.message }));
@@ -288,7 +289,7 @@ class Router {
     this.registry.removeStalePolling(site);
     const meta = { url: body.url || '', title: body.title || '', userAgent: body.userAgent || '' };
     const conn = this.registry.register(site, null, meta);
-    console.log(`[router] poll client: ${site} (${conn.id.slice(0, 8)})`);
+    logger.info(`[router] poll client: ${site} (${conn.id.slice(0, 8)})`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, id: conn.id }));
   }

@@ -5,6 +5,7 @@ const http = require('http');
 const crypto = require('crypto');
 
 const configModule = require('./core/config');
+const logger = require('./core/runtime/logger');
 const { ConnectionRegistry } = require('./core/server/registry');
 const { WebSocketHub } = require('./core/server/ws-hub');
 const { Router } = require('./core/server/router');
@@ -15,7 +16,7 @@ const { Router } = require('./core/server/router');
 const config = configModule.get();
 
 for (const w of configModule.getWarnings()) {
-  console.error(`[server] 配置告警 ${w.key}: ${w.message}（已回退为 ${JSON.stringify(w.fallback)}）`);
+  logger.warn(`[server] 配置告警 ${w.key}: ${w.message}（已回退为 ${JSON.stringify(w.fallback)}）`);
 }
 
 // 自动生成 token（如果未配置）。只写用户配置，不把默认值固化进文件。
@@ -23,7 +24,7 @@ if (!config.bridge.token) {
   const token = crypto.randomBytes(24).toString('hex');
   configModule.set({ bridge: { token } });
   config.bridge.token = token;
-  console.error(`[server] 已自动生成 access token 并写入 ${configModule.describe().file}`);
+  logger.info(`[server] 已自动生成 access token 并写入 ${configModule.describe().file}`);
 }
 
 // 初始化组件
@@ -57,16 +58,16 @@ wsHub.attach(httpServer);
 const bridgeHost = config.bridge.host;
 const bridgePort = config.bridge.port;
 httpServer.listen(bridgePort, bridgeHost, () => {
-  console.error(`[server] Bridge Server ready — http://${bridgeHost}:${bridgePort}`);
-  console.error(`[server] Health:  http://${bridgeHost}:${bridgePort}/api/health`);
-  console.error(`[server] Status:  http://${bridgeHost}:${bridgePort}/api/status`);
-  console.error(`[server] WebSocket: ws://${bridgeHost}:${bridgePort}/ws`);
-  console.error('[server] Waiting for Tampermonkey scripts to connect...');
+  logger.info(`[server] Bridge Server ready — http://${bridgeHost}:${bridgePort}`);
+  logger.info(`[server] Health:  http://${bridgeHost}:${bridgePort}/api/health`);
+  logger.info(`[server] Status:  http://${bridgeHost}:${bridgePort}/api/status`);
+  logger.info(`[server] WebSocket: ws://${bridgeHost}:${bridgePort}/ws`);
+  logger.info('[server] Waiting for Tampermonkey scripts to connect...');
 });
 
 // 优雅退出
 async function shutdown() {
-  console.error('\n[server] Shutting down...');
+  logger.info('\n[server] Shutting down...');
   httpServer.close();
   await wsHub.stop();
   process.exit(0);

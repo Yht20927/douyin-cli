@@ -2,6 +2,7 @@
 
 const { escapeExpression, getFlag } = require('./helpers');
 const { safeSerialize } = require('../shared/serialize');
+const logger = require('../runtime/logger');
 
 /**
  * 私信命令
@@ -84,7 +85,7 @@ async function cmdDM(ctx, args) {
     ctx.audit.endOperation('success', { count: messages.length }, { messages });
 
     if (messages.length === 0) {
-      console.log('(超时，未收到新私信)');
+      logger.output('(超时，未收到新私信)');
       return [];
     }
 
@@ -102,7 +103,7 @@ async function cmdDM(ctx, args) {
     ctx.audit.endOperation('success', { count: messages.length }, { messages });
 
     if (messages.length === 0) {
-      console.log('(消息队列为空，请先运行 dm listen)');
+      logger.output('(消息队列为空，请先运行 dm listen)');
       return [];
     }
 

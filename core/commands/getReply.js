@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getFlag } = require('./helpers');
+const logger = require('../runtime/logger');
 
 let memComments = null;
 function commentsModule() {
@@ -148,7 +149,7 @@ async function interactiveReply(engine, opts, ctx) {
   const maxAttempts = 3;
 
   while (true) {
-    console.error(`\n→ ${result.reply.text}`);
+    logger.info(`\n→ ${result.reply.text}`);
     const answer = await ask('\n[y]发布 [e]编辑 [r]重生成 [n]跳过: ');
 
     if (answer === 'y') {
@@ -158,7 +159,7 @@ async function interactiveReply(engine, opts, ctx) {
       const edited = await ask('输入新文本: ');
       if (edited.trim()) {
         result.reply.text = edited.trim();
-        console.error('已更新为:', result.reply.text);
+        logger.info('已更新为: ' + result.reply.text);
       }
       const confirm = await ask('[y]发布编辑后的文本 [n]取消: ');
       if (confirm === 'y') {
@@ -168,11 +169,11 @@ async function interactiveReply(engine, opts, ctx) {
     } else if (answer === 'r') {
       attempt++;
       if (attempt >= maxAttempts) {
-        console.error('已达到最大重试次数');
+        logger.warn('已达到最大重试次数');
         rl.close();
         return { action: 'skip', reply: result.reply };
       }
-      console.error('重新生成中...');
+      logger.info('重新生成中...');
       const currentPersona = result.reply?.persona?.id;
       if (currentPersona) {
         const { pickPersona } = require('../personas');
@@ -222,13 +223,13 @@ async function cmdGetReply(ctx, args) {
     // ── 批量模式：对视频下所有未回复评论生成回复 ──
     const unreplied = loadUnrepliedComments(awemeId, 20);
     if (!unreplied.length) {
-      console.error('[getReply] 没有需要回复的评论（所有评论已回复或缓存为空）。');
-      console.error('[getReply] 提示：先运行 node cli.js get <aweme_id> 拉取评论。');
+      logger.info('[getReply] 没有需要回复的评论（所有评论已回复或缓存为空）。');
+      logger.error('[getReply] 提示：先运行 node cli.js get <aweme_id> 拉取评论。');
       ctx.audit.endOperation('success', { replies: 0, awemeId });
       return [];
     }
 
-    console.error(`[getReply] 批量生成 ${unreplied.length} 条回复...`);
+    logger.info(`[getReply] 批量生成 ${unreplied.length} 条回复...`);
     const result = await engine.generateReplies({
       awemeId,
       comments: unreplied.map(c => ({ cid: c.cid, text: c.text || '', userTags: _loadUserTags(c.uid) })),
@@ -236,7 +237,7 @@ async function cmdGetReply(ctx, args) {
     });
 
     for (const r of result.replies) {
-      console.error(`[${r.persona?.name || 'default'}] ${r.text}`);
+      logger.error(`[${r.persona?.name || 'default'}] ${r.text}`);
     }
 
     ctx.audit.endOperation('success', { replies: result.replies.length, awemeId });
@@ -248,7 +249,7 @@ async function cmdGetReply(ctx, args) {
       throw new Error(`评论 ${cid} 未在缓存中。请先运行: node cli.js get ${awemeId}`);
     }
 
-    console.error(`[getReply] 生成对 ${cid} 的回复...`);
+    logger.info(`[getReply] 生成对 ${cid} 的回复...`);
     // 构建线程上下文（父评论链）
     let parentComment = null;
     if (comment.parentCid) {
@@ -270,11 +271,11 @@ async function cmdGetReply(ctx, args) {
         try {
           const postArgs = [awemeId, decision.reply.text, '--reply-to', String(cid)];
           const postResult = await ctx.cmdPost(postArgs);
-          console.error(`[getReply] 已发布: ${decision.reply.text?.substring(0, 30)}...`);
+          logger.info(`[getReply] 已发布: ${decision.reply.text?.substring(0, 30)}...`);
           ctx.audit.endOperation('success', { awemeId, cid, posted: true, persona: decision.reply.persona?.name });
           return { ...decision, posted: true, postCid: postResult.cid };
         } catch (e) {
-          console.error(`[getReply] 发布失败: ${e.message}`);
+          logger.error(`[getReply] 发布失败: ${e.message}`);
           ctx.audit.endOperation('error', { awemeId, cid }, null, e.message);
           return { ...decision, posted: false, error: e.message };
         }
@@ -284,18 +285,18 @@ async function cmdGetReply(ctx, args) {
     }
 
     const result = await engine.generateReply(replyOpts);
-    console.log(result.reply.text);
+    logger.output(result.reply.text);
     ctx.audit.endOperation('success', { awemeId, cid, persona: result.reply.persona?.name });
     return stripContext(result);
   } else {
     // ── 评论模式：生成视频的顶级评论 ──
-    console.error(`[getReply] 生成 ${count} 条视频评论...`);
+    logger.info(`[getReply] 生成 ${count} 条视频评论...`);
     const result = await engine.generateComment({
       awemeId, persona, count, strategy,
     });
 
     for (const c of result.comments) {
-      console.error(`[${c.persona?.name || 'default'}] ${c.text}`);
+      logger.error(`[${c.persona?.name || 'default'}] ${c.text}`);
     }
 
     ctx.audit.endOperation('success', { awemeId, count: result.comments.length });

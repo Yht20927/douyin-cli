@@ -160,16 +160,26 @@ function customSink(handler, name = 'custom') {
 // Logger
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 默认级别：DOUYIN_DEBUG 未设时丢弃 debug 级。
+ *
+ * 改造前散落着大量 `if (process.env.DOUYIN_DEBUG) console.warn(...)` 的手写守卫，
+ * 换成 logger.debug() 后由这里统一承担，调用点不必再重复判断。
+ */
+function defaultLevel() {
+  return process.env.DOUYIN_DEBUG ? 'debug' : 'info';
+}
+
 class Logger {
   /**
    * @param {object} opts
    * @param {Array} [opts.sinks]     - sink 列表
-   * @param {string} [opts.level]    - 最低级别（debug/info/warn/error）
+   * @param {string} [opts.level]    - 最低级别（debug/info/warn/error），缺省跟随 DOUYIN_DEBUG
    * @param {object} [opts.context]  - 附加到每条记录的上下文（如 { taskId, command }）
    */
   constructor(opts = {}) {
     this.sinks = opts.sinks || [];
-    this.level = opts.level || 'info';
+    this.level = opts.level || defaultLevel();
     this.context = opts.context || {};
   }
 
@@ -268,6 +278,7 @@ module.exports = {
   getLogger,
   configure,
   reset,
+  defaultLevel,
   // sink 工厂
   consoleSink,
   fileSink,

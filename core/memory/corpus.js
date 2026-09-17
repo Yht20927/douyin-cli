@@ -10,6 +10,7 @@
 
 const { getDb } = require('./db');
 const { hashText, normalizeText } = require('./comments');
+const logger = require('../runtime/logger');
 
 const PLATFORM = 'douyin';
 
@@ -56,7 +57,7 @@ function append(fields) {
     });
     return info.lastInsertRowid;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[corpus.append] failed:', e.message);
+    logger.debug('[corpus.append] failed: ' + e.message);
     return null;
   }
 }
@@ -194,7 +195,7 @@ function cleanupBefore(ts, opts = {}) {
     const limit = opts.limit || 1000;
     return db.prepare('DELETE FROM reply_corpus WHERE platform = ? AND posted_at < ? LIMIT ?').run(PLATFORM, ts, limit).changes;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[corpus.cleanupBefore] failed:', e.message);
+    logger.debug('[corpus.cleanupBefore] failed: ' + e.message);
     return 0;
   }
 }

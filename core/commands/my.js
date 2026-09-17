@@ -2,6 +2,7 @@
 
 const { getFlag, withAudit } = require('./helpers');
 const videos = require('../memory/videos');
+const logger = require('../runtime/logger');
 
 /**
  * 获取我的作品列表
@@ -31,7 +32,7 @@ async function cmdMy(ctx, args) {
         if (it.aweme_id) videos.upsert({ awemeId: it.aweme_id, title: it.desc, isMine: true });
       }
     } catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[my.persist] failed:', e.message);
+      logger.debug('[my.persist] failed: ' + e.message);
     }
 
     return { summary: { count: items.length }, result: { result: items }, output: items };

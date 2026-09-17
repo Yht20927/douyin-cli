@@ -5,6 +5,7 @@ const path = require('path');
 const { getFlag } = require('./helpers');
 const commentsRepo = require('../memory/comments');
 const paths = require('../paths');
+const logger = require('../runtime/logger');
 
 /**
  * LLM 分析评论
@@ -24,14 +25,14 @@ async function cmdAnalyze(ctx, args) {
   ctx.audit.startOperation('analyze', { aweme_id: awemeId, force });
 
   // 先获取评论
-  console.error('正在获取评论...');
+  logger.info('正在获取评论...');
   let commentsData = await ctx.cmdGet([awemeId, '--all', '--depth', '0']);
 
   // cid 一生一次：默认跳过已回复评论（--force 覆盖），避免重复分析浪费 token
   if (!force) {
     const before = commentsData.length;
     commentsData = commentsData.filter(c => !commentsRepo.get(String(c.cid))?.replied);
-    if (process.env.DOUYIN_DEBUG) console.error(`[analyze] 过滤已回复: ${before} → ${commentsData.length}`);
+    logger.debug(`[analyze] 过滤已回复: ${before} → ${commentsData.length}`);
   }
 
   if (!commentsData || commentsData.length === 0) {
@@ -39,12 +40,12 @@ async function cmdAnalyze(ctx, args) {
     return [];
   }
 
-  console.error(`正在分析 ${commentsData.length} 条评论...`);
+  logger.info(`正在分析 ${commentsData.length} 条评论...`);
   const client = new llm.LLMClient(ctx.config.llm || {});
 
   let results;
   if (effectiveMode !== 'text-only') {
-    console.error(`[analyze] 多模态模式: ${effectiveMode}`);
+    logger.info(`[analyze] 多模态模式: ${effectiveMode}`);
     const { loadVideoContext } = require('../reply-engine/video-context');
     const { buildAnalyzePrompt } = require('../reply-engine/prompt-builder');
 
@@ -53,9 +54,9 @@ async function cmdAnalyze(ctx, args) {
       vctx = await loadVideoContext(ctx.bridgeCall, awemeId, {
         mode: effectiveMode, screenshotCount, forceRefresh: force,
       });
-      console.error(`[analyze] 视频上下文已加载`);
+      logger.info(`[analyze] 视频上下文已加载`);
     } catch (e) {
-      console.error(`[analyze] 视频上下文加载失败，降级到 text-only: ${e.message}`);
+      logger.error(`[analyze] 视频上下文加载失败，降级到 text-only: ${e.message}`);
     }
 
     const promptData = buildAnalyzePrompt({
@@ -70,7 +71,7 @@ async function cmdAnalyze(ctx, args) {
   }
 
   if (!results || results.length === 0) {
-    console.error('警告: LLM 未返回分析结果');
+    logger.error('警告: LLM 未返回分析结果');
   }
 
   // 把原始评论 text 合并到分析结果中（供 suggest 使用）
@@ -93,9 +94,9 @@ async function cmdAnalyze(ctx, args) {
         }
       }
     }
-    if (process.env.DOUYIN_DEBUG) console.error(`[analyze] persisted ${written}/${results.length} analyses`);
+    logger.debug(`[analyze] persisted ${written}/${results.length} analyses`);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[cmdAnalyze.persist] failed:', e.message);
+    logger.debug('[cmdAnalyze.persist] failed: ' + e.message);
   }
 
   ctx.audit.endOperation('success', { analyzed: results.length }, {

@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const paths = require('./paths');
+const logger = require('./runtime/logger');
 
 // 延迟加载，避免 better-sqlite3 加载失败时整个 audit 模块挂掉
 let _events = null;
@@ -14,7 +15,7 @@ function eventsModule() {
   if (_events === null) {
     try { _events = require('./memory/events'); }
     catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[audit] events module unavailable:', e.message);
+      logger.debug('[audit] events module unavailable: ' + e.message);
       _events = false;
     }
   }

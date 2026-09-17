@@ -10,6 +10,7 @@
 // 从 xiaohongshu-cli 移植，平台无关通用设计。
 
 const { pickPersona, findPersona } = require('../personas');
+const logger = require('../runtime/logger');
 
 class PersonaBinder {
   constructor() {
@@ -40,7 +41,7 @@ class PersonaBinder {
         return p;
       }
       // 人格不存在时告警
-      console.warn(`[PersonaBinder] 人格 "${opts.forcePersona}" 不存在，回退到自动选择`);
+      logger.warn(`[PersonaBinder] 人格 "${opts.forcePersona}" 不存在，回退到自动选择`);
     }
 
     // 已绑定 → 复用

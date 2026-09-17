@@ -1,6 +1,7 @@
 // lib/server/registry.js — 连接注册表（site → connections[]）
 
 const { randomUUID } = require('crypto');
+const logger = require('../runtime/logger');
 
 class ConnectionRegistry {
   constructor() {
@@ -32,7 +33,7 @@ class ConnectionRegistry {
     }
     this._map.get(site).push(conn);
 
-    console.log(`[registry] + ${site} (${conn.id.slice(0, 8)}) — total: ${this._countSite(site)}`);
+    logger.info(`[registry] + ${site} (${conn.id.slice(0, 8)}) — total: ${this._countSite(site)}`);
     return conn;
   }
 
@@ -55,7 +56,7 @@ class ConnectionRegistry {
     }
     const removed = before - remaining.length;
     if (removed > 0) {
-      console.log(`[registry] Cleaned ${removed} stale polling connection(s) for ${site}`);
+      logger.info(`[registry] Cleaned ${removed} stale polling connection(s) for ${site}`);
     }
     return removed;
   }
@@ -70,7 +71,7 @@ class ConnectionRegistry {
       );
       if (idx !== -1) {
         const removed = conns.splice(idx, 1)[0];
-        console.log(`[registry] - ${site} (${removed.id.slice(0, 8)}) — remaining: ${conns.length}`);
+        logger.info(`[registry] - ${site} (${removed.id.slice(0, 8)}) — remaining: ${conns.length}`);
         if (conns.length === 0) {
           this._map.delete(site);
         }

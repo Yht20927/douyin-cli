@@ -21,7 +21,7 @@ function getMemory() {
       };
       _memoryFailed = false;
     } catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[context-scope] 记忆层加载失败:', e.message);
+      logger.debug('[context-scope] 记忆层加载失败: ' + e.message);
       _memory = false;
       _memoryFailed = true;
     }
@@ -72,7 +72,7 @@ function buildScopedContext(awemeId, opts = {}) {
     const botReplies = m.corpus.recent({ awemeId, limit: 10 });
     myRepliesOnVideo = botReplies.map(r => r.replyText).filter(Boolean).slice(0, 10);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[context-scope] L1 查询失败:', e.message);
+    logger.debug('[context-scope] L1 查询失败: ' + e.message);
   }
 
   // L2: Global 成功语料（仅取有 srcText 的回复对，过滤无上下文的独立回复）
@@ -82,13 +82,13 @@ function buildScopedContext(awemeId, opts = {}) {
     // 优先取有 srcText 的（回复对），没有 srcText 的独立回复不适合做 few-shot
     globalCorpus = allRecent.filter(c => c.srcText).slice(0, 5);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[context-scope] L2 查询失败:', e.message);
+    logger.debug('[context-scope] L2 查询失败: ' + e.message);
   }
 
   // L3: Global failures
   let failures = [];
   try { failures = m.failures.top(5); } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[context-scope] L3 查询失败:', e.message);
+    logger.debug('[context-scope] L3 查询失败: ' + e.message);
   }
 
   // User Memory: 加载评论者画像（用于回复时个性化）
@@ -96,6 +96,7 @@ function buildScopedContext(awemeId, opts = {}) {
   if (opts.commentUid) {
     try {
       const users = require('../memory/users');
+const logger = require('../runtime/logger');
       const u = users.get(opts.commentUid);
       if (u) {
         userProfile = {
@@ -109,7 +110,7 @@ function buildScopedContext(awemeId, opts = {}) {
         };
       }
     } catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[context-scope] User Memory 查询失败:', e.message);
+      logger.debug('[context-scope] User Memory 查询失败: ' + e.message);
     }
   }
 

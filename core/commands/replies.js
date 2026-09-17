@@ -2,6 +2,7 @@
 
 const { getFlag, formatComment, escapeExpression, withAudit } = require('./helpers');
 const comments = require('../memory/comments');
+const logger = require('../runtime/logger');
 
 /**
  * 获取单条评论的回复列表
@@ -39,7 +40,7 @@ async function cmdReplies(ctx, args) {
         }));
       if (entries.length) comments.upsertMany(entries);
     } catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[replies.persist] failed:', e.message);
+      logger.debug('[replies.persist] failed: ' + e.message);
     }
 
     return { summary: { count: items.length }, result: { comments: items }, output: items };

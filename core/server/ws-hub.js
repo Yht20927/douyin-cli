@@ -2,6 +2,7 @@
 
 const { WebSocketServer } = require('ws');
 const { WS_CLIENT_MSG, WS_SERVER_MSG, validateHello, validateResult } = require('../shared/protocol');
+const logger = require('../runtime/logger');
 
 class WebSocketHub {
   /**
@@ -47,7 +48,7 @@ class WebSocketHub {
 
       // 等待第一条消息（必须是 hello）
       const helloTimeout = setTimeout(() => {
-        console.error('[ws-hub] Connection did not send hello in time, closing');
+        logger.error('[ws-hub] Connection did not send hello in time, closing');
         ws.close(4001, 'hello timeout');
       }, 10000);
 
@@ -56,14 +57,14 @@ class WebSocketHub {
         try {
           msg = JSON.parse(data.toString());
         } catch (e) {
-          console.error('[ws-hub] Invalid JSON from client');
+          logger.error('[ws-hub] Invalid JSON from client');
           return;
         }
 
         // 第一条消息必须是 hello
         if (!connId) {
           if (msg.type !== WS_CLIENT_MSG.HELLO) {
-            console.error(`[ws-hub] First message must be hello, got "${msg.type}"`);
+            logger.error(`[ws-hub] First message must be hello, got "${msg.type}"`);
             ws.close(4002, 'hello required first');
             return;
           }
@@ -71,7 +72,7 @@ class WebSocketHub {
 
           const result = validateHello(msg);
           if (!result.valid) {
-            console.error(`[ws-hub] Invalid hello: ${result.error}`);
+            logger.error(`[ws-hub] Invalid hello: ${result.error}`);
             ws.close(4003, result.error);
             return;
           }
@@ -126,15 +127,15 @@ class WebSocketHub {
       });
 
       ws.on('error', (err) => {
-        console.error(`[ws-hub] WebSocket error (${connId || 'unregistered'}): ${err.message}`);
+        logger.error(`[ws-hub] WebSocket error (${connId || 'unregistered'}): ${err.message}`);
       });
     });
 
     this._wss.on('error', (err) => {
-      console.error(`[ws-hub] Server error: ${err.message}`);
+      logger.error(`[ws-hub] Server error: ${err.message}`);
     });
 
-    console.error(`[ws-hub] Attached to HTTP server`);
+    logger.error(`[ws-hub] Attached to HTTP server`);
   }
 
   /**
@@ -198,7 +199,7 @@ class WebSocketHub {
 
       const hb = this._heartbeats.get(connId);
       if (hb && hb.failures >= this.heartbeatMaxFailures) {
-        console.error(`[ws-hub] Heartbeat lost for ${connId.slice(0, 8)}, closing`);
+        logger.error(`[ws-hub] Heartbeat lost for ${connId.slice(0, 8)}, closing`);
         this._stopHeartbeat(connId);
         try { ws.close(4004, 'heartbeat lost'); } catch (e) { /* */ }
         return;

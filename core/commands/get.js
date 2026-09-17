@@ -4,6 +4,7 @@ const { escapeExpression, getFlag, formatComment } = require('./helpers');
 const users = require('../memory/users');
 const comments = require('../memory/comments');
 const videos = require('../memory/videos');
+const logger = require('../runtime/logger');
 
 // 回复拉取并发数上限
 const REPLY_CONCURRENCY = 3;
@@ -73,7 +74,7 @@ function persistEntities(rawComments, awemeId) {
     });
     tx();
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[persistEntities] tx failed:', e.message);
+    logger.debug('[persistEntities] tx failed: ' + e.message);
     return { users: 0, comments: 0 };
   }
   return { users: uCount, comments: cCount };
@@ -139,7 +140,7 @@ async function cmdGet(ctx, args) {
   let cutoff = null;
   if (isNew) {
     cutoff = ctx.audit.findLastFetchTime(awemeId);
-    if (!cutoff) console.error('[info] 无历史记录，执行全量拉取');
+    if (!cutoff) logger.info('[info] 无历史记录，执行全量拉取');
   } else if (since) {
     cutoff = Number(since);
   }
@@ -204,7 +205,7 @@ async function cmdGet(ctx, args) {
     persistEntities(forPersist, awemeId);
     videos.markGet(awemeId, allComments.length);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[cmdGet.persist] failed:', e.message);
+    logger.debug('[cmdGet.persist] failed: ' + e.message);
   }
 
   // 清理 _rawChildren，确保 formatComment 输出干净

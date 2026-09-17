@@ -22,6 +22,7 @@
 //   读间隔仍由 agent 在命令间自行遵守（preflight 会给出建议）。
 
 const config = require('./config');
+const logger = require('./runtime/logger');
 
 // 默认间隔（秒）。单一真源已迁到 core/config 的 DEFAULTS.intervals，
 // 这里保留同名导出仅为向后兼容（外部无引用，见 grep DEFAULT_INTERVALS）。
@@ -68,7 +69,7 @@ function lastWriteTs() {
     `).get();
     return (row && row.ms) || 0;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[risk-control.lastWriteTs] failed:', e.message);
+    logger.debug('[risk-control.lastWriteTs] failed: ' + e.message);
     return 0;
   }
 }
@@ -115,7 +116,7 @@ async function enforceDelay(type = 'write', opts = {}) {
   const need = msUntilNextWrite();
   if (need > 0) {
     const sinceLast = last ? Math.round((Date.now() - last) / 1000) : 0;
-    console.error(`⏳ [risk-control] 距上次写仅 ${sinceLast}s，强制等待 ${Math.ceil(need / 1000)}s（下限 ${intervals[0]}s）...`);
+    logger.info(`⏳ [risk-control] 距上次写仅 ${sinceLast}s，强制等待 ${Math.ceil(need / 1000)}s（下限 ${intervals[0]}s）...`);
     await sleep(need);
   }
 
@@ -126,7 +127,7 @@ async function enforceDelay(type = 'write', opts = {}) {
     const targetTotal = randomInt(intervals[0], intervals[1]);
     const extra = Math.max(0, Math.round(targetTotal - elapsedSec));
     if (extra > 0) {
-      console.error(`⏳ [risk-control] 叠加随机节奏，再等 ${extra}s（目标总间隔 ${targetTotal}s）...`);
+      logger.info(`⏳ [risk-control] 叠加随机节奏，再等 ${extra}s（目标总间隔 ${targetTotal}s）...`);
       await sleep(extra * 1000);
     }
   }
@@ -194,7 +195,7 @@ function hasRecentRiskBlock(windowMs = 300000) {
     `).get(since);
     return !!row;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[risk-control.hasRecentRiskBlock] failed:', e.message);
+    logger.debug('[risk-control.hasRecentRiskBlock] failed: ' + e.message);
     return false;
   }
 }
@@ -226,7 +227,7 @@ function preflightPublish({ cid, uid, replyText } = {}) {
     }
     if (hasRecentRiskBlock()) blockers.push({ reason: 'recent_status_block_5min', action: 'postpone' });
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[risk-control.preflightPublish] failed:', e.message);
+    logger.debug('[risk-control.preflightPublish] failed: ' + e.message);
   }
   return { ok: blockers.length === 0, blockers };
 }

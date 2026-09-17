@@ -2,6 +2,7 @@
 
 const { getFlag } = require('./helpers');
 const events = require('../memory/events');
+const logger = require('../runtime/logger');
 
 /**
  * 查看操作日志
@@ -38,14 +39,14 @@ async function cmdLog(ctx, args) {
     const argsView = op.args && Object.keys(op.args).length
       ? op.args
       : pickIds(op);
-    console.log(`${icon} [${startStr}] ${op.command} ${JSON.stringify(argsView)} ${dur}`);
+    logger.output(`${icon} [${startStr}] ${op.command} ${JSON.stringify(argsView)} ${dur}`);
     if (op.summary && Object.keys(op.summary).length) {
-      console.log(`   summary: ${JSON.stringify(op.summary)}`);
+      logger.output(`   summary: ${JSON.stringify(op.summary)}`);
     }
-    if (op.error) console.log(`   error: ${op.error}`);
-    if (op.resultPath || op.resultFile) console.log(`   result: ${op.resultPath || op.resultFile}`);
+    if (op.error) logger.output(`   error: ${op.error}`);
+    if (op.resultPath || op.resultFile) logger.output(`   result: ${op.resultPath || op.resultFile}`);
   }
-  if (recent.length === 0) console.log('No matching operations found.');
+  if (recent.length === 0) logger.output('No matching operations found.');
 }
 
 /** 当 args 为空但行级有 awemeId/uid/cid 时合成显示，便于人眼和过滤验证 */

@@ -4,6 +4,7 @@
 // audit.json 仍由 audit.js 同步双写，作为只读灾备快照。
 
 const { getDb } = require('./db');
+const logger = require('../runtime/logger');
 
 /**
  * 追加一条事件。返回 lastInsertRowid，失败返回 null（不抛异常，避免污染主流程）。
@@ -51,7 +52,7 @@ function append(evt) {
     return info.lastInsertRowid;
   } catch (e) {
     // SQLite 出问题不应阻塞 CLI，audit.json 仍是真实之源
-    if (process.env.DOUYIN_DEBUG) console.warn('[events.append] failed:', e.message);
+    logger.debug('[events.append] failed: ' + e.message);
     return null;
   }
 }
@@ -89,7 +90,7 @@ function query(filters = {}, opts = {}) {
     const rows = db.prepare(sql).all(params);
     return rows.map(rowToEvent);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[events.query] failed:', e.message);
+    logger.debug('[events.query] failed: ' + e.message);
     return [];
   }
 }
@@ -108,7 +109,7 @@ function findLastFetchTime(awemeId) {
     `).get(awemeId);
     return row && row.ms ? Math.floor(row.ms / 1000) : null;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[events.findLastFetchTime] failed:', e.message);
+    logger.debug('[events.findLastFetchTime] failed: ' + e.message);
     return null;
   }
 }
@@ -140,7 +141,7 @@ function cleanupBefore(ts, opts = {}) {
     const limit = opts.limit || 1000;
     return db.prepare('DELETE FROM events WHERE ts < ? LIMIT ?').run(ts, limit).changes;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[events.cleanupBefore] failed:', e.message);
+    logger.debug('[events.cleanupBefore] failed: ' + e.message);
     return 0;
   }
 }

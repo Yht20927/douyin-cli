@@ -6,6 +6,7 @@
 
 const { escapeExpression, getFlag } = require('./helpers');
 const videos = require('../memory/videos');
+const logger = require('../runtime/logger');
 
 const SEC_UID_RE = /^MS4wLjAB[A-Za-z0-9_-]+$/;
 
@@ -73,7 +74,7 @@ async function cmdUser(ctx, args) {
       if (it.aweme_id) videos.upsert({ awemeId: it.aweme_id, title: it.desc, authorUid: user.uid, isMine: false });
     }
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[user.persist] failed:', e.message);
+    logger.debug('[user.persist] failed: ' + e.message);
   }
 
   const result = {

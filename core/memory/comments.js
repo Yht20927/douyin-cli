@@ -8,6 +8,7 @@
 
 const crypto = require('crypto');
 const { getDb } = require('./db');
+const logger = require('../runtime/logger');
 
 const PLATFORM = 'douyin';
 
@@ -43,7 +44,7 @@ function upsert(fields) {
     _upsertStmt(db).run(_paramsFor(fields));
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[comments.upsert] failed:', e.message);
+    logger.debug('[comments.upsert] failed: ' + e.message);
     return false;
   }
 }
@@ -67,7 +68,7 @@ function upsertMany(entries) {
     });
     return tx(entries);
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[comments.upsertMany] failed:', e.message);
+    logger.debug('[comments.upsertMany] failed: ' + e.message);
     return 0;
   }
 }
@@ -124,7 +125,7 @@ function markReplied(cid, awemeId, replyCid) {
       .run(replyCid || null, PLATFORM, cid);
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[comments.markReplied] failed:', e.message);
+    logger.debug('[comments.markReplied] failed: ' + e.message);
     return false;
   }
 }
@@ -140,7 +141,7 @@ function setAnalysis(cid, { sentiment, priority }) {
       .run(sentiment || null, priority != null ? Number(priority) : null, PLATFORM, cid);
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[comments.setAnalysis] failed:', e.message);
+    logger.debug('[comments.setAnalysis] failed: ' + e.message);
     return false;
   }
 }
@@ -262,7 +263,7 @@ function cleanupBefore(ts, opts = {}) {
     const limit = opts.limit || 1000;
     return db.prepare('DELETE FROM comments WHERE platform = ? AND last_seen < ? LIMIT ?').run(PLATFORM, ts, limit).changes;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[comments.cleanupBefore] failed:', e.message);
+    logger.debug('[comments.cleanupBefore] failed: ' + e.message);
     return 0;
   }
 }
@@ -293,7 +294,7 @@ function listReplied(filters = {}, opts = {}) {
       lastSeen: r.last_seen,
     }));
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[comments.listReplied] failed:', e.message);
+    logger.debug('[comments.listReplied] failed: ' + e.message);
     return [];
   }
 }

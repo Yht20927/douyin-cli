@@ -6,6 +6,7 @@
 // - 失败不抛，返回 false/null。
 
 const { getDb } = require('./db');
+const logger = require('../runtime/logger');
 
 const PLATFORM = 'douyin';
 
@@ -53,7 +54,7 @@ function upsert(fields) {
     });
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[videos.upsert] failed:', e.message);
+    logger.debug('[videos.upsert] failed: ' + e.message);
     return false;
   }
 }

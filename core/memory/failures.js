@@ -7,6 +7,7 @@
 // - 目的：① 给 suggest 注入「避雷清单」；② 后续 P4 自适应风控查询冷却期使用。
 
 const { getDb } = require('./db');
+const logger = require('../runtime/logger');
 
 const PLATFORM = 'douyin';
 
@@ -65,7 +66,7 @@ function record(input, opts = {}) {
     });
     return true;
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[failures.record] failed:', e.message);
+    logger.debug('[failures.record] failed: ' + e.message);
     return false;
   }
 }

@@ -21,6 +21,7 @@ const commentsRepo = require('../memory/comments');
 const { maybeDelay, jitter } = require('../jitter');
 const riskControl = require('../risk-control');
 const { pickPersona } = require('../personas');
+const logger = require('../runtime/logger');
 
 const CORPUS_FEWSHOT_LIMIT = 20;
 const FAILURE_TOP_LIMIT = 10;
@@ -68,10 +69,10 @@ async function collectSuggestions(ctx, opts) {
   const { awemeId, force, fast, minPriority } = opts;
 
   // 先分析
-  console.error('正在分析评论...');
+  logger.info('正在分析评论...');
   const analysis = await ctx.cmdAnalyze([awemeId, ...(force ? ['--force'] : [])]);
   if (!analysis || analysis.length === 0) {
-    console.error('没有需要回复的评论。');
+    logger.info('没有需要回复的评论。');
     return [];
   }
 
@@ -103,7 +104,7 @@ async function collectSuggestions(ctx, opts) {
   const histFailures = failures.top(FAILURE_TOP_LIMIT);
   const avoidTexts = histCorpus.slice(0, AVOID_LIMIT).map(c => c.replyText).filter(Boolean);
 
-  console.error(`[suggest] 注入历史: corpus=${histCorpus.length} failures=${histFailures.length} avoid=${avoidTexts.length}`);
+  logger.info(`[suggest] 注入历史: corpus=${histCorpus.length} failures=${histFailures.length} avoid=${avoidTexts.length}`);
 
   const llm = require('../llm');
   const client = new llm.LLMClient(ctx.config.llm || {});
@@ -116,13 +117,13 @@ async function collectSuggestions(ctx, opts) {
   // 随机选择人格
   const persona = pickPersona();
   if (process.env.DOUYIN_DEBUG) {
-    console.error(`[suggest] 使用人格: ${persona.name} (temp=${persona.temperature.toFixed(2)})`);
+    logger.info(`[suggest] 使用人格: ${persona.name} (temp=${persona.temperature.toFixed(2)})`);
   }
 
   let suggestions;
   if (opts.effectiveMode !== 'text-only') {
     // ── 多模态路径：加载视频上下文 → 构建 prompt → 调用 LLM ──
-    console.error(`[suggest] 多模态模式: ${opts.effectiveMode} (截图数: ${opts.screenshotCount})`);
+    logger.info(`[suggest] 多模态模式: ${opts.effectiveMode} (截图数: ${opts.screenshotCount})`);
     const { loadVideoContext } = require('../reply-engine/video-context');
     const { buildSuggestPrompt } = require('../reply-engine/prompt-builder');
 
@@ -133,9 +134,9 @@ async function collectSuggestions(ctx, opts) {
         screenshotCount: opts.screenshotCount,
         forceRefresh: force,
       });
-      console.error(`[suggest] 视频上下文已加载: "${vctx.title?.substring(0, 40) || '未知'}"`);
+      logger.info(`[suggest] 视频上下文已加载: "${vctx.title?.substring(0, 40) || '未知'}"`);
     } catch (e) {
-      console.error(`[suggest] 视频上下文加载失败，降级到 text-only: ${e.message}`);
+      logger.error(`[suggest] 视频上下文加载失败，降级到 text-only: ${e.message}`);
     }
 
     const promptData = buildSuggestPrompt({
@@ -147,7 +148,7 @@ async function collectSuggestions(ctx, opts) {
       strategyText: (strategy || '自然亲切').substring(0, 500),
     });
 
-    console.error(`[suggest] 多模态 prompt: system=${promptData.systemPrompt.length}chars user=${promptData.userPrompt.length}chars images=${promptData.images.length}`);
+    logger.info(`[suggest] 多模态 prompt: system=${promptData.systemPrompt.length}chars user=${promptData.userPrompt.length}chars images=${promptData.images.length}`);
     suggestions = await client.suggestRepliesMultiModal(promptData);
   } else {
     // ── 传统路径：经 prompt-builder（prompts/suggest.md 单一真源）──
@@ -174,7 +175,7 @@ async function rewriteDuplicates(client, suggestions, toReply, strategy, persona
   }
   if (dupCids.size === 0) return;
 
-  console.error(`[suggest] ${dupCids.size} 条命中已发过的回复，调用 LLM 重写...`);
+  logger.info(`[suggest] ${dupCids.size} 条命中已发过的回复，调用 LLM 重写...`);
   for (const s of suggestions) {
     if (!dupCids.has(s.cid)) continue;
     try {
@@ -192,7 +193,7 @@ async function rewriteDuplicates(client, suggestions, toReply, strategy, persona
         s._duplicate = true;
       }
     } catch (e) {
-      if (process.env.DOUYIN_DEBUG) console.warn('[suggest] rewrite failed:', e.message);
+      logger.debug('[suggest] rewrite failed: ' + e.message);
       s._duplicate = true;
     }
   }
@@ -213,7 +214,7 @@ function circuitBreakerStatus() {
     `).get(windowStart).n;
     return { open: failCount >= 3, failCount };
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[suggest] 断路器查询失败:', e.message);
+    logger.debug('[suggest] 断路器查询失败: ' + e.message);
     return { open: false, failCount: 0 };
   }
 }
@@ -237,7 +238,7 @@ async function autoPublish(ctx, awemeId, suggestions, opts) {
     // 二次护栏：仍然命中已发过，跳过
     if (corpus.findByText(s.reply)) {
       results.push({ ...s, posted: false, error: '命中已发回复，跳过', skipped: true });
-      console.error(`✗ 跳过（已发过）: ${s.reply.slice(0, 30)}...`);
+      logger.warn(`✗ 跳过（已发过）: ${s.reply.slice(0, 30)}...`);
       continue;
     }
 
@@ -248,7 +249,7 @@ async function autoPublish(ctx, awemeId, suggestions, opts) {
         const fatigue = 1 + (Math.random() * 0.15 * postedCount);
         nextDelay = jitter(opts.basePostIntervalMs * fatigue, 0.20);
       }
-      console.error(`⏳ 等待 ${Math.round(nextDelay / 1000)}s 后发布下一条... (${postedCount + 1}/${autoList.length})`);
+      logger.info(`⏳ 等待 ${Math.round(nextDelay / 1000)}s 后发布下一条... (${postedCount + 1}/${autoList.length})`);
       await new Promise(r => setTimeout(r, nextDelay));
     }
 
@@ -256,10 +257,10 @@ async function autoPublish(ctx, awemeId, suggestions, opts) {
       const postResult = await ctx.cmdPost([s.aweme_id || awemeId, s.reply, '--reply-to', String(s.cid), '--no-throttle']);
       results.push({ ...s, posted: true, post_cid: postResult.cid });
       postedCount++;
-      console.error(`✓ 已发布 ${postedCount}/${autoList.length}: ${s.reply.slice(0, 30)}...`);
+      logger.info(`✓ 已发布 ${postedCount}/${autoList.length}: ${s.reply.slice(0, 30)}...`);
     } catch (e) {
       results.push({ ...s, posted: false, error: e.message });
-      console.error(`✗ 发布失败: ${e.message}`);
+      logger.warn(`✗ 发布失败: ${e.message}`);
     }
   }
 
@@ -300,7 +301,7 @@ async function cmdSuggest(ctx, args) {
   if (auto) {
     const cb = circuitBreakerStatus();
     if (cb.open) {
-      console.error(`[suggest] ⚠️ 风控断路器触发：10 分钟内 post 失败 ${cb.failCount} 次，暂停自动发布。请检查后手动重试。`);
+      logger.error(`[suggest] ⚠️ 风控断路器触发：10 分钟内 post 失败 ${cb.failCount} 次，暂停自动发布。请检查后手动重试。`);
       const skipped = suggestions.map(s => ({ ...s, skipped_circuit_breaker: true }));
       ctx.audit.endOperation('success', {
         suggested: suggestions.length, posted: 0, circuit_breaker: `post_fail_${cb.failCount}`,

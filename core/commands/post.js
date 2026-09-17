@@ -8,6 +8,7 @@ const corpus = require('../memory/corpus');
 const failures = require('../memory/failures');
 const riskControl = require('../risk-control');
 const { collectImageArgs, uploadImageViaBridge } = require('../comment-image');
+const logger = require('../runtime/logger');
 
 /**
  * 发表评论或回复
@@ -150,7 +151,7 @@ async function cmdPost(ctx, args) {
       });
     }
   } catch (e) {
-    if (process.env.DOUYIN_DEBUG) console.warn('[cmdPost.persist] failed:', e.message);
+    logger.debug('[cmdPost.persist] failed: ' + e.message);
   }
 
   ctx.audit.endOperation('success', { cid: result.cid }, { result });

@@ -17,6 +17,7 @@ const { escapeExpression } = require('../commands/helpers');
 // ── 配置 ──
 
 const paths = require('../paths');
+const logger = require('../runtime/logger');
 const SCREENSHOT_BASE64_LIMIT = 6; // 最多编码多少帧送 LLM
 const DOWNLOAD_TIMEOUT_MS = 120000;
 
@@ -80,14 +81,14 @@ async function loadVideoContext(bridgeCall, awemeId, opts = {}) {
     try {
       const screenshots = await extractScreenshots(ctx.videoUrl, awemeId, screenshotCount);
       ctx.screenshotB64 = screenshots;
-      console.error(`[video-context] 截图模式: 已提取 ${screenshots.length} 帧`);
+      logger.error(`[video-context] 截图模式: 已提取 ${screenshots.length} 帧`);
     } catch (e) {
-      console.error(`[video-context] 截图提取失败，回退到 text-only: ${e.message}`);
+      logger.error(`[video-context] 截图提取失败，回退到 text-only: ${e.message}`);
       ctx.mode = 'text-only'; // 降级
     }
   } else if (mode === 'video' && ctx.videoUrl) {
     // video 模式：保留 videoUrl 供 LLM 使用
-    console.error(`[video-context] 视频模式: URL 已就绪`);
+    logger.error(`[video-context] 视频模式: URL 已就绪`);
   } else if (mode === 'text-only' || !ctx.videoUrl) {
     ctx.mode = 'text-only';
   }

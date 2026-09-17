@@ -9,6 +9,7 @@
 
 const config = require('./config');
 const { sanitizeComment, stripQuotes } = require('./shared/sanitize');
+const logger = require('./runtime/logger');
 
 // 分批大小：防止评论过多导致 token 超限
 const BATCH_SIZE = 50;
@@ -136,7 +137,7 @@ class LLMClient {
     if (images.length > 0 && this._supportsVision()) {
       finalMessages = this._injectImagesOpenAI(messages, images);
     } else if (images.length > 0 && !this._supportsVision()) {
-      console.error(`[llm] 当前模型 ${this.model} 不支持视觉，跳过 ${images.length} 张截图`);
+      logger.warn(`[llm] 当前模型 ${this.model} 不支持视觉，跳过 ${images.length} 张截图`);
     }
 
     const headers = { 'Content-Type': 'application/json' };
@@ -285,7 +286,7 @@ class LLMClient {
           || /HTTP 5\d\d/.test(lastError.message);
         if (attempt < this.maxRetries && isTransient) {
           const delay = Math.min(1000 * Math.pow(2, attempt) * (0.5 + Math.random()), 30000);
-          console.error(`[llm] 重试 ${attempt}/${this.maxRetries} (${Math.round(delay)}ms): ${e.message}`);
+          logger.warn(`[llm] 重试 ${attempt}/${this.maxRetries} (${Math.round(delay)}ms): ${e.message}`);
           await new Promise(r => setTimeout(r, delay));
         } else if (attempt < this.maxRetries && !isTransient) {
           break;
@@ -340,7 +341,7 @@ class LLMClient {
     const batches = chunk(comments, BATCH_SIZE);
 
     if (batches.length > 1) {
-      console.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批处理`);
+      logger.info(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批处理`);
     }
 
     const { buildAnalyzePrompt } = require('./reply-engine/prompt-builder');
@@ -349,7 +350,7 @@ class LLMClient {
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       if (batches.length > 1) {
-        console.error(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
+        logger.error(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
       }
 
       const sanitized = batch.map(c => ({ cid: c.cid, text: sanitizeComment(c.text) }));
@@ -392,7 +393,7 @@ class LLMClient {
 
     const batches = chunk(comments, BATCH_SIZE);
     if (batches.length > 1) {
-      console.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批生成回复`);
+      logger.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批生成回复`);
     }
 
     const { buildSuggestPrompt } = require('./reply-engine/prompt-builder');
@@ -408,7 +409,7 @@ class LLMClient {
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       if (batches.length > 1) {
-        console.error(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
+        logger.error(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
       }
 
       const { systemPrompt, userPrompt } = buildSuggestPrompt({
@@ -468,7 +469,7 @@ class LLMClient {
 
     const batches = chunk(comments, BATCH_SIZE);
     if (batches.length > 1) {
-      console.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批处理（多模态）`);
+      logger.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批处理（多模态）`);
     }
 
     const { buildAnalyzePrompt } = require('./reply-engine/prompt-builder');
