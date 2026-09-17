@@ -82,7 +82,7 @@ async function cmdValidatePrompts(ctx, args) {
   }
 
   if (files.length === 0) {
-    logger.error('没有找到模板文件');
+    logger.info('没有找到模板文件');
     return [];
   }
 
@@ -101,7 +101,7 @@ async function cmdValidatePrompts(ctx, args) {
     if (issue.severity === 'error') hasError = true;
   }
 
-  logger.error(`\n共检查 ${new Set(allIssues.map(i => i.file)).size} 个模板`);
+  logger.info(`\n共检查 ${new Set(allIssues.map(i => i.file)).size} 个模板`);
   return { templates: allIssues, hasError };
 }
 

@@ -25,7 +25,7 @@ async function cmdDraft(ctx, args) {
       }
       for (const d of items) {
         const ts = new Date(d.created_at).toISOString().substring(0, 16);
-        logger.error(`#${d.id} [${ts}] ${d.aweme_id}${d.reply_to_cid ? ' → ' + d.reply_to_cid : ''}: ${d.text.substring(0, 50)}`);
+        logger.info(`#${d.id} [${ts}] ${d.aweme_id}${d.reply_to_cid ? ' → ' + d.reply_to_cid : ''}: ${d.text.substring(0, 50)}`);
       }
       return items.map(d => ({ id: d.id, aweme_id: d.aweme_id, reply_to_cid: d.reply_to_cid, text: d.text, persona_id: d.persona_id, created_at: d.created_at, posted: d.posted }));
     }
@@ -49,7 +49,7 @@ async function cmdDraft(ctx, args) {
       if (!id) throw new Error('用法: node cli.js draft show <draft_id>');
       const d = drafts.get(Number(id));
       if (!d) throw new Error(`草稿 #${id} 不存在`);
-      logger.error(JSON.stringify(d, null, 2));
+      logger.info(JSON.stringify(d, null, 2));
       return { id: d.id, aweme_id: d.aweme_id, reply_to_cid: d.reply_to_cid, text: d.text, persona_id: d.persona_id, created_at: d.created_at, posted: d.posted };
     }
 

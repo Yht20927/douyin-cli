@@ -219,7 +219,7 @@ async function cmdGetReply(ctx, args) {
     const unreplied = loadUnrepliedComments(awemeId, 20);
     if (!unreplied.length) {
       logger.info('[getReply] 没有需要回复的评论（所有评论已回复或缓存为空）。');
-      logger.error('[getReply] 提示：先运行 node cli.js get <aweme_id> 拉取评论。');
+      logger.info('[getReply] 提示：先运行 node cli.js get <aweme_id> 拉取评论。');
       ctx.audit.endOperation('success', { replies: 0, awemeId });
       return [];
     }
@@ -232,7 +232,7 @@ async function cmdGetReply(ctx, args) {
     });
 
     for (const r of result.replies) {
-      logger.error(`[${r.persona?.name || 'default'}] ${r.text}`);
+      logger.info(`[${r.persona?.name || 'default'}] ${r.text}`);
     }
 
     ctx.audit.endOperation('success', { replies: result.replies.length, awemeId });
@@ -291,7 +291,7 @@ async function cmdGetReply(ctx, args) {
     });
 
     for (const c of result.comments) {
-      logger.error(`[${c.persona?.name || 'default'}] ${c.text}`);
+      logger.info(`[${c.persona?.name || 'default'}] ${c.text}`);
     }
 
     ctx.audit.endOperation('success', { awemeId, count: result.comments.length });

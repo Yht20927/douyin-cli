@@ -153,6 +153,68 @@ describe('决策树：已回复与用户分级', () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════
+// 自己发的评论
+//
+// 评论区里"我以作者身份发出的回复"也会作为评论被拉回来。不排掉的话，
+// 工作台里满屏都是自己说过的话，还会提示去回复自己 —— 用户实测反馈
+// 某个视频 36 条"评论"里有 25 条其实是他自己发的回复。
+// ═══════════════════════════════════════════════════════════
+
+describe('决策树：自己的评论不回复', () => {
+  const MY = '1179139456380456';
+
+  it('uid 是我自己的 → 跳过，且原因写明', () => {
+    const r = f.classify(
+      { cid: 'c', uid: MY, text: '这个是怎么做到的？' },   // 内容本身是"该回复"的
+      { myUid: MY }
+    );
+    expect(r.action).toBe('skip');
+    expect(r.reason).toContain('我自己');
+  });
+
+  it('优先级最高：即便命中优先信号也跳过', () => {
+    const r = f.classify(
+      { cid: 'c', uid: MY, text: '这个怎么做的？我照着做失败了很失望' },
+      { myUid: MY }
+    );
+    expect(r.action).toBe('skip');
+  });
+
+  it('uid 是别人的照常判定', () => {
+    const r = f.classify(
+      { cid: 'c', uid: 'other', text: '这个是怎么做到的？' },
+      { myUid: MY }
+    );
+    expect(r.action).toBe('reply');
+  });
+
+  it('拿不到 myUid 时不误判（宁可少判也不能把别人当成我）', () => {
+    const r = f.classify(
+      { cid: 'c', uid: MY, text: '这个是怎么做到的？' },
+      {}                      // 没有 myUid
+    );
+    expect(r.action).toBe('reply');
+  });
+
+  it('关闭 skipOwnComments 后自己发的也参与判定', () => {
+    const filters = { ...F, skipOwnComments: false };
+    const r = f.classify(
+      { cid: 'c', uid: MY, text: '这个是怎么做到的？' },
+      { filters, myUid: MY }
+    );
+    expect(r.action).toBe('reply');
+  });
+
+  it('uid 类型不一致（数字 / 字符串）也能匹配上', () => {
+    const r = f.classify(
+      { cid: 'c', uid: 1179139456380456, text: '这个怎么做的' },
+      { myUid: MY }
+    );
+    expect(r.action).toBe('skip');
+  });
+});
+
 describe('表情回复候选', () => {
   it('按映射表给出对应候选', () => {
     expect(f.pickEmojiReply('❤️')).toEqual(['🌹', '❤️']);

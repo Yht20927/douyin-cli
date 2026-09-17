@@ -367,11 +367,13 @@ function createPolicyEngine(opts = {}) {
   // ═══════════════════════════════════════════════════════════
 
   /**
-   * 判定一条评论该怎么处理（已自动接上"是否已回复过"与用户分级）。
+   * 判定一条评论该怎么处理（已自动接上"是否已回复过"、用户分级、"是不是我自己发的"）。
    * @param {object} comment - { cid, text, uid, is_sticker? }
    */
   function classify(comment) {
-    return filters.classify(comment, { isReplied, userTier });
+    let myUid = null;
+    try { myUid = require('../memory/videos').myUid(); } catch (e) { /* 拿不到就跳过该判断 */ }
+    return filters.classify(comment, { isReplied, userTier, myUid });
   }
 
   /** 校验待发布的回复文本 */

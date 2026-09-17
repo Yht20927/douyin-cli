@@ -64,6 +64,25 @@ function persistEntities(rawComments, awemeId) {
     }
   }
   walk(rawComments, null);
+
+  // ── 推断"已经被我回复过" ──
+  // 拉取时带上嵌套回复（--depth 1），所以如果某条评论下面出现了**我发的回复**，
+  // 那这条评论显然已经被我回过了。这能覆盖"直接在抖音 App 里手工回复、
+  // 本地没有记录"的情况 —— 否则界面会一直提示去回复一条早就回过的评论。
+  //
+  // 判定依据是我的 uid（来自 videos.author_uid，由 `my` 命令写入）。
+  // 拿不到 myUid 时整段跳过：宁可少标，也不能误把别人的回复当成我的。
+  const inferred = [];
+  let myUid = null;
+  try { myUid = videos.myUid(); } catch (e) { /* 无 myUid 则跳过推断 */ }
+  if (myUid) {
+    for (const e of commentEntries) {
+      if (e.parentCid && e.uid && String(e.uid) === myUid) {
+        inferred.push({ parentCid: e.parentCid, replyCid: e.cid });
+      }
+    }
+  }
+
   // 单事务包住 users + comments upsert（原子，崩溃不留半成品）
   let uCount = 0, cCount = 0;
   try {
@@ -72,13 +91,20 @@ function persistEntities(rawComments, awemeId) {
     const tx = db.transaction(() => {
       uCount = users.upsertMany(userEntries);
       cCount = comments.upsertMany(commentEntries);
+      // 必须放在 upsert 之后：父评论得先存在，markReplied 才是在真实行上置位
+      for (const it of inferred) {
+        comments.markReplied(it.parentCid, String(awemeId), it.replyCid);
+      }
     });
     tx();
+    if (inferred.length > 0) {
+      logger.info(`[get] 推断出 ${inferred.length} 条评论此前已被我回复过（评论区内有我的回复）`);
+    }
   } catch (e) {
     logger.debug('[persistEntities] tx failed: ' + e.message);
     return { users: 0, comments: 0 };
   }
-  return { users: uCount, comments: cCount };
+  return { users: uCount, comments: cCount, inferredReplied: inferred.length };
 }
 
 /**

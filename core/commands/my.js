@@ -38,6 +38,11 @@ async function cmdMy(ctx, args) {
         if (!a.aweme_id) continue;
         videos.upsert({
           awemeId: a.aweme_id,
+          // author_uid 是**识别"我自己的评论"的唯一依据**：
+          // 视频是我的 → 该视频的作者就是我 → 评论区里 uid 等于它的都是我自己发的。
+          // 改造前这个字段从没被写入过，于是无法把自己的评论（含自己发出的回复）
+          // 从待回复列表里摘出去。
+          authorUid: a.author?.uid ? String(a.author.uid) : null,
           // title 保持截断（列表页展示用），desc 存全文
           title: (a.desc || '').substring(0, 80) || null,
           desc: a.desc || null,

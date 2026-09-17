@@ -166,10 +166,39 @@ function list(opts = {}) {
   } catch (e) { return []; }
 }
 
+/**
+ * 取"我自己的 uid"。
+ *
+ * 依据：is_mine=1 的视频，其 author_uid 就是我。由 `my` 命令写入。
+ * 这是识别"我自己的评论"的唯一途径 —— 评论区的每条评论都带 author uid，
+ * 与它相同的就是我发的（包括我以作者身份发出的回复）。
+ *
+ * 注意：只有跑过一次 `my`（界面上的「刷新列表」）之后才有值。
+ * 没有值时返回 null，调用方应据此跳过"自己的评论"这层判断，而不是误判成别人。
+ *
+ * @returns {string|null}
+ */
+function myUid() {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT author_uid, count(*) AS n
+      FROM videos
+      WHERE platform = ? AND is_mine = 1 AND author_uid IS NOT NULL
+      GROUP BY author_uid
+      ORDER BY n DESC
+      LIMIT 1
+    `).get(PLATFORM);
+    return row && row.author_uid ? String(row.author_uid) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function count() {
   try {
     return getDb().prepare(`SELECT count(*) AS n FROM videos WHERE platform = ?`).get(PLATFORM).n;
   } catch (e) { return 0; }
 }
 
-module.exports = { upsert, markGet, markPost, get, list, count };
+module.exports = { upsert, markGet, markPost, get, list, count, myUid };

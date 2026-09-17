@@ -81,14 +81,14 @@ async function loadVideoContext(bridgeCall, awemeId, opts = {}) {
     try {
       const screenshots = await extractScreenshots(ctx.videoUrl, awemeId, screenshotCount);
       ctx.screenshotB64 = screenshots;
-      logger.error(`[video-context] 截图模式: 已提取 ${screenshots.length} 帧`);
+      logger.info(`[video-context] 截图模式: 已提取 ${screenshots.length} 帧`);
     } catch (e) {
       logger.error(`[video-context] 截图提取失败，回退到 text-only: ${e.message}`);
       ctx.mode = 'text-only'; // 降级
     }
   } else if (mode === 'video' && ctx.videoUrl) {
     // video 模式：保留 videoUrl 供 LLM 使用
-    logger.error(`[video-context] 视频模式: URL 已就绪`);
+    logger.info(`[video-context] 视频模式: URL 已就绪`);
   } else if (mode === 'text-only' || !ctx.videoUrl) {
     ctx.mode = 'text-only';
   }

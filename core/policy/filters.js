@@ -131,6 +131,7 @@ function pickEmojiReply(text, filters) {
  * @param {object}   [opts.filters]    - 覆盖 config.filters（测试用）
  * @param {Function} [opts.isReplied]  - (cid) => boolean，缺省不做已回复判定
  * @param {Function} [opts.userTier]   - (uid) => 'vip'|'normal'|'blacklist'|'spam'|null
+ * @param {string}   [opts.myUid]      - 我自己的 uid（用于排掉自己发的评论）
  * @returns {{action:'reply'|'emoji_reply'|'skip', reason:string, signals:string[], emojiCandidates?:string[]}}
  */
 function classify(comment, opts = {}) {
@@ -141,6 +142,13 @@ function classify(comment, opts = {}) {
   const cid = comment && comment.cid;
   const text = (comment && comment.text) || '';
   const uid = comment && comment.uid;
+
+  // ── 0. 自己发的评论（优先级最高）──
+  // 我以作者身份发出的回复也会作为评论被拉回来；不排掉就会出现
+  // "自己的回复被当成交互对象"这种明显的错误。
+  if (f.skipOwnComments && opts.myUid && uid && String(uid) === String(opts.myUid)) {
+    return { action: 'skip', reason: '这是我自己发的评论', signals: [] };
+  }
 
   // ── 1. 已回复过（一生一次，跨日跨轮）──
   if (f.skipReplied && isReplied(cid)) {

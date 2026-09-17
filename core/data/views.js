@@ -74,6 +74,11 @@ function slimUser(u) {
  */
 function decideAll(rows) {
   const userMap = loadUsers(rows.map(r => r.uid));
+  // 我自己的 uid：用于排掉"我发的评论"与我发出的回复（见 core/memory/videos.myUid）。
+  // 拿不到（还没跑过 `my`）时不传，决策树会跳过这层判断而不是误判。
+  let myUid = null;
+  try { myUid = videos.myUid(); } catch (e) { /* 忽略 */ }
+
   const out = new Map();
   for (const r of rows) {
     const u = userMap.get(String(r.uid));
@@ -83,6 +88,7 @@ function decideAll(rows) {
         // 行上已有 replied 列，直接用它，不再回查数据库
         isReplied: (cid) => cid === r.cid && !!r.replied,
         userTier: () => (u && u.tier) || null,
+        myUid,
       }
     );
     out.set(r.cid, decision);

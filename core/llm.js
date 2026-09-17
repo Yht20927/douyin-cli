@@ -350,7 +350,7 @@ class LLMClient {
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       if (batches.length > 1) {
-        logger.error(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
+        logger.info(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
       }
 
       const sanitized = batch.map(c => ({ cid: c.cid, text: sanitizeComment(c.text) }));
@@ -393,7 +393,7 @@ class LLMClient {
 
     const batches = chunk(comments, BATCH_SIZE);
     if (batches.length > 1) {
-      logger.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批生成回复`);
+      logger.info(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批生成回复`);
     }
 
     const { buildSuggestPrompt } = require('./reply-engine/prompt-builder');
@@ -409,7 +409,7 @@ class LLMClient {
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       if (batches.length > 1) {
-        logger.error(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
+        logger.info(`[llm] 处理第 ${i + 1}/${batches.length} 批 (${batch.length} 条)...`);
       }
 
       const { systemPrompt, userPrompt } = buildSuggestPrompt({
@@ -469,7 +469,7 @@ class LLMClient {
 
     const batches = chunk(comments, BATCH_SIZE);
     if (batches.length > 1) {
-      logger.error(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批处理（多模态）`);
+      logger.info(`[llm] 评论 ${comments.length} 条，分 ${batches.length} 批处理（多模态）`);
     }
 
     const { buildAnalyzePrompt } = require('./reply-engine/prompt-builder');

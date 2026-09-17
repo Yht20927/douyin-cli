@@ -190,6 +190,53 @@ describe('评论列表与判定', () => {
   }));
 });
 
+describe('自己的评论不出现在待回复里', () => {
+  it('videos.myUid() 从自己的视频里取作者 uid', withTempEnv({}, async ({ vids }) => {
+    expect(vids.myUid()).toBeNull();          // 还没有 my 过
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, authorUid: 'me123' });
+    expect(vids.myUid()).toBe('me123');
+  }));
+
+  it('别人的视频不影响 myUid', withTempEnv({}, async ({ vids }) => {
+    vids.upsert({ awemeId: 'other', title: 'X', isMine: false, authorUid: 'someone' });
+    expect(vids.myUid()).toBeNull();
+  }));
+
+  it('我自己发的评论被判定为跳过', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, authorUid: 'me123' });
+    addComment(cmts, 'v1', 'mine1', '这个是怎么做到的？', { uid: 'me123' });
+    addComment(cmts, 'v1', 'other1', '这个是怎么做到的？', { uid: 'someone' });
+
+    const list = views.listComments('v1');
+    const by = Object.fromEntries(list.map(c => [c.cid, c.decision]));
+
+    expect(by.mine1.action).toBe('skip');
+    expect(by.mine1.reason).toContain('我自己');
+    expect(by.other1.action).toBe('reply');
+  }));
+
+  it('我发出的回复（作为子评论拉回来）同样被跳过', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, authorUid: 'me123' });
+    addComment(cmts, 'v1', 'parent', '这个是怎么做到的？', { uid: 'someone' });
+    cmts.upsert({ cid: 'myreply', awemeId: 'v1', uid: 'me123', text: '我回你了', parentCid: 'parent' });
+
+    const list = views.listComments('v1');
+    const mine = list.find(c => c.cid === 'myreply');
+    expect(mine.decision.action).toBe('skip');
+    expect(mine.decision.reason).toContain('我自己');
+  }));
+
+  it('判定分布里"我自己发的"计入 skip 而不是 reply', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, authorUid: 'me123' });
+    addComment(cmts, 'v1', 'a', '这个怎么做的？', { uid: 'me123' });
+    addComment(cmts, 'v1', 'b', '这个怎么做的？', { uid: 'other' });
+
+    const s = views.videoStats('v1');
+    expect(s.byDecision.skip).toBe(1);
+    expect(s.byDecision.reply).toBe(1);
+  }));
+});
+
 // ═══════════════════════════════════════════════════════════
 // 时间戳单位
 //

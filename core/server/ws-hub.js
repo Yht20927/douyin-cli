@@ -135,7 +135,7 @@ class WebSocketHub {
       logger.error(`[ws-hub] Server error: ${err.message}`);
     });
 
-    logger.error(`[ws-hub] Attached to HTTP server`);
+    logger.info(`[ws-hub] Attached to HTTP server`);
   }
 
   /**

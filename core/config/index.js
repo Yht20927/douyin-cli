@@ -131,6 +131,13 @@ const DEFAULTS = {
   filters: {
     /** 同一个 cid 只回复一次（一生一次，跨日跨轮生效） */
     skipReplied: true,
+    /**
+     * 跳过自己发的评论。
+     * 评论区里我以作者身份发出的回复也会作为评论被拉回来，它们同样带 uid，
+     * 不排掉就会被当成交互对象、甚至自己回复自己。
+     * 判定依据是 videos.author_uid（由 `my` 命令写入），见 core/memory/videos.myUid()。
+     */
+    skipOwnComments: true,
     /** 跳过贴纸评论 */
     skipSticker: true,
     /** 跳过无意义水评 */

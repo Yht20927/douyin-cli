@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld('dy', {
     cancel: (id) => ipcRenderer.invoke('queue:cancel', id),
     /** 取消所有尚未开始的任务 */
     cancelPending: () => ipcRenderer.invoke('queue:cancel-pending'),
+    /**
+     * 取某个任务的完整结果（按需调用）。
+     * 「生成回复」的产出就是一段文本，队列状态里只有摘要，拿不到正文。
+     */
+    result: (id) => ipcRenderer.invoke('queue:result', id),
     /** 订阅队列变化，返回取消订阅函数 */
     onChanged: (cb) => subscribe('queue:changed', cb),
   },
