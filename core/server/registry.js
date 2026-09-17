@@ -1,12 +1,47 @@
-// lib/server/registry.js — 连接注册表（site → connections[]）
+// core/server/registry.js — 连接注册表（site → connections[]）
+//
+// 两条连接通道：
+//   - WebSocket：页面刷新/关闭有 close 事件，`readyState` 就能判断死活
+//   - HTTP 长轮询（生产实际走这条）：**没有 close 事件**，页面被关掉后
+//     服务端不会收到任何通知
+//
+// 因此长轮询连接的存活必须靠"最后活跃时间"推断：油猴脚本在长轮询返回后
+// 会立刻再发起下一次（router 侧 25 秒超时），所以健康客户端的 lastActivity
+// 至少每 25 秒被 touch 一次。超过阈值没动静，就判定它已经死了。
+//
+// 改造前这里是 `alive: c.ws ? c.ws.readyState === 1 : true` —— 长轮询一律 true，
+// 于是关掉抖音页面后界面永远显示"已连接"，离线告警完全失效。
 
 const { randomUUID } = require('crypto');
 const logger = require('../runtime/logger');
 
+/**
+ * 长轮询连接多久没活跃就判定死亡。
+ * 依据：router 的 /api/poll 长轮询超时是 25 秒，健康客户端每 ≤25 秒 touch 一次，
+ * 45 秒留出接近一倍的余量（覆盖网络抖动与客户端重连退避的初始阶段）。
+ */
+const DEFAULT_STALE_AFTER_MS = 45000;
+
 class ConnectionRegistry {
-  constructor() {
+  /**
+   * @param {object} [options]
+   * @param {number} [options.staleAfterMs] - 长轮询连接的失活阈值（测试可注入短值）
+   */
+  constructor(options = {}) {
     /** @type {Map<string, Array<{ id: string, ws: import('ws'), site: string, url: string, title: string, userAgent: string, connectedAt: string, lastActivity: string }>>} */
     this._map = new Map();
+    this.staleAfterMs = options.staleAfterMs || DEFAULT_STALE_AFTER_MS;
+  }
+
+  /**
+   * 连接是否还活着。
+   * @param {object} conn
+   * @returns {boolean}
+   */
+  isAlive(conn) {
+    if (conn.ws) return conn.ws.readyState === 1;
+    const age = Date.now() - new Date(conn.lastActivity).getTime();
+    return age <= this.staleAfterMs;
   }
 
   /**
@@ -90,10 +125,11 @@ class ConnectionRegistry {
   get(site, index = 0) {
     const conns = this._map.get(site);
     if (!conns || conns.length === 0) return null;
-    // WS 优先，HTTP 轮询兜底
-    const wsAlive = conns.filter(c => c.ws && c.ws.readyState === 1);
-    if (wsAlive.length > 0) return wsAlive[Math.min(index, wsAlive.length - 1)] || null;
-    // 无 WS 连接时返回 HTTP 轮询客户端
+    // 优先挑活着的：WS 通道天然优先，长轮询则看最后活跃时间。
+    // 全都不活时仍返回一个（保持既有行为：让请求走队列并最终超时，
+    // 调用方拿到的是"超时"而不是"找不到站点"）。
+    const alive = conns.filter(c => this.isAlive(c));
+    if (alive.length > 0) return alive[Math.min(index, alive.length - 1)] || null;
     return conns[Math.min(index, conns.length - 1)] || null;
   }
 
@@ -155,7 +191,7 @@ class ConnectionRegistry {
         title: c.title,
         connectedAt: c.connectedAt,
         lastActivity: c.lastActivity,
-        alive: c.ws ? c.ws.readyState === 1 : true,
+        alive: this.isAlive(c),
       }));
     }
     return result;

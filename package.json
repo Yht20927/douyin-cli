@@ -22,7 +22,7 @@
     "cli",
     "sqlite"
   ],
-  "main": "cli.js",
+  "main": "app/main/index.js",
   "bin": {
     "dy": "./cli.js"
   },
@@ -37,23 +37,29 @@
     "post": "node cli.js post",
     "like": "node cli.js like",
     "delete-comment": "node cli.js delete-comment",
-    "download": "node cli.js download",
     "my": "node cli.js my",
     "analyze": "node cli.js analyze",
     "suggest": "node cli.js suggest",
-    "dashboard": "node cli.js dashboard",
     "log": "node cli.js log",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "app:renderer": "vite build --config app/renderer/vite.config.mjs",
+    "app:dev": "vite --config app/renderer/vite.config.mjs",
+    "app:start": "npm run app:renderer && electron --no-sandbox app/main/index.js",
+    "app:run": "electron --no-sandbox app/main/index.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
     "electron": "^40.9.3",
     "protobufjs": "^8.6.4",
     "protobufjs-cli": "^2.5.5",
+    "vite": "^8.3.0",
     "vitest": "^4.1.8"
   }
 }

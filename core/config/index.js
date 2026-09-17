@@ -35,6 +35,10 @@ const paths = require('../paths');
 // ═══════════════════════════════════════════════════════════
 
 const DEFAULTS = {
+  app: {
+    // 关窗口时最小化到托盘而不是退出（定时拉取要求应用常驻）
+    minimizeToTray: true,
+  },
   bridge: {
     host: '127.0.0.1',
     port: 19422,
@@ -45,6 +49,13 @@ const DEFAULTS = {
     requestTimeout: 30000,
     // 抖音搜索结果等大响应可能远超 1MB，默认 64MB
     maxBodySize: 67108864,
+    // 连接健康监测：桌面应用据此在界面上显示"已连接/离线"
+    connectionWatch: {
+      // 轮询 /api/status 的间隔
+      pollIntervalSec: 5,
+      // 连续多久没有活跃连接就判定为离线并提示
+      offlineAlertSec: 60,
+    },
   },
   llm: {
     api_key: '',
@@ -161,10 +172,22 @@ function validate(cfg) {
     setByPath(cfg, key, deepClone(fallback));
   };
 
+  // app
+  if (typeof getByPath(cfg, 'app.minimizeToTray') !== 'boolean') {
+    fail('app.minimizeToTray', '需为布尔值', DEFAULTS.app.minimizeToTray);
+  }
+
   // bridge
+  // 注意端口 0 是合法的（表示由系统分配空闲端口），故下限为 0
   const port = getByPath(cfg, 'bridge.port');
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    fail('bridge.port', `端口需为 1-65535 的整数，实际为 ${JSON.stringify(port)}`, DEFAULTS.bridge.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    fail('bridge.port', `端口需为 0-65535 的整数（0 表示由系统分配），实际为 ${JSON.stringify(port)}`, DEFAULTS.bridge.port);
+  }
+  for (const k of ['pollIntervalSec', 'offlineAlertSec']) {
+    const v = getByPath(cfg, `bridge.connectionWatch.${k}`);
+    if (!isPositiveNumber(v)) {
+      fail(`bridge.connectionWatch.${k}`, `需为正数，实际为 ${JSON.stringify(v)}`, DEFAULTS.bridge.connectionWatch[k]);
+    }
   }
   for (const k of ['heartbeatInterval', 'requestTimeout']) {
     const v = getByPath(cfg, `bridge.${k}`);
