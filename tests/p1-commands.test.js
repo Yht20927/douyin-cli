@@ -21,13 +21,13 @@ function withTempProject(fn) {
     process.env.DOUYIN_LOG_DIR = path.join(tmp, 'logs');
     process.chdir(tmp);
     [
-      '../lib/memory/db', '../lib/memory/events', '../lib/audit',
-      '../lib/commands/log', '../lib/commands/profile', '../lib/commands/events',
+      '../core/memory/db', '../core/memory/events', '../core/audit',
+      '../core/commands/log', '../core/commands/profile', '../core/commands/events',
     ].forEach(m => delete require.cache[require.resolve(m)]);
     try {
       await fn(tmp);
     } finally {
-      try { require('../lib/memory/db').closeDb(); } catch (e) { /* */ }
+      try { require('../core/memory/db').closeDb(); } catch (e) { /* */ }
       process.chdir(origCwd);
       if (origStorageEnv == null) delete process.env.DOUYIN_STORAGE_DIR;
       else process.env.DOUYIN_STORAGE_DIR = origStorageEnv;
@@ -49,8 +49,8 @@ function captureLog(fn) {
 
 describe('P1: cmdLog (SQL path)', () => {
   it('按 --video --failed --command 过滤', withTempProject(async () => {
-    const events = require('../lib/memory/events');
-    const cmdLog = require('../lib/commands/log');
+    const events = require('../core/memory/events');
+    const cmdLog = require('../core/commands/log');
     events.append({ ts: 1000, command: 'get',  status: 'success', awemeId: 'v1' });
     events.append({ ts: 2000, command: 'post', status: 'error',   awemeId: 'v1', error: 'risk' });
     events.append({ ts: 3000, command: 'like', status: 'success', awemeId: 'v2' });
@@ -70,7 +70,7 @@ describe('P1: cmdLog (SQL path)', () => {
   }));
 
   it('events 表为空时回退 audit.json', withTempProject(async () => {
-    const cmdLog = require('../lib/commands/log');
+    const cmdLog = require('../core/commands/log');
     const fakeAudit = { load: () => ({
       sessions: [{ operations: [{ command: 'search', status: 'success', args: { keyword: 'k' }, started: '2026-01-01T00:00:00.000Z' }] }],
     }) };
@@ -81,8 +81,8 @@ describe('P1: cmdLog (SQL path)', () => {
 
 describe('P1: cmdProfile (SQL path)', () => {
   it('uid 精确匹配 events 表', withTempProject(async () => {
-    const events = require('../lib/memory/events');
-    const cmdProfile = require('../lib/commands/profile');
+    const events = require('../core/memory/events');
+    const cmdProfile = require('../core/commands/profile');
     events.append({ ts: 1000, command: 'post', status: 'success', uid: 'u123', cid: 'c1', awemeId: 'v1' });
     events.append({ ts: 2000, command: 'like', status: 'success', uid: 'u123', awemeId: 'v2' });
     events.append({ ts: 3000, command: 'post', status: 'success', uid: 'u_other', awemeId: 'v3' });
@@ -95,7 +95,7 @@ describe('P1: cmdProfile (SQL path)', () => {
   }));
 
   it('events 无该 uid 时回退 audit.json (v2 行为)', withTempProject(async () => {
-    const cmdProfile = require('../lib/commands/profile');
+    const cmdProfile = require('../core/commands/profile');
     const fakeAudit = { load: () => ({
       sessions: [{ operations: [{
         command: 'post', status: 'success',
@@ -111,8 +111,8 @@ describe('P1: cmdProfile (SQL path)', () => {
 
 describe('P1: cmdEvents', () => {
   it('--json 输出原始行（含 sessionId/id）', withTempProject(async () => {
-    const events = require('../lib/memory/events');
-    const cmdEvents = require('../lib/commands/events');
+    const events = require('../core/memory/events');
+    const cmdEvents = require('../core/commands/events');
     events.append({ ts: 1000, command: 'get', status: 'success', awemeId: 'v1', sessionId: 's1' });
     const rows = await cmdEvents({}, ['--json']);
     expect(rows).toHaveLength(1);
@@ -121,8 +121,8 @@ describe('P1: cmdEvents', () => {
   }));
 
   it('--since 数字下界过滤', withTempProject(async () => {
-    const events = require('../lib/memory/events');
-    const cmdEvents = require('../lib/commands/events');
+    const events = require('../core/memory/events');
+    const cmdEvents = require('../core/commands/events');
     events.append({ ts: 1000, command: 'get', status: 'success' });
     events.append({ ts: 5000, command: 'post', status: 'success' });
     const rows = await cmdEvents({}, ['--json', '--since', '3000']);
@@ -133,8 +133,8 @@ describe('P1: cmdEvents', () => {
 
 describe('P1: findLastFetchTime SQL', () => {
   it('优先 SQL，empty 时回退 audit.json', withTempProject(async () => {
-    const { AuditLogger } = require('../lib/audit');
-    const events = require('../lib/memory/events');
+    const { AuditLogger } = require('../core/audit');
+    const events = require('../core/memory/events');
     events.append({ ts: 5000000, command: 'get', status: 'success', awemeId: 'v1' });
     events.append({ ts: 6000000, command: 'get', status: 'success', awemeId: 'v1' });
     const a = new AuditLogger();

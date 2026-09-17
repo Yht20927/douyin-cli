@@ -10,7 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getDb } = require('../lib/memory/db');
+const { getDb } = require('../core/memory/db');
 
 const argPath = process.argv[2];
 const AUDIT_FILE = argPath

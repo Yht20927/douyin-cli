@@ -22,14 +22,14 @@ process.env.DOUYIN_STORAGE_DIR = tmpStorage;
 const realStorage = path.join(__dirname, '..', 'storage');
 fs.rmSync(realStorage, { recursive: true, force: true });
 
-const events = require('../lib/memory/events');
+const events = require('../core/memory/events');
 
 const N = parseInt(process.argv[2] || '50000', 10);
 console.log(`Bench: 写入 ${N} 行 events ...`);
 
 // ── 写入 ──
 const tWrite0 = Date.now();
-const { getDb } = require('../lib/memory/db');
+const { getDb } = require('../core/memory/db');
 const db = getDb();
 const insert = db.prepare(`
   INSERT INTO events (ts, session_id, command, status, duration_ms, aweme_id, uid, cid, args_json, summary_json)
@@ -82,9 +82,9 @@ function silenced(fn) {
 
 origLog('\nBench 结果（10 次平均）:');
 
-const cmdLog = require('../lib/commands/log');
-const cmdProfile = require('../lib/commands/profile');
-const cmdEvents = require('../lib/commands/events');
+const cmdLog = require('../core/commands/log');
+const cmdProfile = require('../core/commands/profile');
+const cmdEvents = require('../core/commands/events');
 
 let passed = 0, total = 0;
 

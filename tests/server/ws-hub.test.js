@@ -6,8 +6,8 @@
 
 const http = require('http');
 const WebSocket = require('ws');
-const { WebSocketHub } = require('../../lib/server/ws-hub');
-const { ConnectionRegistry } = require('../../lib/server/registry');
+const { WebSocketHub } = require('../../core/server/ws-hub');
+const { ConnectionRegistry } = require('../../core/server/registry');
 
 const HEARTBEAT_INTERVAL = 30;
 const MAX_FAILURES = 2;

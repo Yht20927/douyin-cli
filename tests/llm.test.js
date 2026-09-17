@@ -1,6 +1,6 @@
 // tests/llm.test.js — LLM JSON 提取和 sanitizeComment 测试
 
-const { LLMClient } = require('../lib/llm');
+const { LLMClient } = require('../core/llm');
 
 // 通过反射测试私有方法
 const client = new LLMClient({ apiKey: 'test' });
@@ -46,7 +46,7 @@ describe('sanitizeComment (via LLM module)', () => {
   // 这里我们直接 require 模块来访问
   it('sanitizeComment 在模块中可用', () => {
     // 通过重新 require 来访问（vitest 可以处理）
-    const mod = require('../lib/llm');
+    const mod = require('../core/llm');
     // sanitizeComment 是内部函数，不导出，但我们可以验证 LLMClient 存在
     expect(mod.LLMClient).toBeDefined();
   });

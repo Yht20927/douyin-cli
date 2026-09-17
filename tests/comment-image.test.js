@@ -11,7 +11,7 @@ const {
   chunkBase64,
   collectImageArgs,
   uploadImageViaBridge,
-} = require('../lib/comment-image');
+} = require('../core/comment-image');
 
 let tmpDir;
 const tmpFile = (name, bytes) => {

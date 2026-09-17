@@ -1,6 +1,6 @@
 // tests/shared/sanitize.test.js — 共享清洗工具
 
-const { sanitizeComment, stripQuotes, escapeHtml } = require('../../lib/shared/sanitize');
+const { sanitizeComment, stripQuotes, escapeHtml } = require('../../core/shared/sanitize');
 
 describe('sanitizeComment', () => {
   it('截断过长文本', () => {

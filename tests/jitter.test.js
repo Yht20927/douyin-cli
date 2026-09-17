@@ -1,7 +1,7 @@
 // tests/jitter.test.js — 节奏工具库
 
 const { sleep, randomSleep, maybeDelay, jitter, humanDelayMs, DELAY_RANGES_FOR_TEST } = (() => {
-  const m = require('../lib/jitter');
+  const m = require('../core/jitter');
   // DELAY_RANGES 未导出；经 humanDelayMs 行为间接覆盖边界
   return { ...m, DELAY_RANGES_FOR_TEST: null };
 })();

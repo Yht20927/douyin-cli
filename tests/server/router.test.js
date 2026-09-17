@@ -1,7 +1,7 @@
 // tests/server/router.test.js — HTTP 路由：认证 / WS 分发 / 长轮询三路分发 / 413
 
-const { Router } = require('../../lib/server/router');
-const { ConnectionRegistry } = require('../../lib/server/registry');
+const { Router } = require('../../core/server/router');
+const { ConnectionRegistry } = require('../../core/server/registry');
 
 // ── 测试用 fake http.IncomingMessage / ServerResponse ──
 

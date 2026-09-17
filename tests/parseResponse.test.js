@@ -1,6 +1,6 @@
 // tests/parseResponse.test.js — 抖音 API 响应解析单元测试
 
-const { parseResponseText } = require('../lib/shared/parseResponse');
+const { parseResponseText } = require('../core/shared/parseResponse');
 
 describe('parseResponseText', () => {
   describe('成功路径', () => {

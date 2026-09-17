@@ -6,11 +6,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { AuditLogger } = require('./lib/audit');
-const { BridgeClient } = require('./lib/client/bridge-client');
-const { safeSerialize } = require('./lib/shared/serialize');
-const commands = require('./lib/commands');
-const { SITE } = require('./lib/commands/helpers');
+const { AuditLogger } = require('./core/audit');
+const { BridgeClient } = require('./core/client/bridge-client');
+const { safeSerialize } = require('./core/shared/serialize');
+const commands = require('./core/commands');
+const { SITE } = require('./core/commands/helpers');
 
 // ── 配置 ──
 let config = {};

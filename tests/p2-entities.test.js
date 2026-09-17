@@ -24,17 +24,17 @@ function withTempProject(fn) {
     process.env.DOUYIN_LOG_DIR = path.join(tmp, 'logs');
     process.chdir(tmp);
     [
-      '../lib/memory/db', '../lib/memory/events',
-      '../lib/memory/users', '../lib/memory/comments', '../lib/memory/videos',
-      '../lib/audit',
-      '../lib/commands/get', '../lib/commands/whois', '../lib/commands/note',
+      '../core/memory/db', '../core/memory/events',
+      '../core/memory/users', '../core/memory/comments', '../core/memory/videos',
+      '../core/audit',
+      '../core/commands/get', '../core/commands/whois', '../core/commands/note',
     ].forEach(m => {
       try { delete require.cache[require.resolve(m)]; } catch (e) {}
     });
     try {
       await fn(tmp);
     } finally {
-      try { require('../lib/memory/db').closeDb(); } catch (e) { /* */ }
+      try { require('../core/memory/db').closeDb(); } catch (e) { /* */ }
       process.chdir(origCwd);
       if (origStorageEnv == null) delete process.env.DOUYIN_STORAGE_DIR;
       else process.env.DOUYIN_STORAGE_DIR = origStorageEnv;
@@ -47,7 +47,7 @@ function withTempProject(fn) {
 
 describe('P2: comments repo', () => {
   it('upsertMany 合并同 cid：first_seen 取早，last_seen 取晚', withTempProject(async () => {
-    const comments = require('../lib/memory/comments');
+    const comments = require('../core/memory/comments');
     comments.upsertMany([
       { cid: 'c1', awemeId: 'v1', uid: 'u1', text: 'hi', digg: 5, createdAt: 1700000, seenAt: 2_000_000 },
     ]);
@@ -62,7 +62,7 @@ describe('P2: comments repo', () => {
   }));
 
   it('markReplied 标记 replied + reply_cid', withTempProject(async () => {
-    const comments = require('../lib/memory/comments');
+    const comments = require('../core/memory/comments');
     comments.upsert({ cid: 'src', awemeId: 'v1', uid: 'u1', text: 'q?' });
     expect(comments.markReplied('src', 'v1', 'mine')).toBe(true);
     const c = comments.get('src');
@@ -71,7 +71,7 @@ describe('P2: comments repo', () => {
   }));
 
   it('setAnalysis 写入 sentiment + priority', withTempProject(async () => {
-    const comments = require('../lib/memory/comments');
+    const comments = require('../core/memory/comments');
     comments.upsert({ cid: 'c1', awemeId: 'v1', uid: 'u1', text: 'good' });
     comments.setAnalysis('c1', { sentiment: 'positive', priority: 4 });
     const c = comments.get('c1');
@@ -80,7 +80,7 @@ describe('P2: comments repo', () => {
   }));
 
   it('listByUid 按 created_at DESC 跨视频', withTempProject(async () => {
-    const comments = require('../lib/memory/comments');
+    const comments = require('../core/memory/comments');
     comments.upsertMany([
       { cid: 'a', awemeId: 'v1', uid: 'u1', text: 'a', createdAt: 100 },
       { cid: 'b', awemeId: 'v2', uid: 'u1', text: 'b', createdAt: 300 },
@@ -94,7 +94,7 @@ describe('P2: comments repo', () => {
 
 describe('P2: users repo', () => {
   it('upsertMany 累加 commentDelta', withTempProject(async () => {
-    const users = require('../lib/memory/users');
+    const users = require('../core/memory/users');
     users.upsertMany([
       { uid: 'u1', nickname: 'A', commentDelta: 1 },
       { uid: 'u1', nickname: 'A', commentDelta: 1 },
@@ -105,7 +105,7 @@ describe('P2: users repo', () => {
   }));
 
   it('setTier + addTag/removeTag', withTempProject(async () => {
-    const users = require('../lib/memory/users');
+    const users = require('../core/memory/users');
     users.upsert({ uid: 'u1' });
     users.setTier('u1', 'vip');
     users.addTag('u1', '技术粉');
@@ -120,7 +120,7 @@ describe('P2: users repo', () => {
 
 describe('P2: videos repo', () => {
   it('markGet 累加 totalCommentsSeen + 维护 last_get_ts', withTempProject(async () => {
-    const videos = require('../lib/memory/videos');
+    const videos = require('../core/memory/videos');
     videos.markGet('v1', 5, 1000);
     videos.markGet('v1', 3, 2000);
     const v = videos.get('v1');
@@ -129,7 +129,7 @@ describe('P2: videos repo', () => {
   }));
 
   it('markPost 维护 last_post_ts，is_mine 一旦 true 不回退', withTempProject(async () => {
-    const videos = require('../lib/memory/videos');
+    const videos = require('../core/memory/videos');
     videos.upsert({ awemeId: 'v1', isMine: true, title: 'My Video' });
     videos.markPost('v1', 5000);
     videos.upsert({ awemeId: 'v1', isMine: false }); // 不应回退
@@ -142,9 +142,9 @@ describe('P2: videos repo', () => {
 
 describe('P2: cmdGet.persistEntities', () => {
   it('原始评论树正确落到 users + comments', withTempProject(async () => {
-    const { persistEntities } = require('../lib/commands/get');
-    const users = require('../lib/memory/users');
-    const comments = require('../lib/memory/comments');
+    const { persistEntities } = require('../core/commands/get');
+    const users = require('../core/memory/users');
+    const comments = require('../core/memory/comments');
     const raw = [
       {
         cid: 'top1', text: 'hello', digg_count: 10, create_time: 1700,
@@ -170,10 +170,10 @@ describe('P2: cmdGet.persistEntities', () => {
 
 describe('P2: cmdWhois', () => {
   it('已知用户：输出评论列表 + my_replies', withTempProject(async () => {
-    const cmdWhois = require('../lib/commands/whois');
-    const { AuditLogger } = require('../lib/audit');
-    const users = require('../lib/memory/users');
-    const comments = require('../lib/memory/comments');
+    const cmdWhois = require('../core/commands/whois');
+    const { AuditLogger } = require('../core/audit');
+    const users = require('../core/memory/users');
+    const comments = require('../core/memory/comments');
 
     users.upsert({ uid: 'u1', nickname: 'Alice' });
     users.setTier('u1', 'vip');
@@ -193,8 +193,8 @@ describe('P2: cmdWhois', () => {
   }));
 
   it('未知用户：found=false 但不抛', withTempProject(async () => {
-    const cmdWhois = require('../lib/commands/whois');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdWhois = require('../core/commands/whois');
+    const { AuditLogger } = require('../core/audit');
     const out = await cmdWhois({ audit: new AuditLogger() }, ['unknown']);
     expect(out.found).toBe(false);
     expect(out.total_comments).toBe(0);
@@ -203,8 +203,8 @@ describe('P2: cmdWhois', () => {
 
 describe('P2: cmdNote', () => {
   it('--tier + --tag + --notes 同时生效', withTempProject(async () => {
-    const cmdNote = require('../lib/commands/note');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdNote = require('../core/commands/note');
+    const { AuditLogger } = require('../core/audit');
     const out = await cmdNote(
       { audit: new AuditLogger() },
       ['u1', '--tier', 'vip', '--tag', '技术粉', '--notes', '种子用户']
@@ -215,8 +215,8 @@ describe('P2: cmdNote', () => {
   }));
 
   it('--clear 清空 tier/tags/notes', withTempProject(async () => {
-    const cmdNote = require('../lib/commands/note');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdNote = require('../core/commands/note');
+    const { AuditLogger } = require('../core/audit');
     await cmdNote({ audit: new AuditLogger() }, ['u1', '--tier', 'vip', '--tag', 'x', '--notes', 'n']);
     const out = await cmdNote({ audit: new AuditLogger() }, ['u1', '--clear']);
     expect(out.profile.tier).toBe(null);
@@ -225,8 +225,8 @@ describe('P2: cmdNote', () => {
   }));
 
   it('非法 tier 抛错', withTempProject(async () => {
-    const cmdNote = require('../lib/commands/note');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdNote = require('../core/commands/note');
+    const { AuditLogger } = require('../core/audit');
     await expect(cmdNote({ audit: new AuditLogger() }, ['u1', '--tier', 'bad']))
       .rejects.toThrow(/tier/);
   }));

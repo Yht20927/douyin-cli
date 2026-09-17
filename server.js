@@ -6,9 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const { ConnectionRegistry } = require('./lib/server/registry');
-const { WebSocketHub } = require('./lib/server/ws-hub');
-const { Router } = require('./lib/server/router');
+const { ConnectionRegistry } = require('./core/server/registry');
+const { WebSocketHub } = require('./core/server/ws-hub');
+const { Router } = require('./core/server/router');
 
 // 加载配置
 const configPath = path.join(__dirname, 'config.json');

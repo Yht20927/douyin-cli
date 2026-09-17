@@ -1,7 +1,7 @@
 // tests/reply-engine/context-scope.test.js
 
 describe('context-scope', () => {
-  const { buildScopedContext, dedupeByText, resetMemory } = require('../../lib/reply-engine/context-scope');
+  const { buildScopedContext, dedupeByText, resetMemory } = require('../../core/reply-engine/context-scope');
 
   afterEach(() => {
     resetMemory();

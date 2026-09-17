@@ -13,10 +13,10 @@ describe('drafts memory module', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-drafts-test-'));
     process.env.DOUYIN_STORAGE_DIR = tmpDir;
     // 清除 db 缓存
-    delete require.cache[require.resolve('../lib/memory/db')];
-    delete require.cache[require.resolve('../lib/memory/drafts')];
-    db = require('../lib/memory/db');
-    drafts = require('../lib/memory/drafts');
+    delete require.cache[require.resolve('../core/memory/db')];
+    delete require.cache[require.resolve('../core/memory/drafts')];
+    db = require('../core/memory/db');
+    drafts = require('../core/memory/drafts');
   });
 
   afterAll(() => {

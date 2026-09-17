@@ -1,6 +1,6 @@
 // tests/helpers.test.js — 命令辅助函数单元测试
 
-const { escapeExpression, getFlag, formatComment } = require('../lib/commands/helpers');
+const { escapeExpression, getFlag, formatComment } = require('../core/commands/helpers');
 
 describe('escapeExpression', () => {
   it('转义反斜杠', () => {

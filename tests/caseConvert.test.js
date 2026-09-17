@@ -1,6 +1,6 @@
 // tests/caseConvert.test.js
 
-const { camelToSnake, convertKeys } = require('../lib/shared/caseConvert');
+const { camelToSnake, convertKeys } = require('../core/shared/caseConvert');
 
 describe('camelToSnake', () => {
   it('should convert camelCase to snake_case', () => {

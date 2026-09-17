@@ -12,7 +12,7 @@ describe('prompt-builder', () => {
     buildImageHint, buildScopedBlock,
     buildGenerateCommentPrompt, buildGenerateReplyPrompt, buildGenerateRepliesPrompt,
     buildSuggestPrompt, buildAnalyzePrompt,
-  } = require('../../lib/reply-engine/prompt-builder');
+  } = require('../../core/reply-engine/prompt-builder');
 
   beforeAll(() => {
     // 确保模板文件存在

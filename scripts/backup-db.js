@@ -6,7 +6,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { getDb, getDbPath } = require('../lib/memory/db');
+const { getDb, getDbPath } = require('../core/memory/db');
 
 const dbPath = getDbPath();
 const storageDir = path.dirname(dbPath);

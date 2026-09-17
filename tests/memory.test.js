@@ -29,13 +29,13 @@ function withTempProject(fn) {
     process.env.DOUYIN_LOG_DIR = tmpLogs;
     process.chdir(tmp);
     [
-      '../lib/memory/db', '../lib/memory/events', '../lib/audit',
+      '../core/memory/db', '../core/memory/events', '../core/audit',
     ].forEach(m => delete require.cache[require.resolve(m)]);
 
     try {
       await fn(tmp);
     } finally {
-      try { require('../lib/memory/db').closeDb(); } catch (e) { /* */ }
+      try { require('../core/memory/db').closeDb(); } catch (e) { /* */ }
       process.chdir(origCwd);
       if (origStorageEnv == null) delete process.env.DOUYIN_STORAGE_DIR;
       else process.env.DOUYIN_STORAGE_DIR = origStorageEnv;
@@ -47,7 +47,7 @@ function withTempProject(fn) {
 
 describe('memory/db', () => {
   it('首次打开自动建库 + 设置 user_version', withTempProject(async () => {
-    const { getDb, getDbPath, SCHEMA_VERSION } = require('../lib/memory/db');
+    const { getDb, getDbPath, SCHEMA_VERSION } = require('../core/memory/db');
     const db = getDb();
     expect(fs.existsSync(getDbPath())).toBe(true);
     expect(db.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
@@ -56,13 +56,13 @@ describe('memory/db', () => {
   }));
 
   it('删除 db 文件后下次调用自愈', withTempProject(async () => {
-    const { getDb, getDbPath, closeDb } = require('../lib/memory/db');
+    const { getDb, getDbPath, closeDb } = require('../core/memory/db');
     getDb();
     closeDb();
     fs.rmSync(getDbPath());
     // 模块缓存清掉，模拟新进程
-    delete require.cache[require.resolve('../lib/memory/db')];
-    const { getDb: getDb2, SCHEMA_VERSION } = require('../lib/memory/db');
+    delete require.cache[require.resolve('../core/memory/db')];
+    const { getDb: getDb2, SCHEMA_VERSION } = require('../core/memory/db');
     const db2 = getDb2();
     expect(db2.pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
   }));
@@ -70,7 +70,7 @@ describe('memory/db', () => {
 
 describe('memory/events', () => {
   it('append → query 往返', withTempProject(async () => {
-    const events = require('../lib/memory/events');
+    const events = require('../core/memory/events');
     events.append({ command: 'get', status: 'success', awemeId: 'v1', durationMs: 100, summary: { count: 5 } });
     events.append({ command: 'post', status: 'error', awemeId: 'v1', uid: 'u1', error: 'status_code=8' });
     expect(events.count()).toBe(2);
@@ -84,7 +84,7 @@ describe('memory/events', () => {
   }));
 
   it('findLastFetchTime 只统计 get + success', withTempProject(async () => {
-    const events = require('../lib/memory/events');
+    const events = require('../core/memory/events');
     events.append({ ts: 1000000, command: 'get', status: 'error',   awemeId: 'v1' });
     events.append({ ts: 2000000, command: 'post',  status: 'success', awemeId: 'v1' });
     events.append({ ts: 3000000, command: 'get',   status: 'success', awemeId: 'v1' });
@@ -95,7 +95,7 @@ describe('memory/events', () => {
   }));
 
   it('SQL 失败时降级返回空，不抛', withTempProject(async () => {
-    const events = require('../lib/memory/events');
+    const events = require('../core/memory/events');
     // 制造异常路径：传 undefined / 空 command 不应崩溃
     const id = events.append({ /* command 缺失 */ status: 'success' });
     expect(id === null || typeof id !== 'undefined').toBe(true);
@@ -104,8 +104,8 @@ describe('memory/events', () => {
 
 describe('audit double-write', () => {
   it('endOperation 同步写入 audit.json + events 表', withTempProject(async () => {
-    const { AuditLogger } = require('../lib/audit');
-    const events = require('../lib/memory/events');
+    const { AuditLogger } = require('../core/audit');
+    const events = require('../core/memory/events');
     const a = new AuditLogger();
     a.startOperation('search', { keyword: 'k1' });
     a.endOperation('success', { count: 3 }, null);
@@ -118,8 +118,8 @@ describe('audit double-write', () => {
   }));
 
   it('--no-log 不写 events 也不写 audit.json', withTempProject(async (tmp) => {
-    const { AuditLogger } = require('../lib/audit');
-    const events = require('../lib/memory/events');
+    const { AuditLogger } = require('../core/audit');
+    const events = require('../core/memory/events');
     const a = new AuditLogger();
     a.setNoLog(true);
     a.startOperation('get', { aweme_id: 'v1' });
@@ -129,8 +129,8 @@ describe('audit double-write', () => {
   }));
 
   it('error 状态也被双写', withTempProject(async () => {
-    const { AuditLogger } = require('../lib/audit');
-    const events = require('../lib/memory/events');
+    const { AuditLogger } = require('../core/audit');
+    const events = require('../core/memory/events');
     const a = new AuditLogger();
     a.startOperation('post', { aweme_id: 'v1', text: 'hi' });
     a.endOperation('error', {}, null, 'status_code=8');

@@ -24,19 +24,19 @@ function withTempProject(fn) {
     process.env.DOUYIN_LOG_DIR = path.join(tmp, 'logs');
     process.chdir(tmp);
     [
-      '../lib/memory/db', '../lib/memory/events',
-      '../lib/memory/users', '../lib/memory/comments', '../lib/memory/videos',
-      '../lib/memory/corpus', '../lib/memory/failures',
-      '../lib/audit',
-      '../lib/commands/post', '../lib/commands/suggest',
-      '../lib/commands/corpus', '../lib/commands/failures', '../lib/commands/dedup',
+      '../core/memory/db', '../core/memory/events',
+      '../core/memory/users', '../core/memory/comments', '../core/memory/videos',
+      '../core/memory/corpus', '../core/memory/failures',
+      '../core/audit',
+      '../core/commands/post', '../core/commands/suggest',
+      '../core/commands/corpus', '../core/commands/failures', '../core/commands/dedup',
     ].forEach(m => {
       try { delete require.cache[require.resolve(m)]; } catch (e) {}
     });
     try {
       await fn(tmp);
     } finally {
-      try { require('../lib/memory/db').closeDb(); } catch (e) { /* */ }
+      try { require('../core/memory/db').closeDb(); } catch (e) { /* */ }
       process.chdir(origCwd);
       if (origStorageEnv == null) delete process.env.DOUYIN_STORAGE_DIR;
       else process.env.DOUYIN_STORAGE_DIR = origStorageEnv;
@@ -49,7 +49,7 @@ function withTempProject(fn) {
 
 describe('P3: corpus repo', () => {
   it('append → findByText 命中（hash 匹配）', withTempProject(async () => {
-    const corpus = require('../lib/memory/corpus');
+    const corpus = require('../core/memory/corpus');
     const id = corpus.append({
       replyText: '感谢支持~ 后续会出更多教程！',
       srcCid: 'c1', srcText: '什么时候出新视频？', awemeId: 'v1',
@@ -65,7 +65,7 @@ describe('P3: corpus repo', () => {
   }));
 
   it('recent 默认按 posted_at DESC，可按 awemeId 过滤', withTempProject(async () => {
-    const corpus = require('../lib/memory/corpus');
+    const corpus = require('../core/memory/corpus');
     corpus.append({ replyText: 'a', awemeId: 'v1', postedAt: 1000 });
     corpus.append({ replyText: 'b', awemeId: 'v2', postedAt: 2000 });
     corpus.append({ replyText: 'c', awemeId: 'v1', postedAt: 3000 });
@@ -76,7 +76,7 @@ describe('P3: corpus repo', () => {
   }));
 
   it('search 按 src_text 或 reply_text 模糊匹配', withTempProject(async () => {
-    const corpus = require('../lib/memory/corpus');
+    const corpus = require('../core/memory/corpus');
     corpus.append({ replyText: '教程已经在路上', srcText: '什么时候出新视频' });
     corpus.append({ replyText: '点赞收藏不迷路', srcText: '666' });
     expect(corpus.search('教程')).toHaveLength(1);
@@ -87,7 +87,7 @@ describe('P3: corpus repo', () => {
 
 describe('P3: failures repo', () => {
   it('classify：status_code / 油猴错误 / 兜底 msg', () => {
-    const failures = require('../lib/memory/failures');
+    const failures = require('../core/memory/failures');
     expect(failures.classify({ status_code: 8 })).toBe('status_code=8');
     expect(failures.classify('status_code=2154 — 评论被拦截')).toBe('status_code=2154');
     expect(failures.classify('返回了 HTML 页面，可能未登录')).toBe('bridge_html_response');
@@ -97,7 +97,7 @@ describe('P3: failures repo', () => {
   });
 
   it('record 重复 signature → hit_count 累加', withTempProject(async () => {
-    const failures = require('../lib/memory/failures');
+    const failures = require('../core/memory/failures');
     failures.record({ status_code: 8 }, { exampleText: 'hi' });
     failures.record({ status_code: 8 }, { exampleText: 'hello' });
     failures.record({ status_code: 8 });
@@ -109,7 +109,7 @@ describe('P3: failures repo', () => {
   }));
 
   it('top 排序按 hit_count DESC', withTempProject(async () => {
-    const failures = require('../lib/memory/failures');
+    const failures = require('../core/memory/failures');
     failures.record({ status_code: 1 });
     failures.record({ status_code: 2 });
     failures.record({ status_code: 2 });
@@ -125,10 +125,10 @@ describe('P3: failures repo', () => {
 
 describe('P3: cmdPost 双写到 corpus / failures', () => {
   it('成功 + reply-to → corpus 累计 1 条', withTempProject(async () => {
-    const cmdPost = require('../lib/commands/post');
-    const corpus = require('../lib/memory/corpus');
-    const comments = require('../lib/memory/comments');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdPost = require('../core/commands/post');
+    const corpus = require('../core/memory/corpus');
+    const comments = require('../core/memory/comments');
+    const { AuditLogger } = require('../core/audit');
 
     // 模拟 cmdGet 已落库 src 评论
     comments.upsert({ cid: 'src1', awemeId: 'v1', uid: 'uA', text: '什么时候出新视频？' });
@@ -151,9 +151,9 @@ describe('P3: cmdPost 双写到 corpus / failures', () => {
   }));
 
   it('status_code != 0 → failures.record(status_code=N) 并抛错', withTempProject(async () => {
-    const cmdPost = require('../lib/commands/post');
-    const failures = require('../lib/memory/failures');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdPost = require('../core/commands/post');
+    const failures = require('../core/memory/failures');
+    const { AuditLogger } = require('../core/audit');
     const ctx = {
       audit: new AuditLogger(),
       loggedCall: async () => ({ status_code: 8 }),
@@ -165,9 +165,9 @@ describe('P3: cmdPost 双写到 corpus / failures', () => {
   }));
 
   it('无 reply-to 的纯顶层评论不入 corpus', withTempProject(async () => {
-    const cmdPost = require('../lib/commands/post');
-    const corpus = require('../lib/memory/corpus');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdPost = require('../core/commands/post');
+    const corpus = require('../core/memory/corpus');
+    const { AuditLogger } = require('../core/audit');
     const ctx = {
       audit: new AuditLogger(),
       loggedCall: async () => ({ comment: { cid: 'mine2', text: '顶层评论', create_time: 1700000001,
@@ -181,9 +181,9 @@ describe('P3: cmdPost 双写到 corpus / failures', () => {
 describe('P3: cmdSuggest LLM 上下文注入 + dedup 重写', () => {
   it('suggest 把 corpus/failures/avoid/userTags 注入 LLMClient.suggestReplies', withTempProject(async () => {
     // 1. 准备历史数据
-    const corpus = require('../lib/memory/corpus');
-    const failures = require('../lib/memory/failures');
-    const users = require('../lib/memory/users');
+    const corpus = require('../core/memory/corpus');
+    const failures = require('../core/memory/failures');
+    const users = require('../core/memory/users');
     corpus.append({ replyText: '历史回复 A', srcText: '历史问题 A' });
     failures.record({ status_code: 8 }, { exampleText: '导流话术' });
     users.upsert({ uid: 'uA', nickname: 'Alice' });
@@ -191,7 +191,7 @@ describe('P3: cmdSuggest LLM 上下文注入 + dedup 重写', () => {
     users.addTag('uA', '技术粉');
 
     // 2. mock LLMClient
-    const llmModule = require('../lib/llm');
+    const llmModule = require('../core/llm');
     let captured = null;
     const origCtor = llmModule.LLMClient;
     llmModule.LLMClient = class FakeLLM {
@@ -203,8 +203,8 @@ describe('P3: cmdSuggest LLM 上下文注入 + dedup 重写', () => {
     };
 
     try {
-      const cmdSuggest = require('../lib/commands/suggest');
-      const { AuditLogger } = require('../lib/audit');
+      const cmdSuggest = require('../core/commands/suggest');
+      const { AuditLogger } = require('../core/audit');
       const cmdAnalyze = async () => [
         { cid: 'c1', uid: 'uA', sentiment: 'positive', priority: 5, text: '问题1' },
         { cid: 'c2', uid: 'uB', sentiment: 'positive', priority: 4, text: '问题2' },
@@ -228,10 +228,10 @@ describe('P3: cmdSuggest LLM 上下文注入 + dedup 重写', () => {
   }));
 
   it('LLM 输出命中 corpus 时触发重写', withTempProject(async () => {
-    const corpus = require('../lib/memory/corpus');
+    const corpus = require('../core/memory/corpus');
     corpus.append({ replyText: '感谢支持' });
 
-    const llmModule = require('../lib/llm');
+    const llmModule = require('../core/llm');
     const origCtor = llmModule.LLMClient;
     let calls = 0;
     let rewriteCalls = 0;
@@ -249,8 +249,8 @@ describe('P3: cmdSuggest LLM 上下文注入 + dedup 重写', () => {
     };
 
     try {
-      const cmdSuggest = require('../lib/commands/suggest');
-      const { AuditLogger } = require('../lib/audit');
+      const cmdSuggest = require('../core/commands/suggest');
+      const { AuditLogger } = require('../core/audit');
       const cmdAnalyze = async () => [
         { cid: 'c1', sentiment: 'positive', priority: 5, text: 'x' },
       ];
@@ -268,41 +268,41 @@ describe('P3: cmdSuggest LLM 上下文注入 + dedup 重写', () => {
 
 describe('P3: cli 子命令', () => {
   it('cmdDedup 命中已发文本', withTempProject(async () => {
-    const corpus = require('../lib/memory/corpus');
+    const corpus = require('../core/memory/corpus');
     corpus.append({ replyText: '已发过的话术' });
-    const cmdDedup = require('../lib/commands/dedup');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdDedup = require('../core/commands/dedup');
+    const { AuditLogger } = require('../core/audit');
     const out = await cmdDedup({ audit: new AuditLogger() }, ['已发过的话术']);
     expect(out.duplicate).toBe(true);
     expect(out.match.reply_text).toBe('已发过的话术');
   }));
 
   it('cmdDedup 未命中', withTempProject(async () => {
-    const cmdDedup = require('../lib/commands/dedup');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdDedup = require('../core/commands/dedup');
+    const { AuditLogger } = require('../core/audit');
     const out = await cmdDedup({ audit: new AuditLogger() }, ['全新文案']);
     expect(out.duplicate).toBe(false);
     expect(out.match).toBe(null);
   }));
 
   it('cmdFailures 返回 top 列表', withTempProject(async () => {
-    const failures = require('../lib/memory/failures');
+    const failures = require('../core/memory/failures');
     failures.record({ status_code: 8 });
     failures.record({ status_code: 8 });
     failures.record({ status_code: 1 });
-    const cmdFailures = require('../lib/commands/failures');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdFailures = require('../core/commands/failures');
+    const { AuditLogger } = require('../core/audit');
     const out = await cmdFailures({ audit: new AuditLogger() }, []);
     expect(out[0].signature).toBe('status_code=8');
     expect(out[0].hitCount).toBe(2);
   }));
 
   it('cmdCorpus stats / search', withTempProject(async () => {
-    const corpus = require('../lib/memory/corpus');
+    const corpus = require('../core/memory/corpus');
     corpus.append({ replyText: '教程在路上' });
     corpus.append({ replyText: '点赞收藏~' });
-    const cmdCorpus = require('../lib/commands/corpus');
-    const { AuditLogger } = require('../lib/audit');
+    const cmdCorpus = require('../core/commands/corpus');
+    const { AuditLogger } = require('../core/audit');
     const stats = await cmdCorpus({ audit: new AuditLogger() }, ['stats']);
     expect(stats.total).toBe(2);
     expect(stats.published).toBe(2);

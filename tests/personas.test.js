@@ -3,7 +3,7 @@
 const {
   pickPersona, buildSystemPrompt, buildUserPrefix,
   getTemperature, listPersonas, findPersona, resetState, PERSONAS,
-} = require('../lib/personas');
+} = require('../core/personas');
 
 describe('personas', () => {
   beforeEach(() => resetState());

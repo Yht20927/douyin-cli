@@ -1,6 +1,6 @@
 // tests/registry.test.js — ConnectionRegistry 单元测试
 
-const { ConnectionRegistry } = require('../lib/server/registry');
+const { ConnectionRegistry } = require('../core/server/registry');
 
 describe('ConnectionRegistry', () => {
   let registry;

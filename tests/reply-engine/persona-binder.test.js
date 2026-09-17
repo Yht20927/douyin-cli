@@ -6,8 +6,8 @@ describe('PersonaBinder', () => {
 
   beforeEach(() => {
     // 清除 require 缓存以重置状态
-    delete require.cache[require.resolve('../../lib/reply-engine/persona-binder')];
-    ({ PersonaBinder } = require('../../lib/reply-engine/persona-binder'));
+    delete require.cache[require.resolve('../../core/reply-engine/persona-binder')];
+    ({ PersonaBinder } = require('../../core/reply-engine/persona-binder'));
     binder = new PersonaBinder();
   });
 

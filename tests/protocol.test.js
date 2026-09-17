@@ -1,6 +1,6 @@
 // tests/protocol.test.js — 协议校验函数单元测试
 
-const { validateHello, validateResult, validateCallRequest } = require('../lib/shared/protocol');
+const { validateHello, validateResult, validateCallRequest } = require('../core/shared/protocol');
 
 describe('validateHello', () => {
   it('有效消息', () => {
