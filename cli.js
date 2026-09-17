@@ -75,7 +75,6 @@ const ctx = {
   cmdAnalyze: null,
   cmdSearch: null,
   cmdLike: null,
-  cmdBrowse: null,
 };
 
 // 绑定命令（注入上下文）
@@ -84,7 +83,6 @@ ctx.cmdPost = (args) => commands.post(ctx, args);
 ctx.cmdAnalyze = (args) => commands.analyze(ctx, args);
 ctx.cmdSearch = (args) => commands.search(ctx, args);
 ctx.cmdLike = (args) => commands.like(ctx, args);
-ctx.cmdBrowse = (args) => commands.browse(ctx, args);
 
 // ═══════════════════════════════════════════════════════════
 // 帮助
@@ -107,20 +105,14 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js like <aweme_id>                 点赞视频
   node cli.js like <aweme_id> --unlike        取消点赞
   node cli.js delete-comment <cid>            删除评论
-  node cli.js download <aweme_id>             下载视频（含音频）
-  node cli.js download <aweme_id> --audio-only  仅下载音频（BGM）
-  node cli.js download <aweme_id> --out <dir>   指定输出目录
   node cli.js analyze <aweme_id>              LLM 分析（情感/分类/优先级）
   node cli.js suggest <aweme_id>              LLM 回复建议（--auto 自动发布）
-  node cli.js dashboard                       仪表盘 HTML
-  node cli.js dashboard --video <aweme_id> --days 14
   node cli.js log [--tail N] [--video <id>] [--uid <uid>] [--command <cmd>] [--failed]
   node cli.js profile <uid>                   用户交互历史（事件流）
   node cli.js whois <uid>                     用户全量画像（评论 + 我的回复 + 标签）
   node cli.js note <uid> [--tier vip|normal|blacklist|spam] [--tag T] [--untag T] [--notes "..."] [--clear]
   node cli.js events [--tail N] [--video <id>] [--uid <uid>] [--cmd <cmd>] [--status success|error] [--since <ts>] [--json]
   node cli.js corpus <search|recent|stats> [...]   回复语料库
-  node cli.js browse [--max-notes N]            模拟浏览行为（搜索+看视频+偶尔点赞）
   node cli.js failures [--limit N] [--recent]      失败模式 top-N（避雷清单）
   node cli.js dedup "<候选回复文本>"                  检查文本是否曾经发过
   node cli.js replied                                已回复 cid 列表（--json --aweme <id>）
@@ -130,9 +122,6 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js dm list                              查看最近收到的消息
   node cli.js cleanup [--days 90] [--dry-run]      清理过期记忆（events/comments/corpus）
   node cli.js preflight [command]           节奏守卫自检（距下次写需等多久 / 命令是否可执行）
-  node cli.js repo-info [<owner/repo>]       获取 GitHub 仓库真实信息（推广评论事实源，缓存 1h，--refresh 强制刷新）
-  node cli.js factcheck "<文本>"               推广评论发布前事实校验（star 数/仓库名/版本号 vs repo-info 缓存）
-  node cli.js campaign <create|plan|run|stop|pause|resume|status|list>  推广引擎（跨视频可暂停可恢复；run --daemon 后台）
 
   AI 回复生成（ReplyEngine）：
   node cli.js getReply <aweme_id>                    生成视频的顶级评论
