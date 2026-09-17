@@ -19,10 +19,15 @@
 (function () {
   'use strict';
 
+  // 本文件是**源模板**，不要手工把真实 token 填进来。
+  // 改造前这里硬编码了本机 token，而本文件受 git 跟踪、远端为公开仓库 —— 等于把
+  // "能驱动你浏览器发评论"的凭证提交进了版本库。
+  // 现在留占位符，由 `node scripts/build-userscript.js` 在构建时注入，
+  // 产物写入 dist/（已 gitignore）；桌面应用也走同一条路生成可安装脚本。
   const CONFIG = {
     server: 'http://127.0.0.1:19422',
-    site: 'douyin.com',
-    token: '901853b42dac9ccd8954cb4d9c994bd8377ea01b40939815',  // 填入 config.json 中的 bridge.token
+    site: '{{SITE_KEY}}',
+    token: '{{BRIDGE_TOKEN}}',
     reconnectDelay: 2000,
   };
 

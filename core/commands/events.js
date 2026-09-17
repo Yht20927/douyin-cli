@@ -42,7 +42,7 @@ async function cmdEvents(ctx, args) {
 
   if (rows.length === 0) {
     logger.output('No matching events.');
-    return;
+    return rows; // 空数组：CLI 不额外打印，GUI 拿到结构化空结果
   }
 
   for (const r of rows) {
@@ -58,6 +58,8 @@ async function cmdEvents(ctx, args) {
     if (r.error) logger.output(`   error:   ${r.error}`);
     if (r.resultPath) logger.output(`   result:  ${r.resultPath}`);
   }
+  // 已产生人类可读输出（CLI 不会重复打印），但 GUI 仍需要结构化数据
+  return rows;
 }
 
 function parseSince(s) {

@@ -194,6 +194,7 @@ class Logger {
 
   _emit(kind, level, msg, meta) {
     if (LEVELS[level] < LEVELS[this.level]) return;
+    if (kind === 'output') _outputCount++;
     const rec = {
       ts: new Date().toISOString(),
       level,
@@ -243,6 +244,23 @@ class Logger {
 /** 默认：CLI 行为（仅 console sink） */
 let _current = new Logger({ sinks: [consoleSink()] });
 
+/**
+ * 本次运行产生过多少条 output 记录（模块级，所有 child logger 共享）。
+ *
+ * 用途：命令的返回值有双重职责 —— 既是 CLI 要打印的 JSON，又是 GUI 要消费的数据。
+ * 有些命令在人类可读模式下已经自己打印过了（如 `replied` 逐行输出 cid），
+ * 此时 CLI 不应再打印一遍 JSON；但 GUI 仍然需要拿到结构化数据。
+ * 于是约定：**cli.js 只在本次运行没有产生过 output 时才打印返回值**，
+ * 命令则可以无条件返回结构化数据。
+ */
+let _outputCount = 0;
+
+/** 重置 output 计数（每次命令运行前由入口调用） */
+function resetOutputCount() { _outputCount = 0; }
+
+/** 本次运行已产生的 output 条数 */
+function outputCount() { return _outputCount; }
+
 /** 取当前 logger。任何模块可直接用，无需 ctx */
 function getLogger() { return _current; }
 
@@ -279,6 +297,8 @@ module.exports = {
   configure,
   reset,
   defaultLevel,
+  resetOutputCount,
+  outputCount,
   // sink 工厂
   consoleSink,
   fileSink,

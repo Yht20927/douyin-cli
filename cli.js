@@ -113,9 +113,16 @@ async function main() {
   ctx.audit.setNoLog(noLog);
 
   try {
+    loggerModule.resetOutputCount();
     const result = await runCommand(ctx, cmd, args.slice(1));
-    // stdout 只放命令返回的 JSON —— 所有日志一律走 stderr，保证可管道解析
-    if (result !== undefined) {
+
+    // stdout 只放命令返回的 JSON —— 所有日志一律走 stderr，保证可管道解析。
+    //
+    // 但有些命令在人类可读模式下已经自己输出过了（如 `replied` 逐行打印 cid、
+    // `log` 打印可读行），此时再打印一遍 JSON 会破坏原有输出格式。
+    // 约定：本次运行产生过 output 就不再打印返回值 ——
+    // 这样命令可以「无条件返回结构化数据」（GUI 需要）而 CLI 行为保持不变。
+    if (result !== undefined && loggerModule.outputCount() === 0) {
       console.log(JSON.stringify(safeSerialize(result), null, 2));
     }
   } catch (e) {

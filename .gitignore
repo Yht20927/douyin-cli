@@ -24,3 +24,6 @@ downloads/
 
 # 崩溃堆栈转储
 *.stackdump
+
+# 构建产物（含注入的 token，绝不入库）
+dist/

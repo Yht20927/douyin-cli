@@ -47,7 +47,10 @@ async function cmdReplied(ctx, args) {
   if (asJson) return rows;
 
   // 默认：每行一个 cid（shell 可直接 > /tmp/replied_cids.txt）
+  // 注意仍然 return rows —— CLI 侧因产生过 output 不会再打印 JSON，
+  // 而 GUI 侧调用 runCommand 时能拿到结构化数据。
   for (const r of rows) logger.output(r.cid);
+  return rows;
 }
 
 module.exports = cmdReplied;

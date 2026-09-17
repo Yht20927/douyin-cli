@@ -1,17 +1,21 @@
 {
+  "_comment": "复制为 config.json 后按需修改。所有键都有内置默认值（见 core/config/index.js 的 DEFAULTS），只需写你想改的项 —— 缺失项自动补齐。改完立即生效，无需重启（配置经 core/config 单一真源读取）。",
+
   "bridge": {
     "host": "127.0.0.1",
     "port": 19422,
     "token": "",
+    "_token_comment": "留空则首次启动 server 时自动生成并写回本文件。油猴脚本不读这里 —— 它由 scripts/build-userscript.js 在构建时注入（避免把凭证提交进版本库）。",
     "heartbeatInterval": 30000,
     "heartbeatTimeout": 10000,
     "heartbeatMaxFailures": 3,
     "requestTimeout": 30000,
-    "_comment": "maxBodySize: HTTP 请求体上限（字节）。抖音搜索结果等大响应可能超过 1MB，默认 64MB；如仍报 Request body too large 可调大。",
+    "_maxBodySize_comment": "HTTP 请求体上限（字节）。抖音搜索结果等大响应可能远超 1MB。",
     "maxBodySize": 67108864
   },
+
   "llm": {
-    "_comment": "支持 OpenAI 兼容 API 和 Anthropic 原生 Messages API。base_url 含 anthropic.com 则自动切换。",
+    "_comment": "支持 OpenAI 兼容 API、Anthropic 原生 Messages API、以及小米 MiMo。base_url 含 anthropic.com 走原生协议，含 xiaomimimo.com 走 MiMo 分支。API key 也可用环境变量 OPENAI_API_KEY 提供（优先级高于此处）。",
     "api_key": "",
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
@@ -19,13 +23,17 @@
     "timeout_ms": 60000,
     "max_retries": 3
   },
-  "vision": {
-    "_comment": "视觉/多模态设置。screenshots 模式需要本地安装 ffmpeg。DOUYIN_DISABLE_VISION=1 可禁用。",
-    "screenshot_count": 4,
-    "screenshot_width": 1024
-  },
+
   "intervals": {
+    "_comment": "单位：秒。写操作间隔为硬强制（risk-control 在命令入口阻塞到达标）；读操作默认仅建议不阻塞，见下方 readEnforce。",
     "write": [40, 55],
-    "read": [30, 50]
+    "read": [30, 50],
+    "_readEnforce_comment": "读操作是否也强制阻塞。CLI 下保持 false（交互式查询不该每次卡 30 秒）；桌面 GUI 下由主进程置 true —— 那里没有调用方自觉遵守间隔，必须由代码兜住。",
+    "readEnforce": false
+  },
+
+  "multimodal": {
+    "_comment": "text-only / screenshots / video。screenshots 与 video 需要本机安装 ffmpeg/ffprobe；桌面版不内置，缺失时自动降级回 text-only（见 core/reply-engine/video-context.js）。",
+    "mode": "text-only"
   }
 }
