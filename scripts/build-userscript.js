@@ -26,11 +26,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.resolve(__dirname, '..');
-const SOURCE = path.join(ROOT, 'scripts', 'douyin.user.js');
-const DEFAULT_OUT = path.join(ROOT, 'dist', 'douyin.user.js');
+const { renderUserscript, sourcePath } = require('../core/userscript');
 
-const PLACEHOLDERS = ['{{BRIDGE_TOKEN}}', '{{SITE_KEY}}'];
+const ROOT = path.resolve(__dirname, '..');
+const SOURCE = sourcePath();
+const DEFAULT_OUT = path.join(ROOT, 'dist', 'douyin.user.js');
 
 // ── 参数解析 ──
 
@@ -96,14 +96,13 @@ function main() {
     return 1;
   }
 
-  let out = fs.readFileSync(SOURCE, 'utf8');
-  out = out.split('{{BRIDGE_TOKEN}}').join(token);
-  out = out.split('{{SITE_KEY}}').join(site);
-
-  // 防呆：占位符没替换干净就发出去，脚本会带着 {{...}} 运行，故障很难排查
-  const leftover = PLACEHOLDERS.filter(p => out.includes(p));
-  if (leftover.length) {
-    console.error(`错误: 仍有未替换的占位符: ${leftover.join(', ')}`);
+  // 渲染逻辑与 Bridge Server 的 /install.user.js 端点是同一份实现（core/userscript.js），
+  // 避免"命令行装的能用、应用里装的不能用"这类难排查的差异
+  let out;
+  try {
+    out = renderUserscript({ token, site });
+  } catch (e) {
+    console.error(`错误: ${e.message}`);
     return 2;
   }
 

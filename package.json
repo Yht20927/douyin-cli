@@ -13,8 +13,14 @@
     "url": "https://github.com/Yht20927/douyin-cli/issues"
   },
   "keywords": [
-    "douyin", "tiktok", "comment", "automation", "bridge",
-    "tampermonkey", "cli", "sqlite"
+    "douyin",
+    "tiktok",
+    "comment",
+    "automation",
+    "bridge",
+    "tampermonkey",
+    "cli",
+    "sqlite"
   ],
   "main": "cli.js",
   "bin": {
@@ -45,6 +51,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "electron": "^40.9.3",
     "protobufjs": "^8.6.4",
     "protobufjs-cli": "^2.5.5",
     "vitest": "^4.1.8"
