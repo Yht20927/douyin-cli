@@ -7,7 +7,7 @@
 // agent 受 harness 默认（并行、避免长 sleep）影响会跳过。现在写命令入口直接 enforceDelay，
 // 即便 agent 裸调 `node cli.js post`，命令自己也阻塞到达标 —— 跳不掉。
 //
-// 间隔的单一事实源 = config.json:intervals，与 全局规则.md §1 引用同一处。
+// 间隔的单一事实源 = config.json:intervals（经 core/config 读取，支持热重载）。
 //
 // 语义边界（重要）
 // ----------------
@@ -21,44 +21,27 @@
 //   原因：读操作的风控敏感度远低于写操作，且机械阻塞会让交互式查询每次卡 30s，得不偿失。
 //   读间隔仍由 agent 在命令间自行遵守（preflight 会给出建议）。
 
-const path = require('path');
+const config = require('./config');
 
-// 默认间隔（秒）。与 config.example.json:intervals / 全局规则.md §1 保持一致。
-const DEFAULT_INTERVALS = {
-  write: [40, 55],
-  read:  [30, 50],
-};
+// 默认间隔（秒）。单一真源已迁到 core/config 的 DEFAULTS.intervals，
+// 这里保留同名导出仅为向后兼容（外部无引用，见 grep DEFAULT_INTERVALS）。
+const DEFAULT_INTERVALS = config.DEFAULTS.intervals;
 
 // 写操作命令名（对应 events.command 列；like 与 unlike 分开记录）
 const WRITE_COMMANDS = new Set(['post', 'like', 'unlike', 'delete_comment']);
 
-let _config = null;
-
-function loadConfig() {
-  if (_config) return _config;
-  try {
-    _config = require('../config.json');
-  } catch (e) {
-    _config = {};
-  }
-  return _config;
-}
-
-/** 读取间隔配置，缺省回退默认。 */
+/**
+ * 读取间隔配置。
+ *
+ * 改造前这里有模块级 `_config` 缓存（原 :35-45），导致改完 config.json 不重启进程
+ * 永远读不到新值。现在每次从 config 单一真源取值，设置页改完立即生效。
+ * 取值/纠正顺序/非法值回退都在 config.validate() 里完成，此处不再重复处理。
+ */
 function getIntervals() {
-  const cfg = loadConfig();
-  const iv = cfg && cfg.intervals ? cfg.intervals : {};
   return {
-    write: normalizeRange(iv.write, DEFAULT_INTERVALS.write),
-    read:  normalizeRange(iv.read,  DEFAULT_INTERVALS.read),
+    write: config.get('intervals.write'),
+    read: config.get('intervals.read'),
   };
-}
-
-function normalizeRange(v, fallback) {
-  if (Array.isArray(v) && v.length === 2 && v.every(x => typeof x === 'number' && x > 0)) {
-    return v[0] <= v[1] ? [v[0], v[1]] : [v[1], v[0]];
-  }
-  return fallback;
 }
 
 function sleep(ms) {

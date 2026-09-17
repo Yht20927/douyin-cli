@@ -11,12 +11,9 @@ const { BridgeClient } = require('./core/client/bridge-client');
 const { safeSerialize } = require('./core/shared/serialize');
 const commands = require('./core/commands');
 const { SITE } = require('./core/commands/helpers');
-const paths = require('./core/paths');
 
-// ── 配置 ──
-// 用 readFileSync 而非 require：require 会缓存 JSON，导致配置改了不生效
-let config = {};
-try { config = JSON.parse(fs.readFileSync(paths.configFile(), 'utf8')); } catch (e) { /* use defaults */ }
+// ── 配置（经 core/config 单一真源，含默认值合并与校验）──
+const config = require('./core/config').get();
 
 // ── Bridge 客户端 ──
 const bridge = new BridgeClient({

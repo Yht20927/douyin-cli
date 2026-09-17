@@ -2,31 +2,28 @@
 // server.js — Bridge Server 入口
 
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 
+const configModule = require('./core/config');
 const { ConnectionRegistry } = require('./core/server/registry');
 const { WebSocketHub } = require('./core/server/ws-hub');
 const { Router } = require('./core/server/router');
 
-// 加载配置
-const paths = require('./core/paths');
-const configPath = paths.configFile();
-let config;
-try {
-  config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-} catch (e) {
-  console.error('[server] 未找到 config.json，请先复制 config.example.json 并填写配置：');
-  console.error('[server]   cp config.example.json config.json');
-  process.exit(1);
+// 加载配置 —— 经 core/config 单一真源：自动合并默认值 + 校验。
+// 改造前这里在缺 config.json 时直接 exit(1)，实际上除了 token 之外的设置都有合理默认值，
+// 没必要拦住启动；现在改为缺文件也能起，缺 token 时自动生成。
+const config = configModule.get();
+
+for (const w of configModule.getWarnings()) {
+  console.error(`[server] 配置告警 ${w.key}: ${w.message}（已回退为 ${JSON.stringify(w.fallback)}）`);
 }
 
-// 自动生成 token（如果未配置）
+// 自动生成 token（如果未配置）。只写用户配置，不把默认值固化进文件。
 if (!config.bridge.token) {
-  config.bridge.token = crypto.randomBytes(24).toString('hex');
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-  console.error('[server] 已自动生成 access token 并写入 config.json');
+  const token = crypto.randomBytes(24).toString('hex');
+  configModule.set({ bridge: { token } });
+  config.bridge.token = token;
+  console.error(`[server] 已自动生成 access token 并写入 ${configModule.describe().file}`);
 }
 
 // 初始化组件

@@ -7,9 +7,7 @@
 // API Key 优先级：环境变量 OPENAI_API_KEY > config.json llm.api_key
 // 建议使用环境变量存储密钥，避免提交到版本控制。
 
-let config = {};
-try { config = require('../config.json').llm || {}; } catch {}
-
+const config = require('./config');
 const { sanitizeComment, stripQuotes } = require('./shared/sanitize');
 
 // 分批大小：防止评论过多导致 token 超限
@@ -38,13 +36,15 @@ function chunk(arr, size) {
 
 class LLMClient {
   constructor(opts = {}) {
-    // 环境变量优先，config.json 兜底
-    this.apiKey = opts.apiKey || process.env.OPENAI_API_KEY || config.api_key || '';
-    this.baseUrl = opts.baseUrl || process.env.OPENAI_BASE_URL || config.base_url || 'https://api.openai.com/v1';
-    this.model = opts.model || process.env.OPENAI_MODEL || config.model || 'gpt-4o-mini';
-    this.maxRetries = opts.maxRetries || config.max_retries || 3;
-    this.timeoutMs = opts.timeoutMs || config.timeout_ms || 60000;
-    this.maxTokens = opts.maxTokens || config.max_tokens || 4096;
+    // 优先级：显式 opts > 环境变量 > config.json（经 config 单一真源，含默认值）
+    // 注意这里每次构造都重新取值，不用模块级缓存 —— 保证设置页改完立即生效
+    const cfg = config.get('llm');
+    this.apiKey = opts.apiKey || process.env.OPENAI_API_KEY || cfg.api_key || '';
+    this.baseUrl = opts.baseUrl || process.env.OPENAI_BASE_URL || cfg.base_url || 'https://api.openai.com/v1';
+    this.model = opts.model || process.env.OPENAI_MODEL || cfg.model || 'gpt-4o-mini';
+    this.maxRetries = opts.maxRetries || cfg.max_retries || 3;
+    this.timeoutMs = opts.timeoutMs || cfg.timeout_ms || 60000;
+    this.maxTokens = opts.maxTokens || cfg.max_tokens || 4096;
   }
 
   /** 检测模型是否支持视觉输入 */
