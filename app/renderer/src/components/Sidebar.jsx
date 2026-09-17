@@ -3,11 +3,12 @@ import { describeStatus } from '../status.js';
 
 /** 目前真实存在的页面。后续（P3 起）会加：我的作品 / 评论工作台 / 草稿箱 / 私信 / 事件日志 / 设置 */
 const NAV = [
+  { key: 'queue', label: '队列' },
   { key: 'connection', label: '连接' },
   { key: 'diagnostics', label: '诊断' },
 ];
 
-export default function Sidebar({ view, onNavigate, status, version, onQuit }) {
+export default function Sidebar({ view, onNavigate, status, queueCount, version, onQuit }) {
   const d = describeStatus(status);
 
   return (
@@ -27,6 +28,10 @@ export default function Sidebar({ view, onNavigate, status, version, onQuit }) {
           >
             <span className="nav-marker" />
             {item.label}
+            {/* 有任务在跑/在等时标一个数 —— 切到别的页面也能知道队列没空 */}
+            {item.key === 'queue' && queueCount > 0 && (
+              <span className="nav-badge num">{queueCount}</span>
+            )}
           </button>
         ))}
       </nav>

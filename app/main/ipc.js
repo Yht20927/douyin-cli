@@ -8,6 +8,7 @@ const { ipcMain, shell, clipboard, app } = require('electron');
 const configModule = require('../../core/config');
 const paths = require('../../core/paths');
 const { sourceExists, sourcePath } = require('../../core/userscript');
+const { getPolicy } = require('../../core/policy');
 
 /**
  * 注册全部 IPC 处理器。
@@ -78,20 +79,58 @@ function registerIpc(opts) {
 
   // ── 配置（脱敏）──
   ipcMain.handle('config:describe', () => configModule.describe());
+
+  // ── 策略与队列 ──
+  // 策略统计每次现算：它读 events 表，数据随时在变，缓存只会带来"界面显示的是旧的"。
+  ipcMain.handle('policy:stats', () => getPolicy().stats());
+
+  ipcMain.handle('queue:state', () => ({
+    tasks: opts.queue.list(),
+    stats: opts.queue.stats(),
+    policy: getPolicy().stats(),
+  }));
+
+  ipcMain.handle('queue:enqueue', (_e, spec) => {
+    // 只接受普通对象，避免渲染层被注入后塞进奇怪的东西
+    if (!spec || typeof spec !== 'object') return { ok: false, error: '参数不合法' };
+    try {
+      const id = opts.queue.enqueue({
+        command: String(spec.command || ''),
+        argv: Array.isArray(spec.argv) ? spec.argv.map(String) : [],
+        label: spec.label ? String(spec.label) : undefined,
+        meta: spec.meta && typeof spec.meta === 'object' ? spec.meta : {},
+      });
+      return { ok: true, id };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('queue:cancel', (_e, id) => ({ ok: opts.queue.cancel(String(id)) }));
+
+  ipcMain.handle('queue:cancel-pending', () => ({ ok: true, count: opts.queue.cancelPending() }));
 }
 
 /**
- * 把桥接状态变化推给渲染层。
+ * 把桥接状态与队列变化推给渲染层。
  *
  * @param {import('electron').BrowserWindow} win
  * @param {object} bridge
- * @returns {() => void} 取消订阅
+ * @param {object} queue
+ * @returns {() => void} 取消订阅（两个订阅一起撤）
  */
-function forwardStatusToWindow(win, bridge) {
-  return bridge.subscribe((status) => {
+function forwardStatusToWindow(win, bridge, queue) {
+  const un1 = bridge.subscribe((status) => {
     if (!win || win.isDestroyed()) return;
     win.webContents.send('bridge:status-changed', status);
   });
+  const un2 = queue.subscribe((payload) => {
+    if (!win || win.isDestroyed()) return;
+    // 队列变化时把策略一并推过去 —— 配额会随任务完成而变化，
+    // 分两条消息推容易让界面短暂显示不一致的组合
+    win.webContents.send('queue:changed', { ...payload, policy: getPolicy().stats() });
+  });
+  return () => { un1(); un2(); };
 }
 
 module.exports = { registerIpc, forwardStatusToWindow };

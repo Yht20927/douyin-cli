@@ -11,6 +11,7 @@ const ASSETS = path.join(__dirname, '..', 'assets');
 /**
  * @param {object} opts
  * @param {() => object} opts.getStatus  - 取当前桥接状态
+ * @param {() => object} [opts.getQueue] - 取队列表述（最小化后要看得到在忙什么）
  * @param {() => void}   opts.onOpen     - 打开主窗口
  * @param {() => void}   opts.onRefresh  - 立即重新检测连接
  * @param {() => void}   opts.onQuit     - 退出应用
@@ -30,21 +31,45 @@ function createTray(opts) {
     return '等待油猴脚本连接';
   }
 
+  /**
+   * 队列里最值得看一眼的那一条。
+   * 应用常驻托盘，用户最小化时唯一能看到"正在等 30 秒"的地方就是这里。
+   */
+  function queueLine() {
+    if (!opts.getQueue) return null;
+    const q = opts.getQueue();
+    const cur = (q.tasks || []).find(t => t.status === 'running' || t.status === 'waiting');
+    if (cur) {
+      if (cur.status === 'waiting' && cur.wait) {
+        return `${cur.label}：等 ${Math.ceil(cur.wait.remainingMs / 1000)}s`;
+      }
+      return `${cur.label}：执行中`;
+    }
+    const pending = (q.stats && q.stats.counts && q.stats.counts.pending) || 0;
+    return pending > 0 ? `队列中还有 ${pending} 个任务` : null;
+  }
+
   function update() {
     const s = opts.getStatus();
     const online = !!(s.listening && s.online);
+    const q = queueLine();
 
     tray.setImage(icon(online ? 'tray-online.png' : 'tray-offline.png'));
-    tray.setToolTip(`抖音评论运营助手 — ${statusLine(s)}`);
+    tray.setToolTip(`抖音评论运营助手 — ${statusLine(s)}${q ? `\n${q}` : ''}`);
 
-    tray.setContextMenu(Menu.buildFromTemplate([
+    const items = [
       { label: statusLine(s), enabled: false },
+    ];
+    if (q) items.push({ label: q, enabled: false });
+    items.push(
       { type: 'separator' },
       { label: '打开主窗口', click: () => opts.onOpen() },
       { label: '重新检测连接', click: () => opts.onRefresh() },
       { type: 'separator' },
-      { label: '退出', click: () => opts.onQuit() },
-    ]));
+      { label: '退出', click: () => opts.onQuit() }
+    );
+
+    tray.setContextMenu(Menu.buildFromTemplate(items));
   }
 
   // 左键点击托盘：显示/聚焦窗口（Windows 上习惯如此）

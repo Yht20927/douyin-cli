@@ -40,4 +40,22 @@ contextBridge.exposeInMainWorld('dy', {
     /** 脱敏后的配置快照（api_key / token 已打码） */
     describe: () => ipcRenderer.invoke('config:describe'),
   },
+
+  queue: {
+    /** 任务列表 + 队列统计 + 策略统计（一次取全，避免界面出现不一致的组合） */
+    state: () => ipcRenderer.invoke('queue:state'),
+    /** 入队一个命令 */
+    enqueue: (spec) => ipcRenderer.invoke('queue:enqueue', spec),
+    /** 取消单个任务 */
+    cancel: (id) => ipcRenderer.invoke('queue:cancel', id),
+    /** 取消所有尚未开始的任务 */
+    cancelPending: () => ipcRenderer.invoke('queue:cancel-pending'),
+    /** 订阅队列变化，返回取消订阅函数 */
+    onChanged: (cb) => subscribe('queue:changed', cb),
+  },
+
+  policy: {
+    /** 只取策略统计（配额/轮次/熔断），不拉任务列表 */
+    stats: () => ipcRenderer.invoke('policy:stats'),
+  },
 });

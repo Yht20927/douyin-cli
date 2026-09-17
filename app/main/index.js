@@ -36,6 +36,9 @@ function bootstrap() {
   const { createMainWindow, loadRenderer } = require('./window');
   const { createTray } = require('./tray');
   const { registerIpc, forwardStatusToWindow } = require('./ipc');
+  const { createTaskQueue } = require('../../core/runtime/task-queue');
+  const { createContext, bindCommands } = require('../../core/runtime/context');
+  const { getPolicy } = require('../../core/policy');
 
   // ── 数据目录 ──
   const dataDirInfo = applyDataDir(app);
@@ -59,6 +62,22 @@ function bootstrap() {
 
   const bridge = createBridgeManager({ config: configModule.get() });
 
+  // 所有命令都经这条队列执行，保证串行（全局规则 §1「严禁并发」）。
+  // 队列不自己拼 ctx —— 由这里注入，与 CLI 共用同一套组装逻辑。
+  const queue = createTaskQueue({
+    policy: getPolicy(),
+    createContext: (task, o = {}) => {
+      const ctx = createContext({
+        command: task.command,
+        taskId: task.id,
+        signal: o.signal,
+        extraSinks: o.extraSinks || [],
+      });
+      bindCommands(ctx);
+      return ctx;
+    },
+  });
+
   let win = null;
   let tray = null;
   /** 窗口级 bridge 订阅的取消函数（窗口重建时必须先取消，否则累积） */
@@ -77,6 +96,8 @@ function bootstrap() {
   async function quitApp() {
     if (quitting) return;
     quitting = true;
+    // 先停队列（取消未开始的任务），再停桥接服务，最后退出
+    try { queue.stop(); } catch (e) { log.warn(`[app] 停止队列时出错: ${e.message}`); }
     try { await bridge.stop(); } catch (e) { log.warn(`[app] 停止桥接服务时出错: ${e.message}`); }
     if (tray) tray.destroy();
     app.quit();
@@ -87,6 +108,7 @@ function bootstrap() {
     if (tray) return tray;
     tray = createTray({
       getStatus: () => bridge.getStatus(),
+      getQueue: () => ({ tasks: queue.list(), stats: queue.stats() }),
       onOpen: showMainWindow,
       onRefresh: () => bridge.refresh(),
       onQuit: quitApp,
@@ -102,7 +124,7 @@ function bootstrap() {
 
     // 上一个窗口的订阅要先撤掉，否则每重建一次就多一份推送
     if (unwatchWindow) { unwatchWindow(); unwatchWindow = null; }
-    unwatchWindow = forwardStatusToWindow(win, bridge);
+    unwatchWindow = forwardStatusToWindow(win, bridge, queue);
 
     // 关窗口 → 最小化到托盘（默认）；置 false 则真关。
     // 定时拉取要求进程常驻，所以默认不是退出。
@@ -138,8 +160,10 @@ function bootstrap() {
     }
 
     // ── 进程级：只注册一次 ──
-    registerIpc({ bridge, dataDirInfo, configWarnings });
+    registerIpc({ bridge, queue, dataDirInfo, configWarnings });
     bridge.subscribe((status) => { if (tray) tray.update(status); });
+    // 队列里在等待/执行时，托盘提示也要跟着变 —— 否则最小化后完全看不出在忙
+    queue.subscribe(() => { if (tray) tray.update(bridge.getStatus()); });
     ensureTray();
 
     createWindow();

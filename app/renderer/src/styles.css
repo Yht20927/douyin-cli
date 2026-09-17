@@ -385,3 +385,64 @@ code {
   max-width: 70vw;
 }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px) } }
+
+/* ══════════════════════════════════════════════
+   倒计时 —— 队列页的主角
+   ──────────────────────────────────────────────
+   这个工具的存在意义是让人守在发布节奏里，所以"还要等多久"配得上
+   全页最大的字号。等宽 + 定宽数字，避免每秒跳动时宽度抖动。
+   ══════════════════════════════════════════════ */
+
+.countdown {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  color: var(--wait);
+  line-height: 1;
+  align-self: center;
+  padding-left: 8px;
+}
+
+/* ══════════════════════════════════════════════
+   配额
+   ══════════════════════════════════════════════ */
+
+.quota-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.quota-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 6px;
+}
+.quota-label { font-size: 12px; color: var(--text-3); }
+.quota-value { font-size: 15px; font-weight: 600; color: var(--text); }
+.quota-max { color: var(--text-3); font-weight: 400; font-size: 12.5px; }
+
+.quota-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.quota-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width .25s ease-out;
+}
+
+/* 出问题的任务行：左侧加一道细条，与状态色一致 */
+.row-problem { box-shadow: inset 2px 0 0 var(--bad); }
+
+/* 侧栏导航上的任务数角标：切到别的页面也知道队列没空 */
+.nav-badge {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--text-2);
+  border: 1px solid var(--line-2);
+}
