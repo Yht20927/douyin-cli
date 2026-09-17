@@ -39,6 +39,7 @@ const DEFAULT_PROFILE = 'default';
  * @param {AbortSignal} [opts.signal] - 取消信号
  * @param {string} [opts.profileId]   - 账号 profile（多账号预留）
  * @param {object} [opts.events]      - 事件发射器（TaskQueue 提供）
+ * @param {Function} [opts.onWait]    - 节奏等待回调，见 core/risk-control.enforceDelay
  * @param {object} [opts.logContext]  - 附加到日志上的额外上下文
  * @returns {object} ctx
  */
@@ -71,6 +72,9 @@ function createContext(opts = {}) {
     taskId: opts.taskId || null,
     profileId: opts.profileId || DEFAULT_PROFILE,
     events: opts.events || null,
+    // 节奏等待的回调。CLI 下为 null → enforceDelay 走默认的 stderr 打印；
+    // GUI 下由 TaskQueue 注入 → 等待过程在界面上画倒计时并可取消。
+    onWait: opts.onWait || null,
     // ── 通信（下面填充）──
     bridgeCall: null,
     loggedCall: null,

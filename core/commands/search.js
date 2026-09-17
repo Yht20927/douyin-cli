@@ -1,6 +1,7 @@
 // lib/commands/search.js — 搜索视频
 
-const { SITE, escapeExpression, getFlag, withAudit } = require('./helpers');
+const { SITE, escapeExpression, getFlag, withAudit, throttleOpts } = require('./helpers');
+const riskControl = require('../risk-control');
 
 /**
  * 搜索视频
@@ -12,6 +13,9 @@ async function cmdSearch(ctx, args) {
   if (!kw) throw new Error('用法: node cli.js search <keyword> [--offset N] [--count N]');
   const offset = getFlag(args, '--offset', 0);
   const count = Math.min(getFlag(args, '--count', 10), 20);
+
+  // 读节奏守卫（CLI 下为 advisory no-op，见 get.js 注释）
+  await riskControl.enforceDelay('read', throttleOpts(ctx, args));
 
   return withAudit(ctx, 'search', { keyword: kw, offset, count }, async () => {
     const expr = `window.__bridge.search('${escapeExpression(kw)}', ${offset}, ${count})`;

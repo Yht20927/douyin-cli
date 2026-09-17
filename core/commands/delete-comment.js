@@ -1,6 +1,6 @@
 // lib/commands/delete-comment.js — 删除评论
 
-const { escapeExpression } = require('./helpers');
+const { escapeExpression, throttleOpts } = require('./helpers');
 const corpus = require('../memory/corpus');
 const riskControl = require('../risk-control');
 
@@ -14,7 +14,7 @@ async function cmdDeleteComment(ctx, args) {
   if (!cid) throw new Error('用法: node cli.js delete-comment <cid>');
 
   // 请求节奏守卫（--no-throttle 旁路）
-  await riskControl.enforceDelay('write', { force: args.includes('--no-throttle') });
+  await riskControl.enforceDelay('write', throttleOpts(ctx, args));
 
   ctx.audit.startOperation('delete_comment', { cid });
 

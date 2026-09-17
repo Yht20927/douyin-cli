@@ -1,6 +1,7 @@
 // lib/commands/replies.js — 获取单条评论的回复列表
 
-const { getFlag, formatComment, escapeExpression, withAudit } = require('./helpers');
+const { getFlag, formatComment, escapeExpression, withAudit, throttleOpts } = require('./helpers');
+const riskControl = require('../risk-control');
 const comments = require('../memory/comments');
 const logger = require('../runtime/logger');
 
@@ -18,6 +19,9 @@ async function cmdReplies(ctx, args) {
   for (let i = 1; i < args.length; i++) {
     if (!args[i].startsWith('--') && args[i] !== args[0] && !awemeId) awemeId = String(args[i]);
   }
+
+  // 读节奏守卫（CLI 下为 advisory no-op，见 get.js 注释）
+  await riskControl.enforceDelay('read', throttleOpts(ctx, args));
 
   return withAudit(ctx, 'replies', { cid, aweme_id: awemeId, cursor, count }, async () => {
     const expr = `window.__bridge.replies('${escapeExpression(cid)}', '${escapeExpression(awemeId)}', ${cursor}, ${count})`;

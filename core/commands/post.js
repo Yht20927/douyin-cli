@@ -1,6 +1,6 @@
 // lib/commands/post.js — 发表评论/回复
 
-const { escapeExpression, getFlag } = require('./helpers');
+const { escapeExpression, getFlag, throttleOpts } = require('./helpers');
 const users = require('../memory/users');
 const comments = require('../memory/comments');
 const videos = require('../memory/videos');
@@ -23,7 +23,7 @@ async function cmdPost(ctx, args) {
   const rrid = getFlag(args, '--reply-to-reply', null);
 
   // 请求节奏守卫：距上次写不足间隔则阻塞（--no-throttle 旁路，供 suggest 内部调用与调试）
-  await riskControl.enforceDelay('write', { force: args.includes('--no-throttle') });
+  await riskControl.enforceDelay('write', throttleOpts(ctx, args));
 
   // @ 提及支持
   let atUid = null, atSecUid = null;

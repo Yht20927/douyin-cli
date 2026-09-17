@@ -1,6 +1,6 @@
 // lib/commands/like.js — 点赞/取消点赞视频
 
-const { escapeExpression } = require('./helpers');
+const { escapeExpression, throttleOpts } = require('./helpers');
 const riskControl = require('../risk-control');
 
 /**
@@ -13,7 +13,7 @@ async function cmdLike(ctx, args) {
   if (!awemeId) throw new Error('用法: node cli.js like <aweme_id> [--unlike]');
 
   // 请求节奏守卫（--no-throttle 旁路）
-  await riskControl.enforceDelay('write', { force: args.includes('--no-throttle') });
+  await riskControl.enforceDelay('write', throttleOpts(ctx, args));
 
   const unlike = args.includes('--unlike');
   const type = unlike ? 0 : 1;

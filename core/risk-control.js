@@ -23,6 +23,7 @@
 
 const config = require('./config');
 const logger = require('./runtime/logger');
+const { sleepAbortable } = require('./runtime/abort');
 
 // 默认间隔（秒）。单一真源已迁到 core/config 的 DEFAULTS.intervals，
 // 这里保留同名导出仅为向后兼容（外部无引用，见 grep DEFAULT_INTERVALS）。
@@ -45,45 +46,63 @@ function getIntervals() {
   };
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, Math.max(0, ms)));
-}
 
 function randomInt(min, max) {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
+/** 读操作命令名（对应 events.command 列） */
+const READ_COMMANDS = new Set(['get', 'search', 'my', 'replies', 'user', 'analyze']);
+
 /**
- * 查 events 表最近一次写操作（post/like/unlike/delete_comment）的成功时间戳（ms）。
+ * 查 events 表最近一次指定命令集合的成功时间戳（ms）。
  * 无记录或 SQL 失败返回 0。
+ * @param {Set<string>|string[]} commands
  */
-function lastWriteTs() {
+function lastOpTs(commands) {
+  const list = Array.from(commands);
+  if (list.length === 0) return 0;
   try {
     const { getDb } = require('./memory/db');
     const db = getDb();
+    const placeholders = list.map(() => '?').join(',');
     const row = db.prepare(`
       SELECT max(ts) AS ms FROM events
       WHERE platform = 'douyin'
-        AND command IN ('post', 'like', 'unlike', 'delete_comment')
+        AND command IN (${placeholders})
         AND status = 'success'
-    `).get();
+    `).get(...list);
     return (row && row.ms) || 0;
   } catch (e) {
-    logger.debug('[risk-control.lastWriteTs] failed: ' + e.message);
+    logger.debug('[risk-control.lastOpTs] failed: ' + e.message);
     return 0;
   }
 }
 
+/** 最近一次写操作（post/like/unlike/delete_comment）的成功时间戳（ms） */
+function lastWriteTs() {
+  return lastOpTs(WRITE_COMMANDS);
+}
+
+/** 最近一次读操作的成功时间戳（ms） */
+function lastReadTs() {
+  return lastOpTs(READ_COMMANDS);
+}
+
 /**
- * 返回距下次允许写操作还需等待的毫秒数（0 = 可立即执行）。
+ * 返回距下次允许某类操作还需等待的毫秒数（0 = 可立即执行）。
+ * @param {'write'|'read'} type
  */
-function msUntilNextWrite() {
-  const [minSec] = getIntervals().write;
-  const minMs = minSec * 1000;
-  const last = lastWriteTs();
+function msUntilNext(type = 'write') {
+  const [minSec] = getIntervals()[type] || DEFAULT_INTERVALS.write;
+  const last = type === 'read' ? lastReadTs() : lastWriteTs();
   if (!last) return 0;
-  const elapsed = Date.now() - last;
-  return Math.max(0, minMs - elapsed);
+  return Math.max(0, minSec * 1000 - (Date.now() - last));
+}
+
+/** 距下次允许写还需等待的毫秒数（0 = 可立即执行） */
+function msUntilNextWrite() {
+  return msUntilNext('write');
 }
 
 function shouldBypass(opts = {}) {
@@ -91,44 +110,79 @@ function shouldBypass(opts = {}) {
 }
 
 /**
- * 强制等待到下次写操作允许。被写命令入口 await 调用。
+ * 强制等待到下次同类操作允许。被命令入口 await 调用。
+ *
+ * 可观测 / 可取消（GUI 需要）
+ * -------------------------
+ * 改造前这里是裸 `await sleep(need)`：CLI 下没问题，但 GUI 里既看不到还要等多久，
+ * 也无法取消。现在等待过程通过 onWait 回调上报，并支持 AbortSignal 打断：
+ *
+ *   onWait({ phase, waitMs, deadline, reason })   等待开始/更新时调用一次
+ *   opts.signal                                   取消时抛 AbortError
+ *
+ * onWait 缺省时按原样打印到 stderr —— **CLI 输出与改造前逐字节一致**。
+ *
+ * 读操作是否强制
+ * --------------
+ * 默认仍为 advisory（不阻塞），保持 CLI 交互式查询不被卡 30s 的既有语义。
+ * 但 config.intervals.readEnforce 置 true 时读操作也强制 —— GUI 下会打开，
+ * 因为那里没有 agent 自觉遵守间隔，必须由代码兜住。
+ *
  * @param {'write'|'read'} type
- * @param {object} opts - { force: boolean } 跳过（--no-throttle / 测试 env）
+ * @param {object} opts - { force, signal, onWait }
  * @returns {Promise<{skipped:boolean, waitedMs:number, lastWriteTs:number, intervals:number[]}>}
+ * @throws {AbortError} signal 在等待期间被 abort
  */
 async function enforceDelay(type = 'write', opts = {}) {
   const intervals = getIntervals()[type] || DEFAULT_INTERVALS.write;
+  const { signal, onWait } = opts;
 
   if (shouldBypass(opts)) {
     return { skipped: true, waitedMs: 0, lastWriteTs: lastWriteTs(), intervals };
   }
 
-  // 读操作：advisory，不阻塞（见文件头说明）
-  if (type !== 'write') {
+  // 读操作：默认 advisory，不阻塞（见文件头说明）
+  const readEnforced = type === 'read' && config.get('intervals.readEnforce') === true;
+  if (type !== 'write' && !readEnforced) {
     return { skipped: false, waitedMs: 0, advisory: true, intervals };
   }
 
-  // 写操作：硬强制
-  const t0 = Date.now();
-  const last = lastWriteTs();
+  const label = type === 'read' ? '读' : '写';
+  const lastOf = () => (type === 'read' ? lastReadTs() : lastWriteTs());
 
-  // 1) 硬性下限：距上次写至少 minSec 秒
-  const need = msUntilNextWrite();
+  // 上报一次等待信息：CLI 走默认打印，GUI 走回调画倒计时
+  const reportWait = (phase, waitMs, reason) => {
+    if (onWait) {
+      onWait({ phase, waitMs, deadline: Date.now() + waitMs, reason, type });
+    } else {
+      logger.info(`⏳ [risk-control] ${reason}...`);
+    }
+  };
+
+  const t0 = Date.now();
+  const last = lastOf();
+
+  // 1) 硬性下限：距上次同类操作至少 minSec 秒
+  const need = msUntilNext(type);
   if (need > 0) {
     const sinceLast = last ? Math.round((Date.now() - last) / 1000) : 0;
-    logger.info(`⏳ [risk-control] 距上次写仅 ${sinceLast}s，强制等待 ${Math.ceil(need / 1000)}s（下限 ${intervals[0]}s）...`);
-    await sleep(need);
+    reportWait(
+      'min_interval',
+      need,
+      `距上次${label}仅 ${sinceLast}s，强制等待 ${Math.ceil(need / 1000)}s（下限 ${intervals[0]}s）`
+    );
+    await sleepAbortable(need, signal);
   }
 
   // 2) 叠加随机量，让总间隔落在 [min, max]
-  const lastAfterFloor = lastWriteTs();
+  const lastAfterFloor = lastOf();
   const elapsedSec = lastAfterFloor ? (Date.now() - lastAfterFloor) / 1000 : intervals[1];
   if (elapsedSec < intervals[1]) {
     const targetTotal = randomInt(intervals[0], intervals[1]);
     const extra = Math.max(0, Math.round(targetTotal - elapsedSec));
     if (extra > 0) {
-      logger.info(`⏳ [risk-control] 叠加随机节奏，再等 ${extra}s（目标总间隔 ${targetTotal}s）...`);
-      await sleep(extra * 1000);
+      reportWait('jitter', extra * 1000, `叠加随机节奏，再等 ${extra}s（目标总间隔 ${targetTotal}s）`);
+      await sleepAbortable(extra * 1000, signal);
     }
   }
 
@@ -235,11 +289,15 @@ function preflightPublish({ cid, uid, replyText } = {}) {
 module.exports = {
   enforceDelay,
   preflight,
+  msUntilNext,
   msUntilNextWrite,
   lastWriteTs,
+  lastReadTs,
+  lastOpTs,
   getIntervals,
   DEFAULT_INTERVALS,
   WRITE_COMMANDS,
+  READ_COMMANDS,
   // 风控信号与发布前预检
   hasRecentRiskBlock,
   preflightPublish,

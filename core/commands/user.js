@@ -4,7 +4,8 @@
 // 但显式传入 sec_user_id、from_user_page=1，用于查看他人主页作品）。
 // 入参支持纯 sec_user_id 或完整用户主页 URL（https://www.douyin.com/user/<sec_uid>）。
 
-const { escapeExpression, getFlag } = require('./helpers');
+const { escapeExpression, getFlag, throttleOpts } = require('./helpers');
+const riskControl = require('../risk-control');
 const videos = require('../memory/videos');
 const logger = require('../runtime/logger');
 
@@ -37,6 +38,9 @@ async function cmdUser(ctx, args) {
   }
   const count = Math.min(getFlag(args, '--count', 18), 35);
   const cursor = getFlag(args, '--cursor', 0);
+
+  // 读节奏守卫（CLI 下为 advisory no-op，见 get.js 注释）
+  await riskControl.enforceDelay('read', throttleOpts(ctx, args));
 
   ctx.audit.startOperation('user', { sec_user_id: secUserId, count, cursor });
 

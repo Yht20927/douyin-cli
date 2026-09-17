@@ -100,6 +100,25 @@ async function withAudit(ctx, opName, meta, work) {
   return out?.output;
 }
 
+/**
+ * 构造 risk-control.enforceDelay 的选项。
+ *
+ * 把 ctx 上的取消信号与等待回调透传下去 —— CLI 下这两个都是 undefined，
+ * 于是 enforceDelay 走默认的 stderr 打印，输出与改造前逐字节一致；
+ * GUI 下由 TaskQueue 注入，等待过程就能在界面上画倒计时并可取消。
+ *
+ * @param {object} ctx
+ * @param {string[]} args
+ * @returns {{force:boolean, signal:(AbortSignal|null|undefined), onWait:(Function|null|undefined)}}
+ */
+function throttleOpts(ctx, args) {
+  return {
+    force: Array.isArray(args) && args.includes('--no-throttle'),
+    signal: ctx ? ctx.signal : undefined,
+    onWait: ctx ? ctx.onWait : undefined,
+  };
+}
+
 module.exports = {
   SITE,
   escapeExpression,
@@ -109,4 +128,5 @@ module.exports = {
   randomInt,
   weightedRandom,
   withAudit,
+  throttleOpts,
 };

@@ -1,6 +1,7 @@
 // lib/commands/my.js — 我的作品列表
 
-const { getFlag, withAudit } = require('./helpers');
+const { getFlag, withAudit, throttleOpts } = require('./helpers');
+const riskControl = require('../risk-control');
 const videos = require('../memory/videos');
 const logger = require('../runtime/logger');
 
@@ -11,6 +12,9 @@ const logger = require('../runtime/logger');
  */
 async function cmdMy(ctx, args) {
   const count = Math.min(getFlag(args, '--count', 20), 20);
+
+  // 读节奏守卫（CLI 下为 advisory no-op，见 get.js 注释）
+  await riskControl.enforceDelay('read', throttleOpts(ctx, args));
 
   return withAudit(ctx, 'my', { count }, async () => {
     const expr = `window.__bridge.myPosts(0, ${count})`;

@@ -1,6 +1,7 @@
 // lib/commands/get.js — 获取视频评论（支持嵌套回复、增量拉取）
 
-const { escapeExpression, getFlag, formatComment } = require('./helpers');
+const { escapeExpression, getFlag, formatComment, throttleOpts } = require('./helpers');
+const riskControl = require('../risk-control');
 const users = require('../memory/users');
 const comments = require('../memory/comments');
 const videos = require('../memory/videos');
@@ -136,6 +137,10 @@ async function cmdGet(ctx, args) {
   const pages = getFlag(args, '--pages', all ? Infinity : 1);
   const isNew = args.includes('--new');
   const since = getFlag(args, '--since', null);
+
+  // 读操作节奏守卫。CLI 下 intervals.readEnforce=false → 立即返回（advisory），
+  // 行为与改造前一致；GUI 下置 true → 真正阻塞，因为那里没有 agent 自觉遵守间隔。
+  await riskControl.enforceDelay('read', throttleOpts(ctx, args));
 
   let cutoff = null;
   if (isNew) {
