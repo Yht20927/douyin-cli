@@ -5,11 +5,17 @@
 //   2. 数据目录        —— 必须在任何 core 模块落盘之前定下来
 //   3. 日志 sink       —— 之后的启动过程才有留痕
 //   4. 内嵌桥接服务    —— 失败要能体面地告诉用户，而不是白屏
-//   5. 窗口 + 托盘
+//   5. IPC / 订阅 / 窗口 / 托盘
+//
+// 生命周期上刻意区分"创建一次"与"可重建"：
+//   - IPC 处理器、托盘、bridge 订阅 → 进程级，只建一次
+//     （ipcMain.handle 对同一 channel 重复注册会直接抛错；
+//      订阅重复注册则是慢性泄漏）
+//   - 窗口 → 可重建（macOS 上关掉所有窗口后点 Dock 图标会走 activate）
 //
 // 退出走一条明确的路：quitApp() → 停桥接 → 毁托盘 → app.quit()。
-// 不依赖 before-quit 里做异步清理（那里只能 preventDefault + 手动退出，
-// 很容易写成递归或半退出状态）。
+// 不依赖 before-quit 里做异步清理 —— 那里只能 preventDefault + 手动退出，
+// 很容易写成递归或半退出状态。
 
 const { app, dialog } = require('electron');
 
@@ -52,8 +58,11 @@ function bootstrap() {
   }
 
   const bridge = createBridgeManager({ config: configModule.get() });
+
   let win = null;
   let tray = null;
+  /** 窗口级 bridge 订阅的取消函数（窗口重建时必须先取消，否则累积） */
+  let unwatchWindow = null;
   /** 是否已进入退出流程（此后窗口 close 不再拦截） */
   let quitting = false;
 
@@ -73,33 +82,44 @@ function bootstrap() {
     app.quit();
   }
 
-  function createUi() {
-    win = createMainWindow();
-    loadRenderer(win, app);
-
-    forwardStatusToWindow(win, bridge);
-    bridge.subscribe((status) => { if (tray) tray.update(status); });
-
-    // 关窗口 → 最小化到托盘（默认）；置 false 则真关。
-    // 定时拉取要求进程常驻，所以默认不是退出。
-    win.on('close', (e) => {
-      if (quitting) return;                       // 退出流程中放行
-      if (!configModule.get('app.minimizeToTray')) return;  // 用户要求真关
-      e.preventDefault();
-      win.hide();
-      if (tray) tray.update(bridge.getStatus());
-    });
-
-    win.on('closed', () => { win = null; });
-
+  /** 托盘是进程级的，只建一次 */
+  function ensureTray() {
+    if (tray) return tray;
     tray = createTray({
       getStatus: () => bridge.getStatus(),
       onOpen: showMainWindow,
       onRefresh: () => bridge.refresh(),
       onQuit: quitApp,
     });
+    return tray;
+  }
 
-    registerIpc({ bridge, dataDirInfo, configWarnings });
+  function createWindow() {
+    if (win && !win.isDestroyed()) { showMainWindow(); return win; }
+
+    win = createMainWindow();
+    loadRenderer(win, app);
+
+    // 上一个窗口的订阅要先撤掉，否则每重建一次就多一份推送
+    if (unwatchWindow) { unwatchWindow(); unwatchWindow = null; }
+    unwatchWindow = forwardStatusToWindow(win, bridge);
+
+    // 关窗口 → 最小化到托盘（默认）；置 false 则真关。
+    // 定时拉取要求进程常驻，所以默认不是退出。
+    win.on('close', (e) => {
+      if (quitting) return;                                 // 退出流程中放行
+      if (!configModule.get('app.minimizeToTray')) return;   // 用户要求真关
+      e.preventDefault();
+      win.hide();
+      if (tray) tray.update(bridge.getStatus());
+    });
+
+    win.on('closed', () => {
+      if (unwatchWindow) { unwatchWindow(); unwatchWindow = null; }
+      win = null;
+    });
+
+    return win;
   }
 
   app.whenReady().then(async () => {
@@ -116,11 +136,22 @@ function bootstrap() {
       app.exit(1);
       return;
     }
-    createUi();
+
+    // ── 进程级：只注册一次 ──
+    registerIpc({ bridge, dataDirInfo, configWarnings });
+    bridge.subscribe((status) => { if (tray) tray.update(status); });
+    ensureTray();
+
+    createWindow();
   });
 
   // 第二个实例被启动 → 把已有窗口叫到前面
   app.on('second-instance', showMainWindow);
+
+  // macOS：关掉所有窗口后应用仍活着，点 Dock 图标应重建窗口
+  app.on('activate', () => {
+    if (app.isReady()) createWindow();
+  });
 
   // 窗口被真正关掉时（minimizeToTray=false 的情况）才退出；
   // 托盘常驻模式下窗口只是 hide，不会触发这里。
