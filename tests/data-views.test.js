@@ -1,0 +1,269 @@
+// tests/data-views.test.js — 界面视图模型
+//
+// 数据层与命令层的分工是刻意的：看本地数据走这里（读 SQLite，无风控风险），
+// 动手（拉新评论、发布）才走队列。这里验证前者的正确性，尤其是
+// **判定结果必须与发布时用的决策树一致** —— 界面上显示"建议回复"，
+// 点发布时却被拦下，是最伤信任的那种不一致。
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const config = require('../core/config');
+
+const ENV_KEYS = ['DOUYIN_STORAGE_DIR', 'DOUYIN_LOG_DIR', 'DOUYIN_CONFIG'];
+
+function withTempEnv(cfg, fn) {
+  return async () => {
+    const saved = {};
+    for (const k of ENV_KEYS) saved[k] = process.env[k];
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dy-views-'));
+    process.env.DOUYIN_STORAGE_DIR = path.join(tmp, 'storage');
+    process.env.DOUYIN_LOG_DIR = path.join(tmp, 'logs');
+    const cfgFile = path.join(tmp, 'config.json');
+    fs.writeFileSync(cfgFile, JSON.stringify(cfg || {}));
+    process.env.DOUYIN_CONFIG = cfgFile;
+    config.reset();
+
+    const purge = () => {
+      for (const m of ['../core/memory/db', '../core/memory/videos', '../core/memory/comments',
+        '../core/memory/users', '../core/memory/drafts', '../core/data/views']) {
+        delete require.cache[require.resolve(m)];
+      }
+    };
+    purge();
+
+    try {
+      const views = require('../core/data/views');
+      const vids = require('../core/memory/videos');
+      const cmts = require('../core/memory/comments');
+      const usrs = require('../core/memory/users');
+      const drfs = require('../core/memory/drafts');
+      await fn({ views, vids, cmts, usrs, drfs });
+    } finally {
+      try { require('../core/memory/db').closeDb(); } catch (e) { /* ignore */ }
+      purge();
+      config.reset();
+      for (const k of ENV_KEYS) {
+        if (saved[k] == null) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  };
+}
+
+/**
+ * 造一条评论。
+ *
+ * 注意 replied 必须走 markReplied()：upsert 的列里根本没有这一列 ——
+ * "已回复"是只有真正发出去之后才该置位的权威状态，不该能被批量写入顺手改掉。
+ * 首版这里直接把 replied 塞给 upsert，结果静默不生效，8 个用例一起挂。
+ */
+function addComment(cmts, awemeId, cid, text, extra = {}) {
+  cmts.upsert({
+    cid, awemeId, uid: extra.uid || 'u1', text,
+    digg: extra.digg || 0, createdAt: extra.createdAt || Date.now(),
+  });
+  if (extra.replied) cmts.markReplied(cid, awemeId, extra.replyCid || `reply-${cid}`);
+}
+
+describe('我的作品', () => {
+  it('空库返回空数组', withTempEnv({}, async ({ views }) => {
+    expect(views.listMyVideos()).toEqual([]);
+    expect(views.overview()).toMatchObject({ videos: 0, comments: 0 });
+  }));
+
+  it('带出评论统计（总数/已回/待回）', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: '第一个视频', isMine: true });
+    addComment(cmts, 'v1', 'c1', '这个怎么做的？');
+    addComment(cmts, 'v1', 'c2', '不错的分享内容啊');
+    addComment(cmts, 'v1', 'c3', '最早的那条评论', { replied: true, replyCid: 'r1' });
+
+    const [v] = views.listMyVideos();
+    expect(v.awemeId).toBe('v1');
+    expect(v.title).toBe('第一个视频');
+    expect(v.commentStats).toEqual({ total: 3, replied: 1, pending: 2 });
+  }));
+
+  it('只列自己的作品，不含别人的', withTempEnv({}, async ({ views, vids }) => {
+    vids.upsert({ awemeId: 'mine', title: '我的', isMine: true });
+    vids.upsert({ awemeId: 'other', title: '别人的', isMine: false });
+    const list = views.listMyVideos();
+    expect(list.map(v => v.awemeId)).toEqual(['mine']);
+  }));
+
+  it('视频详情含 desc 与封面（作品列表要显示）', withTempEnv({}, async ({ views, vids }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', desc: '这是描述', coverUrl: 'https://x/c.jpg', isMine: true });
+    const d = views.videoDetail('v1');
+    expect(d.desc).toBe('这是描述');
+    expect(d.coverUrl).toBe('https://x/c.jpg');
+  }));
+
+  it('不存在的视频返回 null', withTempEnv({}, async ({ views }) => {
+    expect(views.videoDetail('nope')).toBeNull();
+  }));
+});
+
+describe('评论列表与判定', () => {
+  it('每条评论带上判定结果与原因', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', '这个是怎么做到的？');
+    addComment(cmts, 'v1', 'c2', '666');
+    addComment(cmts, 'v1', 'c3', '😊');
+
+    const list = views.listComments('v1');
+    const by = Object.fromEntries(list.map(c => [c.cid, c.decision]));
+    expect(by.c1.action).toBe('reply');
+    expect(by.c2.action).toBe('skip');
+    expect(by.c3.action).toBe('emoji_reply');
+  }));
+
+  it('已回复的评论判定为"已回复过"，且标记 replied', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'done', '这个怎么做的', { replied: true, replyCid: 'r1' });
+
+    const [c] = views.listComments('v1');
+    expect(c.replied).toBe(true);
+    expect(c.decision.action).toBe('skip');
+    expect(c.decision.reason).toContain('已回复');
+  }));
+
+  it('按判定结果过滤：只取建议回复的', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', '这个是怎么做到的？');
+    addComment(cmts, 'v1', 'c2', '666');
+    addComment(cmts, 'v1', 'c3', '请问在哪里买');
+
+    const replies = views.listComments('v1', { filter: 'reply' });
+    expect(replies.map(c => c.cid).sort()).toEqual(['c1', 'c3']);
+  }));
+
+  it('按判定结果过滤：只取跳过的', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', '这个是怎么做到的？');
+    addComment(cmts, 'v1', 'c2', '666');
+
+    expect(views.listComments('v1', { filter: 'skip' }).map(c => c.cid)).toEqual(['c2']);
+  }));
+
+  it('按已回复状态过滤走 SQL，不被判定过滤干扰', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'a', '这个怎么做的', { replied: true });
+    addComment(cmts, 'v1', 'b', '这个也怎么做');
+
+    expect(views.listComments('v1', { filter: 'replied' }).map(c => c.cid)).toEqual(['a']);
+    expect(views.listComments('v1', { filter: 'pending' }).map(c => c.cid)).toEqual(['b']);
+  }));
+
+  it('搜索按评论内容或昵称匹配', withTempEnv({}, async ({ views, vids, cmts, usrs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    usrs.upsert({ uid: 'u1', nickname: '小明' });
+    usrs.upsert({ uid: 'u2', nickname: '小红' });
+    addComment(cmts, 'v1', 'a', '关于缓存的问题', { uid: 'u1' });
+    addComment(cmts, 'v1', 'b', '别的什么内容', { uid: 'u2' });
+
+    expect(views.listComments('v1', { search: '缓存' }).map(c => c.cid)).toEqual(['a']);
+    expect(views.listComments('v1', { search: '小红' }).map(c => c.cid)).toEqual(['b']);
+  }));
+
+  it('带出用户昵称与分级', withTempEnv({}, async ({ views, vids, cmts, usrs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    usrs.upsert({ uid: 'u1', nickname: '小明' });
+    usrs.setTier('u1', 'vip');
+    addComment(cmts, 'v1', 'a', '这个怎么做的', { uid: 'u1' });
+
+    const [c] = views.listComments('v1');
+    expect(c.user).toMatchObject({ nickname: '小明', tier: 'vip' });
+  }));
+
+  it('黑名单用户被判定为跳过（与发布时同一套判定）', withTempEnv({}, async ({ views, vids, cmts, usrs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    usrs.upsert({ uid: 'bad', nickname: '捣乱的' });
+    usrs.setTier('bad', 'blacklist');
+    addComment(cmts, 'v1', 'a', '这个怎么做的', { uid: 'bad' });
+
+    const [c] = views.listComments('v1');
+    expect(c.decision.action).toBe('skip');
+    expect(c.decision.reason).toContain('blacklist');
+  }));
+});
+
+describe('视频判定分布', () => {
+  it('统计各判定结果的数量', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'a', '这个是怎么做到的？');
+    addComment(cmts, 'v1', 'b', '请问在哪里买');
+    addComment(cmts, 'v1', 'c', '666');
+    addComment(cmts, 'v1', 'd', '😊');
+    addComment(cmts, 'v1', 'e', '已回过的', { replied: true });
+
+    const s = views.videoStats('v1');
+    expect(s.total).toBe(5);
+    expect(s.replied).toBe(1);
+    expect(s.byDecision.reply).toBe(2);
+    expect(s.byDecision.emoji_reply).toBe(1);
+    expect(s.byDecision.skip).toBe(2);   // 666 与已回复
+  }));
+});
+
+describe('草稿箱', () => {
+  it('列出草稿并附上视频标题', withTempEnv({}, async ({ views, vids, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: '视频标题', isMine: true });
+    drfs.save({ awemeId: 'v1', text: '这是一条草稿内容', replyToCid: 'c1', personaId: 'casual_friend' });
+
+    const list = views.listDrafts();
+    expect(list).toHaveLength(1);
+    expect(list[0].videoTitle).toBe('视频标题');
+    expect(list[0].text).toBe('这是一条草稿内容');
+  }));
+
+  it('已发布的草稿不再出现在待发列表', withTempEnv({}, async ({ views, vids, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    const id = drfs.save({ awemeId: 'v1', text: '草稿内容一' });
+    drfs.markPosted(id);
+    expect(views.listDrafts()).toEqual([]);
+  }));
+});
+
+describe('总览', () => {
+  it('汇总数字与草稿数', withTempEnv({}, async ({ views, vids, cmts, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'a', '这个怎么做的');
+    addComment(cmts, 'v1', 'b', '已回的', { replied: true });
+    drfs.save({ awemeId: 'v1', text: '草稿内容' });
+
+    const o = views.overview();
+    expect(o).toMatchObject({ videos: 1, comments: 2, replied: 1, pending: 1, drafts: 1 });
+  }));
+});
+
+describe('与发布判定的一致性', () => {
+  it('界面显示"建议回复"的评论，策略闸门不会因内容原因拦下', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'a', '这个是怎么做到的？');
+
+    const [c] = views.listComments('v1');
+    expect(c.decision.action).toBe('reply');
+
+    // 该评论本身不该触发"已回复过"之类的拦截
+    const policy = require('../core/policy').createPolicyEngine({});
+    const r = policy.beforeWrite({ cid: c.cid, awemeId: 'v1' });
+    const replayBlocked = r.hardBlockers.some(b => b.reason.includes('已经回复过'));
+    expect(replayBlocked).toBe(false);
+  }));
+
+  it('界面显示"已回复"的评论，发布判定也会拦下（两处口径一致）', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'done', '这个是怎么做到的？', { replied: true, replyCid: 'r1' });
+
+    const [c] = views.listComments('v1');
+    expect(c.decision.action).toBe('skip');
+
+    // 发布侧用的是同一个 decision 依据：comments 表的 replied 列
+    const policy = require('../core/policy').createPolicyEngine({});
+    const r = policy.beforeWrite({ cid: 'done', awemeId: 'v1' });
+    expect(r.hardBlockers.some(b => b.reason.includes('已经回复过'))).toBe(true);
+  }));
+});

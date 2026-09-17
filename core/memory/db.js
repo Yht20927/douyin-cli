@@ -13,7 +13,7 @@ const path = require('path');
 const paths = require('../paths');
 
 // 当前 schema 版本（每次新增 migration → 自增）
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 let _db = null;
 let _Database = null;
@@ -265,6 +265,19 @@ function migrate(db) {
     // v7 → v8：comments 表 replied 索引（高频过滤列，加速未回复评论查询）
     () => {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_comments_replied ON comments(aweme_id, replied);`);
+    },
+    // v8 → v9：videos 表补上互动数据
+    //
+    // v7 给 videos 加了 desc / cover_url 等列，但 upsert 从来没写过它们 ——
+    // 属于"列建了、路没通"的死列。作品列表要显示播放/点赞/封面，必须把写入路径
+    // 一并补上，所以这次连数据列一起加，并在 core/memory/videos.js 里接到位。
+    () => {
+      const cols = db.prepare(`PRAGMA table_info(videos)`).all().map(c => c.name);
+      const newCols = ['play_count', 'digg_count', 'comment_count', 'share_count', 'create_time'];
+      for (const col of newCols) {
+        if (!cols.includes(col)) db.exec(`ALTER TABLE videos ADD COLUMN ${col} INTEGER`);
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_videos_mine ON videos(platform, is_mine, last_get_ts DESC);`);
     },
   ];
 

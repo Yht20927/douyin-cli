@@ -30,10 +30,28 @@ async function cmdMy(ctx, args) {
         shares: a.statistics?.share_count || 0,
       },
     }));
-    // 落库自己的视频（title + is_mine=true，对齐 xhs my.js notes 落库）
+    // 落库自己的视频。
+    // 从**原始 API 对象**取而不是从 items —— items 是为命令输出裁剪过的（desc 截断到
+    // 80 字、没有封面），拿它落库会把封面和互动数据丢掉。见 my.js 上方的 map。
     try {
-      for (const it of items) {
-        if (it.aweme_id) videos.upsert({ awemeId: it.aweme_id, title: it.desc, isMine: true });
+      for (const a of (data.aweme_list || [])) {
+        if (!a.aweme_id) continue;
+        videos.upsert({
+          awemeId: a.aweme_id,
+          // title 保持截断（列表页展示用），desc 存全文
+          title: (a.desc || '').substring(0, 80) || null,
+          desc: a.desc || null,
+          coverUrl: a.video?.cover?.url_list?.[0]
+            || a.video?.dynamic_cover?.url_list?.[0]
+            || a.video?.origin_cover?.url_list?.[0]
+            || null,
+          isMine: true,
+          createTime: a.create_time || null,
+          playCount: a.statistics?.play_count,
+          diggCount: a.statistics?.digg_count,
+          commentCount: a.statistics?.comment_count,
+          shareCount: a.statistics?.share_count,
+        });
       }
     } catch (e) {
       logger.debug('[my.persist] failed: ' + e.message);

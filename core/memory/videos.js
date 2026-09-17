@@ -22,6 +22,16 @@ const PLATFORM = 'douyin';
  * @param {number} [fields.lastPostTs] ms
  * @returns {boolean}
  */
+/**
+ * 数值字段的归一化：undefined / null / NaN 一律给 null，
+ * 让 SQL 里的 COALESCE 保留旧值而不是把已有数字抹掉。
+ */
+function numOrNull(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function upsert(fields) {
   if (!fields || !fields.awemeId) return false;
   try {
@@ -29,28 +39,45 @@ function upsert(fields) {
     const delta = fields.commentsSeenDelta || 0;
     db.prepare(`
       INSERT INTO videos (
-        aweme_id, platform, title, author_uid, is_mine,
-        total_comments_seen, last_get_ts, last_post_ts
+        aweme_id, platform, title, desc, cover_url, author_uid, is_mine,
+        total_comments_seen, last_get_ts, last_post_ts,
+        play_count, digg_count, comment_count, share_count, create_time
       ) VALUES (
-        @awemeId, @platform, @title, @authorUid, @isMine,
-        @delta, @lastGetTs, @lastPostTs
+        @awemeId, @platform, @title, @desc, @coverUrl, @authorUid, @isMine,
+        @delta, @lastGetTs, @lastPostTs,
+        @playCount, @diggCount, @commentCount, @shareCount, @createTime
       )
       ON CONFLICT(platform, aweme_id) DO UPDATE SET
         title       = COALESCE(excluded.title, title),
+        desc        = COALESCE(excluded.desc, desc),
+        cover_url   = COALESCE(excluded.cover_url, cover_url),
         author_uid  = COALESCE(excluded.author_uid, author_uid),
         is_mine     = CASE WHEN excluded.is_mine = 1 THEN 1 ELSE is_mine END,
         total_comments_seen = total_comments_seen + @delta,
         last_get_ts  = MAX(COALESCE(last_get_ts, 0),  COALESCE(excluded.last_get_ts, 0)),
-        last_post_ts = MAX(COALESCE(last_post_ts, 0), COALESCE(excluded.last_post_ts, 0))
+        last_post_ts = MAX(COALESCE(last_post_ts, 0), COALESCE(excluded.last_post_ts, 0)),
+        -- 互动数据用 COALESCE 保留旧值：拉取失败/字段缺失时不该把已有数字抹成 null
+        play_count    = COALESCE(excluded.play_count, play_count),
+        digg_count    = COALESCE(excluded.digg_count, digg_count),
+        comment_count = COALESCE(excluded.comment_count, comment_count),
+        share_count   = COALESCE(excluded.share_count, share_count),
+        create_time   = COALESCE(excluded.create_time, create_time)
     `).run({
       awemeId: String(fields.awemeId),
       platform: PLATFORM,
       title: fields.title || null,
+      desc: fields.desc || null,
+      coverUrl: fields.coverUrl || null,
       authorUid: fields.authorUid || null,
       isMine: fields.isMine ? 1 : 0,
       delta,
       lastGetTs: fields.lastGetTs || null,
       lastPostTs: fields.lastPostTs || null,
+      playCount: numOrNull(fields.playCount),
+      diggCount: numOrNull(fields.diggCount),
+      commentCount: numOrNull(fields.commentCount),
+      shareCount: numOrNull(fields.shareCount),
+      createTime: numOrNull(fields.createTime),
     });
     return true;
   } catch (e) {
@@ -74,8 +101,9 @@ function get(awemeId) {
   try {
     const db = getDb();
     const row = db.prepare(`
-      SELECT aweme_id, platform, title, author_uid, is_mine,
-             total_comments_seen, last_get_ts, last_post_ts, campaign_id
+      SELECT aweme_id, platform, title, desc, cover_url, author_uid, is_mine,
+             total_comments_seen, last_get_ts, last_post_ts, campaign_id,
+             play_count, digg_count, comment_count, share_count, create_time
       FROM videos WHERE platform = ? AND aweme_id = ?
     `).get(PLATFORM, awemeId);
     if (!row) return null;
@@ -83,6 +111,15 @@ function get(awemeId) {
       awemeId: row.aweme_id,
       platform: row.platform,
       title: row.title,
+      desc: row.desc,
+      coverUrl: row.cover_url,
+      stats: {
+        plays: row.play_count,
+        likes: row.digg_count,
+        comments: row.comment_count,
+        shares: row.share_count,
+      },
+      createTime: row.create_time,
       authorUid: row.author_uid,
       isMine: !!row.is_mine,
       totalCommentsSeen: row.total_comments_seen,
@@ -101,8 +138,9 @@ function list(opts = {}) {
     const params = [PLATFORM];
     if (opts.isMine != null) { where.push('is_mine = ?'); params.push(opts.isMine ? 1 : 0); }
     const rows = db.prepare(`
-      SELECT aweme_id, title, author_uid, is_mine,
-             total_comments_seen, last_get_ts, last_post_ts
+      SELECT aweme_id, title, desc, cover_url, author_uid, is_mine,
+             total_comments_seen, last_get_ts, last_post_ts,
+             play_count, digg_count, comment_count, share_count, create_time
       FROM videos WHERE ${where.join(' AND ')}
       ORDER BY COALESCE(last_get_ts, last_post_ts, 0) DESC
       LIMIT ${limit}
@@ -110,11 +148,20 @@ function list(opts = {}) {
     return rows.map(r => ({
       awemeId: r.aweme_id,
       title: r.title,
+      desc: r.desc,
+      coverUrl: r.cover_url,
       authorUid: r.author_uid,
       isMine: !!r.is_mine,
       totalCommentsSeen: r.total_comments_seen,
       lastGetTs: r.last_get_ts,
       lastPostTs: r.last_post_ts,
+      stats: {
+        plays: r.play_count,
+        likes: r.digg_count,
+        comments: r.comment_count,
+        shares: r.share_count,
+      },
+      createTime: r.create_time,
     }));
   } catch (e) { return []; }
 }
