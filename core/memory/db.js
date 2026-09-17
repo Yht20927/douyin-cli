@@ -1,48 +1,52 @@
-// lib/memory/db.js — SQLite 单例
+// core/memory/db.js — SQLite 单例
 //
 // 设计原则：
 // 1. 单例 + lazy 打开：首次调用 getDb() 时才打开数据库；调用方任何时候 require 都安全。
 // 2. WAL 模式 + busy_timeout，支持多进程并发读写（CLI + 调度器同时跑）。
 // 3. PRAGMA user_version 管理 schema 版本；每个 migration 幂等。
 // 4. 自愈：删除 storage/douyin.db 后下次调用自动重建（仅丢失 SQLite 数据，audit.json 仍在）。
-// 5. 失败不抛：上层用 try/catch 包住，SQLite 异常降级为 console.warn，不影响主流程。
+// 5. 失败不抛：上层用 try/catch 包住，SQLite 异常降级为日志，不影响主流程。
+//
+// 驱动：node:sqlite（经 core/memory/sqlite-driver.js 适配成 better-sqlite3 的调用形状）。
+// 不再使用 better-sqlite3 原生模块 —— 它的 ABI 与 Electron 不匹配，会导致
+// 桌面应用里所有读本地数据的页面静默变空（详见驱动层文件头的说明）。
+//
+// ⚠️ 时间戳单位约定（重要，曾经踩过）
+// ----------------------------------
+//   **抖音原生时间字段一律是「秒」，本项目自己产生的一律是「毫秒」。**
+//
+//   秒：comments.created_at、videos.create_time   ← 直接来自抖音 API 的 create_time
+//   毫秒：first_seen / last_seen / last_get_ts / last_post_ts / events.ts / drafts.created_at
+//
+//   两处消费点都依赖这个区别，改动前务必一起看：
+//     - commands/get.js 的 --new 增量过滤：create_time(秒) > cutoff，而
+//       events.findLastFetchTime() 特意做了 Math.floor(ms/1000) 转成秒，所以是一致的
+//     - data/views.js 给界面用之前会把秒归一成毫秒（界面按毫秒算"多久之前"）
+//   把某一侧改成另一种单位而不动另一侧，会静默产生"永远拿不到新评论"这类故障。
 
 const fs = require('fs');
 const path = require('path');
 
 const paths = require('../paths');
+const { Database: SqliteDatabase } = require('./sqlite-driver');
 
 // 当前 schema 版本（每次新增 migration → 自增）
 const SCHEMA_VERSION = 9;
 
 let _db = null;
-let _Database = null;
 
 function ensureStorageDir() {
   paths.ensureDir(paths.dbDir());
 }
 
-function loadDriver() {
-  if (_Database) return _Database;
-  try {
-    _Database = require('better-sqlite3');
-  } catch (e) {
-    throw new Error(
-      'better-sqlite3 未安装或编译失败 — 请在项目根目录运行 `npm install` 或 `npm rebuild better-sqlite3`。\n原因: ' + e.message
-    );
-  }
-  return _Database;
-}
-
 /**
- * 获取数据库单例。返回 better-sqlite3 Database 实例。
+ * 获取数据库单例。
  * 任何调用方都应通过此函数访问，禁止直接 new Database()。
  */
 function getDb() {
   if (_db) return _db;
   ensureStorageDir();
-  const Database = loadDriver();
-  _db = new Database(paths.dbFile());
+  _db = new SqliteDatabase(paths.dbFile());
   _db.pragma('journal_mode = WAL');
   _db.pragma('synchronous = NORMAL');
   _db.pragma('busy_timeout = 5000');

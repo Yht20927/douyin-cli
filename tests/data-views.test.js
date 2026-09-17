@@ -190,6 +190,54 @@ describe('评论列表与判定', () => {
   }));
 });
 
+// ═══════════════════════════════════════════════════════════
+// 时间戳单位
+//
+// 抖音原生时间字段是「秒」，本项目自己产生的是「毫秒」（见 core/memory/db.js
+// 的单位约定）。界面按毫秒算"多久之前"，不归一化就会把 2026 年的评论
+// 显示成"20692 天前" —— 这正是改造后第一次用真实数据渲染时暴露出来的。
+// ═══════════════════════════════════════════════════════════
+
+describe('评论时间戳单位归一', () => {
+  it('秒级时间戳被转成毫秒后交给界面', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    // 抖音的 create_time 是秒
+    const seconds = 1788586286;
+    cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的', createdAt: seconds });
+
+    const [c] = views.listComments('v1');
+    expect(c.createdAt).toBe(seconds * 1000);
+    expect(c.createdAtRaw).toBe(seconds);          // 原始值保留，便于排查
+    // 解出来应该是 2026 年，而不是 1970 年
+    expect(new Date(c.createdAt).getUTCFullYear()).toBe(2026);
+  }));
+
+  it('已是毫秒的时间戳不会被二次放大', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    const ms = 1788586286000;
+    cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的', createdAt: ms });
+
+    const [c] = views.listComments('v1');
+    expect(c.createdAt).toBe(ms);   // 不能变成 1788586286000000
+  }));
+
+  it('commentDetail 走同一套归一', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的', createdAt: 1788586286 });
+
+    const d = views.commentDetail('a');
+    expect(d.createdAt).toBe(1788586286000);
+  }));
+
+  it('空值不炸（老数据可能没有时间）', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的' });
+
+    const [c] = views.listComments('v1');
+    expect(c.createdAt).toBeNull();
+  }));
+});
+
 describe('视频判定分布', () => {
   it('统计各判定结果的数量', withTempEnv({}, async ({ views, vids, cmts }) => {
     vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });

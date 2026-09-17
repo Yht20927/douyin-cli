@@ -31,6 +31,24 @@ function loadUsers(uids) {
   return map;
 }
 
+/**
+ * 抖音原生时间（秒）→ 毫秒。
+ *
+ * comments.created_at / videos.create_time 直接来自抖音 API 的 create_time，单位是秒；
+ * 而本项目自己产生的时间戳一律是毫秒（见 core/memory/db.js 的单位约定）。
+ * 界面按毫秒算"多久之前"，不转换就会把 2026 年的评论显示成"20692 天前"。
+ *
+ * 用位数判断而不是无条件乘 1000：万一将来某处已经是毫秒，乘法会把它推到几万年之后，
+ * 反而更难发现。此处只对"看起来像秒"的值做转换。
+ */
+function douyinTimeToMs(t) {
+  if (t == null) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  // 十位及以下按秒处理（毫秒时间戳目前是 13 位）
+  return n < 1e11 ? n * 1000 : n;
+}
+
 /** 用户信息裁剪成界面需要的最小集 */
 function slimUser(u) {
   if (!u) return null;
@@ -147,6 +165,9 @@ function listComments(awemeId, opts = {}) {
 
   let items = rows.map(r => ({
     ...r,
+    // 归一成毫秒供界面使用（原始值在 createdAtRaw 里保留，便于排查）
+    createdAt: douyinTimeToMs(r.createdAt),
+    createdAtRaw: r.createdAt,
     user: slimUser(userMap.get(String(r.uid))),
     decision: decisions.get(r.cid) || null,
   }));
@@ -180,7 +201,8 @@ function commentDetail(cid) {
     uid: c.uid,
     text: c.text,
     digg: c.digg,
-    createdAt: c.createdAt,
+    createdAt: douyinTimeToMs(c.createdAt),
+    createdAtRaw: c.createdAt,
     sentiment: c.sentiment,
     priority: c.priority,
     replied: !!c.replied,

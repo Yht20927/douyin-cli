@@ -7,6 +7,12 @@ function abbr(n) {
   return `${(n / 10000).toFixed(1)}w`;
 }
 
+/** 互动数据是否已经拉到过（v9 之前入库的视频没有这些列） */
+function hasAnyStat(stats) {
+  if (!stats) return false;
+  return ['plays', 'likes', 'comments', 'shares'].some(k => stats[k] != null);
+}
+
 function ago(ts) {
   if (!ts) return '从未拉取';
   const ms = Date.now() - ts;
@@ -82,15 +88,23 @@ export default function WorksView({ videos, loading, actions }) {
 
                   <div className="work-main">
                     <div className="work-title">{v.title || '（无标题）'}</div>
-                    <div className="work-meta">
-                      <span className="num">{abbr(v.stats && v.stats.plays)}</span> 播放
-                      <i />
-                      <span className="num">{abbr(v.stats && v.stats.likes)}</span> 点赞
-                      <i />
-                      <span className="num">{abbr(v.stats && v.stats.comments)}</span> 评论
-                      <i />
-                      <span className="num">{abbr(v.stats && v.stats.shares)}</span> 分享
-                    </div>
+
+                    {/* 互动数据来自上次「刷新列表」。一个都没拉到时不显示这一行 ——
+                        否则满屏的"— 播放 — 点赞"看着像坏了，而其实只是还没拉过。 */}
+                    {hasAnyStat(v.stats) ? (
+                      <div className="work-meta">
+                        <span className="num">{abbr(v.stats.plays)}</span> 播放
+                        <i />
+                        <span className="num">{abbr(v.stats.likes)}</span> 点赞
+                        <i />
+                        <span className="num">{abbr(v.stats.comments)}</span> 评论
+                        <i />
+                        <span className="num">{abbr(v.stats.shares)}</span> 分享
+                      </div>
+                    ) : (
+                      <div className="work-meta muted">互动数据尚未拉取</div>
+                    )}
+
                     <div className="work-meta muted">
                       本地已存 <span className="num">{v.commentStats.total}</span> 条评论
                       {v.commentStats.pending > 0 && (
