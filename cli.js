@@ -1,87 +1,20 @@
 #!/usr/bin/env node
-// cli.js — 抖音评论 CLI（Bridge Framework 版）
+// cli.js — 抖音评论 CLI 入口（薄壳）
 //
-// 依赖 Bridge Server (server.js) 运行中，
-// 且浏览器已安装油猴脚本 scripts/douyin.user.js 并打开 douyin.com 页面。
+// 本文件只做四件事：解析 argv → 建 ctx → 调 runCommand → 打印结果 / 友好报错。
+// 真正的实现在 core/runtime/ 与 core/commands/ —— 这样 Electron 主进程可以复用
+// 同一套调度与错误文案（改造前 ctx 组装写在 cli.js 里且 require 即执行 main()，
+// 主进程无法复用，见硬约束 C1）。
+//
+// 前置条件：
+//   1. Bridge Server 运行中（node server.js，或由桌面应用内置启动）
+//   2. 浏览器已安装油猴脚本 scripts/douyin.user.js
+//   3. 浏览器已打开 douyin.com 任意页面且处于登录态
 
-const fs = require('fs');
-const path = require('path');
-const { AuditLogger } = require('./core/audit');
-const { BridgeClient } = require('./core/client/bridge-client');
+const loggerModule = require('./core/runtime/logger');
+const { createContext, bindCommands } = require('./core/runtime/context');
+const { runCommand, describeError } = require('./core/runtime/run-command');
 const { safeSerialize } = require('./core/shared/serialize');
-const commands = require('./core/commands');
-const { SITE } = require('./core/commands/helpers');
-
-// ── 配置（经 core/config 单一真源，含默认值合并与校验）──
-const config = require('./core/config').get();
-
-// ── Bridge 客户端 ──
-const bridge = new BridgeClient({
-  host: config.bridge?.host || '127.0.0.1',
-  port: config.bridge?.port || 19422,
-  token: config.bridge?.token || '',
-});
-
-// ── 审计日志 ──
-const audit = new AuditLogger();
-let noLog = false;
-
-// ═══════════════════════════════════════════════════════════
-// Bridge 通信（通过 BridgeClient）
-// ═══════════════════════════════════════════════════════════
-
-async function bridgeCall(expression, awaitPromise = true) {
-  const resp = await bridge.call({ site: SITE, expression, awaitPromise });
-  if (resp.ok) return resp.value;
-  throw new Error(resp.error || 'Bridge Server 返回未知错误');
-}
-
-async function loggedCall(endpoint, params, expression) {
-  const t0 = Date.now();
-  try {
-    const result = await bridgeCall(expression);
-    const ms = Date.now() - t0;
-    const sum = {};
-    if (result) {
-      if (result.comments) sum.count = result.comments.length;
-      if (result.has_more !== undefined) sum.has_more = result.has_more;
-      if (result.aweme_list) sum.count = result.aweme_list.length;
-      if (result.data) sum.count = (result.data || []).filter(d => d.aweme_info).length;
-      if (result.comment) { sum.cid = result.comment.cid; sum.status_code = 0; }
-      if (result.status_code !== undefined && !sum.status_code) sum.status_code = result.status_code;
-    }
-    audit.logApiCall(endpoint, params, ms, 'success', sum);
-    return result;
-  } catch (e) {
-    audit.logApiCall(endpoint, params, Date.now() - t0, 'error', { error: e.message });
-    throw e;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// 命令上下文（注入到各命令模块）
-// ═══════════════════════════════════════════════════════════
-
-const ctx = {
-  bridge,
-  audit,
-  config,
-  bridgeCall,
-  loggedCall,
-  // 命令间互相调用的引用（延迟绑定）
-  cmdGet: null,
-  cmdPost: null,
-  cmdAnalyze: null,
-  cmdSearch: null,
-  cmdLike: null,
-};
-
-// 绑定命令（注入上下文）
-ctx.cmdGet = (args) => commands.get(ctx, args);
-ctx.cmdPost = (args) => commands.post(ctx, args);
-ctx.cmdAnalyze = (args) => commands.analyze(ctx, args);
-ctx.cmdSearch = (args) => commands.search(ctx, args);
-ctx.cmdLike = (args) => commands.like(ctx, args);
 
 // ═══════════════════════════════════════════════════════════
 // 帮助
@@ -140,7 +73,8 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js comment <cid>                           查询单条评论实体
   node cli.js validate-prompts [<template>]           校验提示词模板格式
 
-  通用选项： --raw（原始输出） --no-log（本次不记录日志）
+  通用选项： --no-log（本次不记录日志）
+  环境变量： DOUYIN_DEBUG=1 输出 debug 级日志
 
   前置条件：
   1. Bridge Server 运行中: node server.js
@@ -156,46 +90,43 @@ Douyin Comment CLI (Bridge Framework)
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
-  const rawMode = args.includes('--raw');
-  noLog = args.includes('--no-log');
-  audit.setNoLog(noLog);
 
   if (!cmd || cmd === 'help' || cmd === '--help') {
     printHelp();
     return;
   }
 
-  const handler = commands[cmd];
-  if (!handler) {
-    console.error(`未知命令: ${cmd}`);
-    console.error('运行 "node cli.js help" 查看用法。');
-    process.exit(1);
-  }
+  const noLog = args.includes('--no-log');
+
+  // 日志 sink：console（诊断→stderr、输出→stdout，与改造前逐字节一致）
+  // + 文件（JSON Lines 留痕，解决"诊断只进 stderr、进程一退就没了"）
+  loggerModule.configure({
+    sinks: [loggerModule.consoleSink(), loggerModule.fileSink()],
+    level: process.env.DOUYIN_DEBUG ? 'debug' : 'info',
+  });
+
+  const ctx = createContext({ command: cmd });
+  bindCommands(ctx);
+  ctx.audit.setNoLog(noLog);
 
   try {
-    const result = await handler(ctx, args.slice(1));
+    const result = await runCommand(ctx, cmd, args.slice(1));
+    // stdout 只放命令返回的 JSON —— 所有日志一律走 stderr，保证可管道解析
     if (result !== undefined) {
       console.log(JSON.stringify(safeSerialize(result), null, 2));
     }
   } catch (e) {
-    if (!noLog && audit._currentOp) {
-      audit.endOperation('error', {}, null, e.message);
+    if (!noLog && ctx.audit._currentOp) {
+      ctx.audit.endOperation('error', {}, null, e.message);
     }
-    // ECONNREFUSED 友好提示
-    if (e.message.includes('ECONNREFUSED') || e.message.includes('Bridge Server 未启动')) {
-      console.error('错误: Bridge Server 未启动，请先运行:');
-      console.error('  node server.js');
-    } else if (e.message.includes('Unauthorized')) {
-      console.error('错误: 认证失败 — 请检查 config.json 中的 bridge.token');
-    } else if (/HTML 页面|非 JSON|空响应/.test(e.message)) {
-      // 油猴端 bridgeFetchJson 抛出的友好错误，原样输出（已含 hint）
-      console.error(`错误: ${e.message}`);
-      console.error('提示: 若反复出现，请刷新 douyin.com 页面并确认仍处于登录态；写操作短时间内频繁失败通常是触发了风控，建议间隔 30 分钟后再试。');
-    } else {
-      console.error(`错误: ${e.message}`);
-    }
+    // 经 logger 输出而不是直接 console.error —— 这样报错也会写进 app.log 留痕
+    const logger = loggerModule.getLogger();
+    for (const line of describeError(e)) logger.error(line);
     process.exit(1);
+  } finally {
+    loggerModule.getLogger().close();
   }
 }
 
-main();
+// 直接运行时才执行；被 require 时不动 —— 彻底解决"require 即执行 main"（C1）
+if (require.main === module) main();
