@@ -158,7 +158,9 @@ describe('P3: cmdPost 双写到 corpus / failures', () => {
       audit: new AuditLogger(),
       loggedCall: async () => ({ status_code: 8 }),
     };
-    await expect(cmdPost(ctx, ['v1', '内容', '--reply-to', 'src1']))
+    // 回复文本要满足策略闸门的最小长度（3 字）—— 本用例验证的是失败归因，
+    // 不该被内容校验提前拦下
+    await expect(cmdPost(ctx, ['v1', '收到啦', '--reply-to', 'src1']))
       .rejects.toThrow(/status_code=8/);
     const top = failures.top(5);
     expect(top.find(f => f.signature === 'status_code=8')).toBeTruthy();

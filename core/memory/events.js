@@ -69,6 +69,15 @@ function query(filters = {}, opts = {}) {
     const where = [];
     const params = {};
     if (filters.command)   { where.push('command = @command');     params.command = filters.command; }
+    // 命令集合过滤：PolicyEngine 要按"写操作族"统计（post/like/unlike/delete_comment），
+    // 用单个 command 过滤拿不到，逐个查又要跑好几趟
+    if (Array.isArray(filters.commands) && filters.commands.length) {
+      const keys = filters.commands.map((c, i) => {
+        params[`cmd${i}`] = c;
+        return `@cmd${i}`;
+      });
+      where.push(`command IN (${keys.join(',')})`);
+    }
     if (filters.awemeId)   { where.push('aweme_id = @awemeId');    params.awemeId = filters.awemeId; }
     if (filters.uid)       { where.push('uid = @uid');             params.uid = filters.uid; }
     if (filters.status)    { where.push('status = @status');       params.status = filters.status; }

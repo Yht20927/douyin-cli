@@ -81,6 +81,156 @@ const DEFAULTS = {
     // 缺依赖时代码会自动降级回 text-only（video-context.js:79-87）
     mode: 'text-only',
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // policy —— 节奏决策：能发多快
+  //
+  // 这些默认值全部来自 全局规则.md 与 评论区运营.md，但改造前**代码里一条都没实现**，
+  // 只写在 markdown 里靠人自觉。现在由 core/policy 强制，并在界面上可视。
+  // ═══════════════════════════════════════════════════════════
+  policy: {
+    // ── 总量与轮次（全局规则.md §1）──
+    /** 每日写操作上限 */
+    dailyWriteQuota: 30,
+    /** 每日轮次上限 */
+    dailyRounds: 3,
+    /** 单轮连续写操作上限，达到后强制冷却 */
+    roundMaxWrites: 10,
+    /** 单轮触顶后的强制冷却时长（秒）。全局规则写的是 3-5 分钟，取中 */
+    roundCooldownSec: 300,
+    /**
+     * 超过这个轮次后风控概率显著上升（全局规则.md §88）。
+     * 不是硬拦截，而是把界面提示升级为"本日不建议继续"。
+     */
+    riskEscalateAfterRounds: 2,
+
+    // ── 风控熔断（§11）──
+    /** 命中风控码后全局停止写操作的时长（分钟） */
+    riskCooldownMin: 30,
+    /** 触发熔断的风控错误码 */
+    riskCodeStopList: [8, 2053],
+    /** 连续失败断路器：窗口内失败次数达到阈值即暂停自动发布 */
+    circuitBreaker: { windowMs: 600000, failThreshold: 3 },
+
+    // ── 单轮内的细分上限（评论区运营.md）──
+    /** 同一作品单轮最多回复多少条 */
+    maxPerVideoPerRound: 30,
+    /** 同一用户单轮最多回复多少条（不同评论也算） */
+    maxPerUidPerRound: 1,
+    /** 连续这么多条都不匹配回复条件就停止本轮（避免无意义空转） */
+    stopAfterConsecutiveSkips: 5,
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // filters —— 内容决策：回不回、怎么回
+  //
+  // 决策树来自 评论区运营.md 的评论分类流程；词表从 reply-strategy.md 与
+  // 评论风格指南.md 抢救而来。词表放这里（而非 prompt 文本里）是为了让
+  // **发布前的自动校验**能用同一份数据 —— 见 D22 的"能结构化的就结构化"。
+  // ═══════════════════════════════════════════════════════════
+  filters: {
+    /** 同一个 cid 只回复一次（一生一次，跨日跨轮生效） */
+    skipReplied: true,
+    /** 跳过贴纸评论 */
+    skipSticker: true,
+    /** 跳过无意义水评 */
+    skipWater: true,
+    /**
+     * 短评论判定为水评候选的长度上限（**含**）。
+     * 默认 3，对应 评论区运营.md 的「长度 < 4 且无明确语义」。
+     * 注意是"候选"：还要么命中 waterWords，要么没有任何优先信号，才会真的跳过。
+     */
+    waterCommentMaxLen: 3,
+    /** 超过这个长度且提到具体细节 → 判定为高质量反馈，优先回复 */
+    qualityFeedbackMinLen: 15,
+
+    /** 回复长度约束。prefer 给模型看，hardMin/hardMax 是发布前的硬校验 */
+    replyLength: { prefer: [8, 40], hardMin: 3, hardMax: 55 },
+    /** 回复中 emoji 数量上限 */
+    maxEmojiPerReply: 3,
+    /** 回复最多几行（超过视为"过长段落"） */
+    maxLines: 3,
+
+    /** 优先回复的信号词。命中任一即进入文字回复路线 */
+    prioritySignals: {
+      askForHelp: ['怎么', '如何', '为什么', '哪里', '在哪', '求', '?', '？'],
+      negativeEmotion: ['失望', '生气', '无语', '抱怨', '垃圾', '差评', '翻车', '骗'],
+    },
+
+    /** 水评词。长度 ≤ waterCommentMaxLen 且命中这些词 → 跳过 */
+    waterWords: [
+      '666', '哈哈', '哈哈哈', '嘿嘿', '来了', '前排', '沙发',
+      '路过', '打卡', '+1', 'dd', '顶', '阅', '好', '嗯', '哦',
+    ],
+
+    /** 社区调性词（评论风格指南.md）—— 鼓励使用 */
+    toneWords: [
+      '大佬', '学到了', '太强了', 'yyds', 'DNA动了',
+      '狠狠共情了', '破防了', '真实', '谁懂', '绝了',
+    ],
+
+    /**
+     * 禁止出现的措辞。**这是发布前硬校验用的机器可读清单**，
+     * 同时经 {{FORBIDDEN_PHRASES}} 注入 prompt —— 单一来源，不会漂移。
+     * 前 8 条是 AI 腔特征（reply-strategy.md），后 3 条是敷衍表达（评论风格指南.md）。
+     */
+    forbiddenPhrases: [
+      '值得注意的是',
+      '综上所述',
+      '总而言之',
+      '总的来说',
+      '从某种程度上说',
+      '客观来说',
+      '笔者认为',
+      '感谢您的分享',
+      '非常赞同您的观点',
+      '不错',
+      '很好',
+      '学习了',
+    ],
+
+    /**
+     * 禁止的结构性模式。用正则表达，供发布前校验。
+     * 每条带一句说明，界面展示时直接用它，不必再维护一份文案。
+     */
+    forbiddenPatterns: [
+      { name: '结构化列表', pattern: '(?:^|\\n)\\s*[1-9][.、)]\\s*\\S', hint: '不要用 1. 2. 3. 这种列表' },
+      { name: '三段式', pattern: '首先[\\s\\S]{0,40}其次', hint: '不要写"首先…其次…最后…"' },
+      { name: '完整 GitHub 链接', pattern: 'https?://(?:www\\.)?github\\.com/\\S+', hint: '直贴链接会被限流，改写成 owner/repo' },
+      { name: '过长段落', pattern: '\\n[\\s\\S]*\\n[\\s\\S]*\\n', hint: '最多三行' },
+    ],
+
+    /**
+     * 纯表情评论的回复方式（评论区运营.md 的表情映射表）。
+     *
+     * match 里同时列出 Unicode 与抖音方括号两种形式：接口返回的表情有时是
+     * 真实 Unicode 字符，有时就是 `[玫瑰]` 这样的文本（尤其用户从面板里选的表情），
+     * 只认一种会漏掉一半情况。
+     */
+    emojiOnly: {
+      enabled: true,
+      map: [
+        {
+          match: ['❤️', '🌹', '😘', '💕', '[玫瑰]', '[爱心]', '[心]', '[亲吻]'],
+          reply: ['🌹', '❤️'],
+        },
+        {
+          match: ['👍', '💪', '🔥', '👏', '[赞]', '[强]', '[鼓掌]', '[火]'],
+          reply: ['🤝', '💪'],
+        },
+        {
+          match: ['😂', '🤣', '😄', '[笑哭]', '[呲牙]', '[大笑]'],
+          reply: ['😄', '😂'],
+        },
+        {
+          match: ['🎉', '🥳', '✨', '[庆祝]', '[撒花]'],
+          reply: ['🎉', '❤️'],
+        },
+      ],
+      /** 判断不出类型时的兜底候选 */
+      pool: ['🌹', '🤝', '😊', '👍', '❤️', '🎉'],
+    },
+  },
 };
 
 /** 敏感字段路径（点号分隔）。GUI 默认打码、导出配置时剔除 */
@@ -232,6 +382,71 @@ function validate(cfg) {
   }
   if (typeof getByPath(cfg, 'intervals.readEnforce') !== 'boolean') {
     fail('intervals.readEnforce', '需为布尔值', DEFAULTS.intervals.readEnforce);
+  }
+
+  // policy：全是正整数型的节奏参数
+  for (const k of [
+    'dailyWriteQuota', 'dailyRounds', 'roundMaxWrites', 'roundCooldownSec',
+    'riskEscalateAfterRounds', 'riskCooldownMin',
+    'maxPerVideoPerRound', 'maxPerUidPerRound', 'stopAfterConsecutiveSkips',
+  ]) {
+    const v = getByPath(cfg, `policy.${k}`);
+    if (!Number.isInteger(v) || v < 0) {
+      fail(`policy.${k}`, `需为不小于 0 的整数，实际为 ${JSON.stringify(v)}`, DEFAULTS.policy[k]);
+    }
+  }
+  for (const k of ['windowMs', 'failThreshold']) {
+    const v = getByPath(cfg, `policy.circuitBreaker.${k}`);
+    if (!Number.isInteger(v) || v <= 0) {
+      fail(`policy.circuitBreaker.${k}`, `需为正整数，实际为 ${JSON.stringify(v)}`, DEFAULTS.policy.circuitBreaker[k]);
+    }
+  }
+  const stopCodes = getByPath(cfg, 'policy.riskCodeStopList');
+  if (!Array.isArray(stopCodes) || stopCodes.some(x => !Number.isInteger(x))) {
+    fail('policy.riskCodeStopList', `需为整数数组，实际为 ${JSON.stringify(stopCodes)}`, DEFAULTS.policy.riskCodeStopList);
+  }
+
+  // filters
+  for (const k of ['skipReplied', 'skipSticker', 'skipWater']) {
+    if (typeof getByPath(cfg, `filters.${k}`) !== 'boolean') {
+      fail(`filters.${k}`, '需为布尔值', DEFAULTS.filters[k]);
+    }
+  }
+  for (const k of ['waterCommentMaxLen', 'qualityFeedbackMinLen', 'maxEmojiPerReply', 'maxLines']) {
+    const v = getByPath(cfg, `filters.${k}`);
+    if (!Number.isInteger(v) || v < 0) {
+      fail(`filters.${k}`, `需为不小于 0 的整数，实际为 ${JSON.stringify(v)}`, DEFAULTS.filters[k]);
+    }
+  }
+  {
+    const rl = getByPath(cfg, 'filters.replyLength');
+    const preferOk = rl && Array.isArray(rl.prefer) && rl.prefer.length === 2 && rl.prefer.every(isPositiveNumber);
+    const boundsOk = rl && Number.isInteger(rl.hardMin) && Number.isInteger(rl.hardMax) && rl.hardMin >= 0 && rl.hardMax >= rl.hardMin;
+    if (!preferOk || !boundsOk) {
+      fail(
+        'filters.replyLength',
+        `需为 { prefer:[最小,最大], hardMin, hardMax 且 hardMax>=hardMin }，实际为 ${JSON.stringify(rl)}`,
+        DEFAULTS.filters.replyLength
+      );
+    }
+  }
+  for (const k of ['waterWords', 'toneWords', 'forbiddenPhrases', 'forbiddenPatterns']) {
+    if (!Array.isArray(getByPath(cfg, `filters.${k}`))) {
+      fail(`filters.${k}`, `需为数组，实际为 ${JSON.stringify(getByPath(cfg, `filters.${k}`))}`, DEFAULTS.filters[k]);
+    }
+  }
+  for (const k of ['askForHelp', 'negativeEmotion']) {
+    if (!Array.isArray(getByPath(cfg, `filters.prioritySignals.${k}`))) {
+      fail(`filters.prioritySignals.${k}`, '需为数组', DEFAULTS.filters.prioritySignals[k]);
+    }
+  }
+  {
+    const eo = getByPath(cfg, 'filters.emojiOnly');
+    const ok = eo && typeof eo.enabled === 'boolean' && Array.isArray(eo.map)
+      && Array.isArray(eo.pool) && eo.pool.length > 0;
+    if (!ok) {
+      fail('filters.emojiOnly', `需为 { enabled, map:[], pool:[] }，实际为 ${JSON.stringify(eo)}`, DEFAULTS.filters.emojiOnly);
+    }
   }
 
   // multimodal

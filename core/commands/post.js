@@ -7,6 +7,7 @@ const videos = require('../memory/videos');
 const corpus = require('../memory/corpus');
 const failures = require('../memory/failures');
 const riskControl = require('../risk-control');
+const policy = require('../policy').getPolicy();
 const { collectImageArgs, uploadImageViaBridge } = require('../comment-image');
 const logger = require('../runtime/logger');
 
@@ -22,7 +23,12 @@ async function cmdPost(ctx, args) {
   const replyTo = getFlag(args, '--reply-to', null);
   const rrid = getFlag(args, '--reply-to-reply', null);
 
-  // 请求节奏守卫：距上次写不足间隔则阻塞（--no-throttle 旁路，供 suggest 内部调用与调试）
+  // ① 运营策略闸门（快，不等待）：配额 / 轮次 / 熔断 / 去重 / 内容校验。
+  //    必须放在节奏等待之前 —— 否则用户要等满 40 秒才被告知"今天额度用完了"。
+  //    --no-throttle 只跳过节奏等待，**跳过不了策略闸门**（否则规则形同虚设）。
+  policy.assertWritable({ awemeId, cid: replyTo, text });
+
+  // ② 请求节奏守卫：距上次写不足间隔则阻塞（--no-throttle 旁路，供内部调用与调试）
   await riskControl.enforceDelay('write', throttleOpts(ctx, args));
 
   // @ 提及支持

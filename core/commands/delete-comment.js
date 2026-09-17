@@ -3,6 +3,7 @@
 const { escapeExpression, throttleOpts } = require('./helpers');
 const corpus = require('../memory/corpus');
 const riskControl = require('../risk-control');
+const policy = require('../policy').getPolicy();
 
 /**
  * 删除评论
@@ -12,6 +13,10 @@ const riskControl = require('../risk-control');
 async function cmdDeleteComment(ctx, args) {
   const cid = args[0];
   if (!cid) throw new Error('用法: node cli.js delete-comment <cid>');
+
+  // 策略闸门在前、节奏等待在后（见 post.js 的说明）。
+  // 删除是撤销类操作，不该被"该 cid 是否已回复过"拦下，故不传 cid 做去重判定。
+  policy.assertWritable({});
 
   // 请求节奏守卫（--no-throttle 旁路）
   await riskControl.enforceDelay('write', throttleOpts(ctx, args));

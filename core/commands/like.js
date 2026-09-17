@@ -2,6 +2,7 @@
 
 const { escapeExpression, throttleOpts } = require('./helpers');
 const riskControl = require('../risk-control');
+const policy = require('../policy').getPolicy();
 
 /**
  * 点赞或取消点赞
@@ -11,6 +12,11 @@ const riskControl = require('../risk-control');
 async function cmdLike(ctx, args) {
   const awemeId = args[0];
   if (!awemeId) throw new Error('用法: node cli.js like <aweme_id> [--unlike]');
+
+  // 策略闸门在前、节奏等待在后（见 post.js 的说明）。
+  // 点赞不带 awemeId/cid 之类的上下文：maxPerVideoPerRound 约束的是"回复"，
+  // 点赞不该受它限制，所以只走全局配额与熔断。
+  policy.assertWritable({});
 
   // 请求节奏守卫（--no-throttle 旁路）
   await riskControl.enforceDelay('write', throttleOpts(ctx, args));
