@@ -1,0 +1,2 @@
+[permissions]
+allow = ["explore", "Bash(which ffmpeg 2>/dev/null; which ffprobe 2>/dev/null; node -e \"console.log(process.versions)\")", "Bash(mkdir -p:*)", "Edit", "Bash(cd /home/yang/project/douyin-cli && node -e \"require('./lib/reply-engine/video-context.js'); console.log('✅ require OK')\")", "Bash(cd /home/yang/project/douyin-cli && sed -n '42,50p' lib/llm.js)"]
