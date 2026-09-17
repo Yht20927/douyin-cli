@@ -11,8 +11,6 @@
 // 语义边界：本模块服务于用户自有账号的代管运营；内容真实性与反刷量由 corpus 去重 +
 // 内容禁令保证，节奏工具只管"多快发一次"。
 
-const fs = require('fs');
-const path = require('path');
 const { getFlag } = require('./helpers');
 const corpus = require('../memory/corpus');
 const failures = require('../memory/failures');
@@ -22,6 +20,7 @@ const { maybeDelay, jitter } = require('../jitter');
 const riskControl = require('../risk-control');
 const { pickPersona } = require('../personas');
 const logger = require('../runtime/logger');
+const { buildStrategyBlock } = require('../reply-engine/prompt-builder');
 
 const CORPUS_FEWSHOT_LIMIT = 20;
 const FAILURE_TOP_LIMIT = 10;
@@ -95,9 +94,15 @@ async function collectSuggestions(ctx, opts) {
     }
   }
 
-  // 读取策略
-  let strategy = '';
-  try { strategy = fs.readFileSync(path.join(process.cwd(), 'reply-strategy.md'), 'utf8'); } catch (e) { /* */ }
+  // 回复策略（D20 单一真源）
+  //
+  // 改造前这里从 process.cwd() 读根目录的 reply-strategy.md，读不到则静默为空；
+  // 读到后还在下面 .substring(0, 500) 截断 —— 而该文件有 1135 字符，
+  // 「绝对禁止的 AI 特征」（第 574 字符起）因此从未进入过 prompt。
+  // 现在统一从 prompts/partial-reply-strategy.md 渲染：
+  //   批量模板路径由 {{STRATEGY_BLOCK}} 自动注入，无需在此传入；
+  //   rewriteReply 自建 prompt，故显式持有渲染结果。
+  const strategy = buildStrategyBlock(toReply.length);
 
   // ── v3 P3 上下文注入 ──
   const histCorpus = corpus.recent({ limit: CORPUS_FEWSHOT_LIMIT, outcomes: ['published'] });
@@ -145,14 +150,16 @@ async function collectSuggestions(ctx, opts) {
       comments: toReply,
       persona,
       llmContext,
-      strategyText: (strategy || '自然亲切').substring(0, 500),
+      // 留空：策略已由 suggest.md 的 {{STRATEGY_BLOCK}} 注入，避免重复占用 prompt
+      strategyText: '',
     });
 
     logger.info(`[suggest] 多模态 prompt: system=${promptData.systemPrompt.length}chars user=${promptData.userPrompt.length}chars images=${promptData.images.length}`);
     suggestions = await client.suggestRepliesMultiModal(promptData);
   } else {
     // ── 传统路径：经 prompt-builder（prompts/suggest.md 单一真源）──
-    suggestions = await client.suggestReplies(toReply, strategy, '', llmContext, persona);
+    // strategy 传空：策略由模板的 {{STRATEGY_BLOCK}} 注入
+    suggestions = await client.suggestReplies(toReply, '', '', llmContext, persona);
   }
 
   // 模拟思考时间（概率 30%）

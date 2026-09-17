@@ -11,8 +11,6 @@
 //   node cli.js getReply <aweme_id> --persona casual_friend  指定人格
 //   node cli.js getReply <aweme_id> --batch             批量生成回复（对视频下所有未回复评论）
 
-const fs = require('fs');
-const path = require('path');
 const { getFlag } = require('./helpers');
 const logger = require('../runtime/logger');
 
@@ -66,12 +64,10 @@ function stripContext(result) {
   return clean;
 }
 
-/** 读取策略文件 */
-function readStrategy() {
-  try {
-    return fs.readFileSync(path.join(process.cwd(), 'reply-strategy.md'), 'utf8');
-  } catch (_) { return ''; }
-}
+// 注：改造前这里有个 readStrategy()，从 process.cwd() 读根目录的 reply-strategy.md，
+// 读不到就静默返回 ''（打包后必然读不到，AI 会悄悄退化成没有策略指导）。
+// 现按 D20 统一到 prompts/partial-reply-strategy.md 单一真源，由各模板的
+// {{STRATEGY_BLOCK}} 注入，故此处不再需要读取。
 
 /** 从 SQLite 加载评论 */
 function loadComment(cid) {
@@ -209,7 +205,6 @@ async function cmdGetReply(ctx, args) {
   const persona = getFlag(args, '--persona', 'auto');
   const batch = args.includes('--batch');
   const interactive = args.includes('--interactive');
-  const strategy = readStrategy();
 
   ctx.audit.startOperation('getReply', { aweme_id: awemeId, cid, count, persona, batch });
 
@@ -233,7 +228,7 @@ async function cmdGetReply(ctx, args) {
     const result = await engine.generateReplies({
       awemeId,
       comments: unreplied.map(c => ({ cid: c.cid, text: c.text || '', userTags: _loadUserTags(c.uid) })),
-      persona, strategy,
+      persona,
     });
 
     for (const r of result.replies) {
@@ -262,7 +257,7 @@ async function cmdGetReply(ctx, args) {
     const replyOpts = {
       awemeId,
       comment: { cid, text: comment.text || '', userTags: _loadUserTags(comment.uid), parentComment, uid: comment.uid },
-      persona, strategy,
+      persona,
     };
 
     if (interactive) {
@@ -292,7 +287,7 @@ async function cmdGetReply(ctx, args) {
     // ── 评论模式：生成视频的顶级评论 ──
     logger.info(`[getReply] 生成 ${count} 条视频评论...`);
     const result = await engine.generateComment({
-      awemeId, persona, count, strategy,
+      awemeId, persona, count,
     });
 
     for (const c of result.comments) {

@@ -47,7 +47,9 @@ function loadTemplate(name) {
 function loadPartial(name) {
   if (_partialCache[name]) return _partialCache[name];
   try {
-    const raw = fs.readFileSync(path.join(paths.promptsDir(), name), 'utf8').trim();
+    const raw = stripHtmlComments(
+      fs.readFileSync(path.join(paths.promptsDir(), name), 'utf8')
+    ).trim();
     _partialCache[name] = raw;
     return raw;
   } catch (_) { return null; }
@@ -57,6 +59,19 @@ function loadPartial(name) {
 function clearTemplateCache() {
   _templateCache = {};
   _partialCache = {};
+}
+
+/**
+ * 剥离 HTML 注释块。
+ *
+ * prompt 文件里的 `<!-- ... -->` 是写给人看的维护说明（单一真源是谁、改动要注意什么），
+ * 不应该送进模型 —— 既浪费 token，也可能干扰生成。这里统一在读入时剥掉。
+ * @param {string} text
+ * @returns {string}
+ */
+function stripHtmlComments(text) {
+  if (!text) return text;
+  return text.replace(/<!--[\s\S]*?-->/g, '').replace(/^\s*\n+/, '');
 }
 
 // ── 渲染器 ──
@@ -149,15 +164,28 @@ function buildScopedBlock(llmContext) {
 
 // ── 共享策略块（prompts/partial-reply-strategy.md 单一真源）──
 
+/** 策略块里"风格多样化"小节的起始标记（该节只在批量场景渲染） */
+const STYLE_DIVERSITY_HEADING = '## 风格多样化（强制要求）';
+
 /**
- * 加载并渲染跨模板共享的 A-F 回复策略块。
- * @param {number} batchCount - 本批次评论数（用于风格多样化指令）
+ * 加载并渲染共享的回复策略块（D20 单一真源：prompts/partial-reply-strategy.md）。
+ *
+ * 按上下文渲染：风格多样化那一节要求"本批次至少 3 种语气"，对单条生成没有意义，
+ * 因此 batchCount <= 1 时整节略去 —— 这样仍然只有一份源文件。
+ *
+ * @param {number} batchCount - 本批次评论数
  * @returns {string}
  */
 function buildStrategyBlock(batchCount) {
-  const raw = loadPartial('partial-reply-strategy.md');
+  let raw = loadPartial('partial-reply-strategy.md');
   if (!raw) return '';
-  return render(raw, { BATCH_COUNT: String(batchCount), COUNT: String(batchCount) });
+
+  const n = Number(batchCount) || 1;
+  if (n <= 1) {
+    const cut = raw.indexOf(STYLE_DIVERSITY_HEADING);
+    if (cut !== -1) raw = raw.slice(0, cut).trim();
+  }
+  return render(raw, { BATCH_COUNT: String(n), COUNT: String(n) });
 }
 
 // ── 生成 Suggest 回复 Prompt ──
@@ -361,6 +389,8 @@ function buildGenerateCommentPrompt(opts) {
     PERSONA_EXAMPLES: personaExamples,
     COUNT_HINT: countHint,
     COUNT: String(count),
+    // D20：策略统一由单一真源经 {{STRATEGY_BLOCK}} 注入
+    STRATEGY_BLOCK: buildStrategyBlock(count),
     STRATEGY: strategyText || '自然口语化',
   };
 
@@ -455,6 +485,8 @@ function buildGenerateReplyPrompt(opts) {
     PERSONA_HINT: personaHint,
     PERSONA_EXAMPLES: personaExamples,
     PERSONA_NAME: persona?.name || '',
+    // D20：策略统一由单一真源经 {{STRATEGY_BLOCK}} 注入（单条 → 不渲染风格多样化节）
+    STRATEGY_BLOCK: buildStrategyBlock(1),
     STRATEGY: strategyText || '自然口语化',
   };
 

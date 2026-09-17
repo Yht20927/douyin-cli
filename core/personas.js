@@ -164,8 +164,12 @@ function pickPersona(opts = {}) {
 function buildSystemPrompt(persona, baseStrategy) {
   const parts = [persona.promptPrefix];
   parts.push(`\n通用约束：\n- 回复长度控制在 ${persona.lengthRange[0]}-${persona.lengthRange[1]} 字之间\n- 绝对禁止出现以下 AI 特征词：${persona.forbiddenWords.join('、')}\n- 不要写完整段落，用短句或换行\n- 不要过度礼貌或正式\n- 必须为每条传入的评论都生成一条回复（不要跳过任何一条）`);
+  // 注：改造前这里对策略文本做 .slice(0, 300) 截断，会从句子中间切断策略内容
+  // （实测截到"### B. 赞美型 / 好看/厉害/喜欢/绝了"），导致后半部分策略从未生效。
+  // 现在策略统一由单一真源经 {{STRATEGY_BLOCK}} 注入，此处仅作可选的调用方补充，
+  // 不再截断 —— 若确实需要控制长度，应由调用方决定传什么。
   if (baseStrategy && baseStrategy.trim()) {
-    parts.push(`\n用户补充策略：\n${baseStrategy.trim().slice(0, 300)}`);
+    parts.push(`\n用户补充策略：\n${baseStrategy.trim()}`);
   }
   return parts.join('\n');
 }
