@@ -41,6 +41,8 @@ const DEFAULT_PROFILE = 'default';
  * @param {object} [opts.events]      - 事件发射器（TaskQueue 提供）
  * @param {Function} [opts.onWait]    - 节奏等待回调，见 core/risk-control.enforceDelay
  * @param {object} [opts.logContext]  - 附加到日志上的额外上下文
+ * @param {Array}  [opts.extraSinks]  - 只挂在本 ctx 的 logger 上的额外 sink
+ * @param {object} [opts.logger]      - 覆盖根 logger（缺省用全局单例）
  * @returns {object} ctx
  */
 function createContext(opts = {}) {
@@ -54,12 +56,17 @@ function createContext(opts = {}) {
 
   const audit = opts.audit || new AuditLogger();
 
-  const logger = loggerModule.getLogger().child({
-    profileId: opts.profileId || DEFAULT_PROFILE,
-    ...(opts.command ? { command: opts.command } : {}),
-    ...(opts.taskId ? { taskId: opts.taskId } : {}),
-    ...(opts.logContext || {}),
-  });
+  // extraSinks 只挂在这个 ctx 的 logger 上，不影响全局 ——
+  // 任务队列靠它把单个任务的进度单独捕获出来（见 core/runtime/task-queue.js）
+  const logger = (opts.logger || loggerModule.getLogger()).child(
+    {
+      profileId: opts.profileId || DEFAULT_PROFILE,
+      ...(opts.command ? { command: opts.command } : {}),
+      ...(opts.taskId ? { taskId: opts.taskId } : {}),
+      ...(opts.logContext || {}),
+    },
+    opts.extraSinks || []
+  );
 
   const ctx = {
     // ── 原有字段（语义不变）──

@@ -183,10 +183,17 @@ class Logger {
     this.context = opts.context || {};
   }
 
-  /** 派生带额外上下文的 logger（共享同一批 sink） */
-  child(extraContext = {}) {
+  /**
+   * 派生带额外上下文的 logger。
+   *
+   * @param {object} [extraContext] - 附加到每条记录上的字段（如 { taskId }）
+   * @param {Array}  [extraSinks]   - 额外的 sink（**只挂在这个 child 上**）。
+   *   任务队列用它在不改动全局配置的前提下，把某个任务的进度单独捕获下来。
+   * @returns {Logger}
+   */
+  child(extraContext = {}, extraSinks = []) {
     return new Logger({
-      sinks: this.sinks,
+      sinks: extraSinks.length ? [...this.sinks, ...extraSinks] : this.sinks,
       level: this.level,
       context: { ...this.context, ...extraContext },
     });
