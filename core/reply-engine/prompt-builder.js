@@ -14,7 +14,7 @@ const { sanitizeComment } = require('../shared/sanitize');
 const { formatVideoBlock } = require('./video-context');
 
 // 模板目录
-const PROMPTS_DIR = path.join(__dirname, '..', '..', 'prompts');
+const paths = require('../paths');
 
 // ── 模板缓存 ──
 
@@ -28,7 +28,7 @@ let _partialCache = {};
 function loadTemplate(name) {
   if (_templateCache[name]) return _templateCache[name];
   try {
-    const raw = fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf8');
+    const raw = fs.readFileSync(path.join(paths.promptsDir(), name), 'utf8');
     const sysMatch = raw.match(/=== SYSTEM ===\n([\s\S]*?)(?=\n=== USER ===|$)/);
     const userMatch = raw.match(/=== USER ===\n([\s\S]*)$/);
     const tpl = {
@@ -47,7 +47,7 @@ function loadTemplate(name) {
 function loadPartial(name) {
   if (_partialCache[name]) return _partialCache[name];
   try {
-    const raw = fs.readFileSync(path.join(PROMPTS_DIR, name), 'utf8').trim();
+    const raw = fs.readFileSync(path.join(paths.promptsDir(), name), 'utf8').trim();
     _partialCache[name] = raw;
     return raw;
   } catch (_) { return null; }

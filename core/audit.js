@@ -6,12 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// 默认 logs 在项目根；通过 DOUYIN_LOG_DIR 可重定向（测试用）
-const LOG_DIR = process.env.DOUYIN_LOG_DIR
-  ? path.resolve(process.env.DOUYIN_LOG_DIR)
-  : path.join(__dirname, '..', 'logs');
-const AUDIT_FILE = path.join(LOG_DIR, 'audit.json');
-const RESULTS_DIR = path.join(LOG_DIR, 'results');
+const paths = require('./paths');
 
 // 延迟加载，避免 better-sqlite3 加载失败时整个 audit 模块挂掉
 let _events = null;
@@ -36,22 +31,24 @@ class AuditLogger {
   setNoLog(v) { this._noLog = v; }
 
   ensureDirs() {
-    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    if (!fs.existsSync(RESULTS_DIR)) fs.mkdirSync(RESULTS_DIR, { recursive: true });
+    paths.ensureDir(paths.logsDir());
+    paths.ensureDir(paths.resultsDir());
   }
 
   load() {
-    if (!fs.existsSync(AUDIT_FILE)) return { version: '2.0', updated: new Date().toISOString(), sessions: [] };
-    try { return JSON.parse(fs.readFileSync(AUDIT_FILE, 'utf8')); }
+    const file = paths.auditFile();
+    if (!fs.existsSync(file)) return { version: '2.0', updated: new Date().toISOString(), sessions: [] };
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
     catch (e) { return { version: '2.0', updated: new Date().toISOString(), sessions: [] }; }
   }
 
   save() {
     if (this._noLog) return;
     this._audit.updated = new Date().toISOString();
-    const tmp = AUDIT_FILE + '.tmp';
+    const file = paths.auditFile();
+    const tmp = file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(this._audit, null, 2));
-    fs.renameSync(tmp, AUDIT_FILE);
+    fs.renameSync(tmp, file);
   }
 
   newSession() {
@@ -115,7 +112,7 @@ class AuditLogger {
       if (this._currentOp.args.aweme_id) label += '-' + this._currentOp.args.aweme_id;
       else if (this._currentOp.args.keyword) label += '-' + sanitize(this._currentOp.args.keyword);
       else if (this._currentOp.args.cid) label += '-' + this._currentOp.args.cid;
-      const fp = path.join(RESULTS_DIR, label + '-' + ts + '.json');
+      const fp = path.join(paths.resultsDir(), label + '-' + ts + '.json');
       fs.writeFileSync(fp, JSON.stringify({
         command: this._currentOp.command,
         args: this._currentOp.args,

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { getFlag } = require('./helpers');
 const commentsRepo = require('../memory/comments');
+const paths = require('../paths');
 
 /**
  * LLM 分析评论
@@ -79,7 +80,7 @@ async function cmdAnalyze(ctx, args) {
   }
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-  const fp = path.join(process.cwd(), 'logs', 'results', `analyze-${awemeId}-${ts}.json`);
+  const fp = path.join(paths.resultsDir(), `analyze-${awemeId}-${ts}.json`);
   fs.writeFileSync(fp, JSON.stringify(results, null, 2));
 
   // ── 实体表落库：把 sentiment / priority 写回 comments 表（旁路写）──

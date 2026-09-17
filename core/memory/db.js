@@ -10,11 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// 默认 storage 在项目根；通过 DOUYIN_STORAGE_DIR 可重定向到任意路径（测试用）
-const STORAGE_DIR = process.env.DOUYIN_STORAGE_DIR
-  ? path.resolve(process.env.DOUYIN_STORAGE_DIR)
-  : path.join(__dirname, '..', '..', 'storage');
-const DB_FILE = path.join(STORAGE_DIR, 'douyin.db');
+const paths = require('../paths');
 
 // 当前 schema 版本（每次新增 migration → 自增）
 const SCHEMA_VERSION = 8;
@@ -23,7 +19,7 @@ let _db = null;
 let _Database = null;
 
 function ensureStorageDir() {
-  if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  paths.ensureDir(paths.dbDir());
 }
 
 function loadDriver() {
@@ -46,7 +42,7 @@ function getDb() {
   if (_db) return _db;
   ensureStorageDir();
   const Database = loadDriver();
-  _db = new Database(DB_FILE);
+  _db = new Database(paths.dbFile());
   _db.pragma('journal_mode = WAL');
   _db.pragma('synchronous = NORMAL');
   _db.pragma('busy_timeout = 5000');
@@ -277,8 +273,8 @@ function migrate(db) {
     try {
       // 先 checkpoint WAL，确保未提交的 WAL 内容写回主 db，备份才完整
       db.pragma('wal_checkpoint(TRUNCATE)');
-      const bak = DB_FILE + '.bak.v' + current;
-      fs.copyFileSync(DB_FILE, bak);
+      const bak = paths.dbFile() + '.bak.v' + current;
+      fs.copyFileSync(paths.dbFile(), bak);
     } catch (e) { /* 忽略备份失败 */ }
   }
 
@@ -306,6 +302,6 @@ function closeDb() {
 /**
  * 获取数据库文件路径（脚本 / 测试用）。
  */
-function getDbPath() { return DB_FILE; }
+function getDbPath() { return paths.dbFile(); }
 
 module.exports = { getDb, closeDb, getDbPath, SCHEMA_VERSION };

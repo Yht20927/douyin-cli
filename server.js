@@ -11,7 +11,8 @@ const { WebSocketHub } = require('./core/server/ws-hub');
 const { Router } = require('./core/server/router');
 
 // 加载配置
-const configPath = path.join(__dirname, 'config.json');
+const paths = require('./core/paths');
+const configPath = paths.configFile();
 let config;
 try {
   config = JSON.parse(fs.readFileSync(configPath, 'utf8'));

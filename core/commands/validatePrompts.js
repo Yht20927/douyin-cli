@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const PROMPTS_DIR = path.join(__dirname, '..', '..', 'prompts');
+const paths = require('../paths');
 
 /** 提取模板中的所有占位符 */
 function extractPlaceholders(text) {
@@ -67,16 +67,16 @@ async function cmdValidatePrompts(ctx, args) {
 
   let files;
   if (targetFile) {
-    const fp = path.join(PROMPTS_DIR, targetFile);
+    const fp = path.join(paths.promptsDir(), targetFile);
     if (!fs.existsSync(fp)) throw new Error(`模板文件不存在: ${targetFile}`);
     files = [fp];
   } else {
     try {
-      files = fs.readdirSync(PROMPTS_DIR)
+      files = fs.readdirSync(paths.promptsDir())
         .filter(f => f.endsWith('.md') && !f.startsWith('partial-'))
-        .map(f => path.join(PROMPTS_DIR, f));
+        .map(f => path.join(paths.promptsDir(), f));
     } catch (e) {
-      throw new Error(`无法读取 prompts 目录: ${PROMPTS_DIR}`);
+      throw new Error(`无法读取 prompts 目录: ${paths.promptsDir()}`);
     }
   }
 

@@ -16,7 +16,7 @@ const { escapeExpression } = require('../commands/helpers');
 
 // ── 配置 ──
 
-const SCREENSHOT_DIR = path.join(__dirname, '..', '..', '.screenshots');
+const paths = require('../paths');
 const SCREENSHOT_BASE64_LIMIT = 6; // 最多编码多少帧送 LLM
 const DOWNLOAD_TIMEOUT_MS = 120000;
 
@@ -40,13 +40,13 @@ const DOWNLOAD_TIMEOUT_MS = 120000;
 // ── 临时目录管理 ──
 
 function ensureScreenshotDir() {
-  if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  if (!fs.existsSync(paths.screenshotsDir())) fs.mkdirSync(paths.screenshotsDir(), { recursive: true });
 }
 
 function cleanupScreenshots(awemeId) {
   try {
-    for (const f of fs.readdirSync(SCREENSHOT_DIR)) {
-      if (f.startsWith(awemeId + '_')) fs.unlinkSync(path.join(SCREENSHOT_DIR, f));
+    for (const f of fs.readdirSync(paths.screenshotsDir())) {
+      if (f.startsWith(awemeId + '_')) fs.unlinkSync(path.join(paths.screenshotsDir(), f));
     }
   } catch (_) { /* ignore */ }
 }
@@ -176,7 +176,7 @@ async function extractScreenshots(videoUrl, awemeId, count) {
   ensureScreenshotDir();
   cleanupScreenshots(awemeId);
 
-  const outputPattern = path.join(SCREENSHOT_DIR, `${awemeId}_%02d.jpg`);
+  const outputPattern = path.join(paths.screenshotsDir(), `${awemeId}_%02d.jpg`);
   const probeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoUrl}"`;
 
   // 获取视频时长
@@ -209,13 +209,13 @@ async function extractScreenshots(videoUrl, awemeId, count) {
   }
 
   // 读取截图并编码为 base64
-  const files = fs.readdirSync(SCREENSHOT_DIR)
+  const files = fs.readdirSync(paths.screenshotsDir())
     .filter(f => f.startsWith(awemeId + '_') && f.endsWith('.jpg'))
     .sort();
 
   const b64List = [];
   for (const f of files.slice(0, SCREENSHOT_BASE64_LIMIT)) {
-    const fp = path.join(SCREENSHOT_DIR, f);
+    const fp = path.join(paths.screenshotsDir(), f);
     try {
       const buf = fs.readFileSync(fp);
       const b64 = buf.toString('base64');
