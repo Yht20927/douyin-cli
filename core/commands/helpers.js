@@ -3,10 +3,37 @@
 const SITE = 'douyin.com';
 
 /**
- * 转义字符串用于 JS 表达式拼接
+ * 转义字符串，使其可以安全地放进单引号包裹的 JS 表达式。
+ *
+ * 用途：命令会把「一段 JS 表达式」通过 Bridge 发到浏览器页面里 eval，
+ * 参数都是拼进这段表达式字符串的。所以这里必须产出合法的 JS 字符串字面量内容。
+ *
+ * ⚠️ 这里曾经只转义 `\` 和 `'`，**漏了换行**。后果是：任何含换行的回复内容
+ * 都会让拼出来的表达式出现未转义的换行，浏览器侧直接报
+ * `SyntaxError: string literal contains an unescaped line break`，
+ * 发布失败 —— 而 AI 生成的回复里带换行相当常见。
+ *
+ * 现在改为借助 JSON.stringify 产出转义体：它一次覆盖反斜杠、双引号、
+ * 换行（\n）、回车（\r）、制表符与各类控制字符，不会再漏。
+ * 只需额外处理单引号 —— JSON 不转义它，但调用方用单引号包裹。
+ *
+ * @param {*} s
+ * @returns {string} 可直接放进 '...' 中的内容（不含首尾引号）
  */
 function escapeExpression(s) {
-  return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  // 保持原有的 null/undefined 语义（String(null) === 'null'），
+  // 不顺手改成空串 —— 那是调用方的 bug，应该显式暴露而不是被这里抹平。
+  const json = JSON.stringify(String(s));
+  if (json === undefined) return '';
+  return json.slice(1, -1)
+    // 单引号：JSON 不转义它，但调用方用单引号包裹
+    .replace(/'/g, "\\'")
+    // U+2028 / U+2029：JSON 认为它们可以直接出现，但它们在 JS 里是**行终止符**。
+    // ES2019 起允许出现在字符串字面量中，旧引擎会报 "unescaped line break"。
+    // 抖音页面是现代 Chrome，不受影响；但转义掉成本为零，
+    // 也让"结果里不含任何行终止符"成为一个可以写死的不变量。
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 /**
