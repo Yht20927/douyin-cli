@@ -126,9 +126,7 @@ async function main() {
       console.log(JSON.stringify(safeSerialize(result), null, 2));
     }
   } catch (e) {
-    if (!noLog && ctx.audit._currentOp) {
-      ctx.audit.endOperation('error', {}, null, e.message);
-    }
+    // 审计兜底已移进 runCommand（core），CLI 与桌面应用得到同一保证
     // 经 logger 输出而不是直接 console.error —— 这样报错也会写进 app.log 留痕
     const logger = loggerModule.getLogger();
     for (const line of describeError(e)) logger.error(line);

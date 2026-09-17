@@ -476,3 +476,73 @@ describe('run-command: describeError 文案归一化', () => {
     expect(describeError(new Error('随便一个错'))).toEqual(['错误: 随便一个错']);
   });
 });
+
+describe('run-command: 审计兜底', () => {
+  /** 造一个审计替身，记录 endOperation 调用 */
+  function auditSpy() {
+    const calls = [];
+    return {
+      calls,
+      startOperation: () => {},
+      endOperation: (...args) => calls.push(args),
+      logApiCall: () => {},
+      setNoLog: () => {},
+      _currentOp: null,
+    };
+  }
+
+  /** 临时替换命令注册表里的某个命令 */
+  async function withStubCommand(name, fn, body) {
+    const registry = require('../core/commands');
+    const orig = registry[name];
+    registry[name] = fn;
+    try { return await body(); } finally { registry[name] = orig; }
+  }
+
+  it('命令抛错 → 兜底把未闭合的操作记为 error 并原样抛错', async () => {
+    const audit = auditSpy();
+    const ctx = { audit };
+    await withStubCommand('get', async () => { throw new Error('拉到一半炸了'); }, async () => {
+      await expect(runCommand(ctx, 'get', [])).rejects.toThrow('拉到一半炸了');
+    });
+    expect(audit.calls).toHaveLength(1);
+    expect(audit.calls[0][0]).toBe('error');
+    expect(audit.calls[0][3]).toBe('拉到一半炸了');
+  });
+
+  it('命令正常返回 → 不触发兜底（命令自己负责收尾）', async () => {
+    const audit = auditSpy();
+    const ctx = { audit };
+    await withStubCommand('get', async () => ({ ok: 1 }), async () => {
+      await expect(runCommand(ctx, 'get', [])).resolves.toEqual({ ok: 1 });
+    });
+    expect(audit.calls).toHaveLength(0);
+  });
+
+  it('未知命令不触发兜底（尚未开始任何操作）', async () => {
+    const audit = auditSpy();
+    await expect(runCommand({ audit }, 'nope', [])).rejects.toMatchObject({ code: 'UNKNOWN_COMMAND' });
+    expect(audit.calls).toHaveLength(0);
+  });
+
+  it('兜底自身出错时不掩盖原始错误', async () => {
+    const audit = {
+      endOperation: () => { throw new Error('审计模块也炸了'); },
+    };
+    await withStubCommand('get', async () => { throw new Error('原始错误'); }, async () => {
+      await expect(runCommand({ audit }, 'get', [])).rejects.toThrow('原始错误');
+    });
+  });
+
+  it('ctx 上没有 audit 时兜底静默跳过', async () => {
+    await withStubCommand('get', async () => { throw new Error('x'); }, async () => {
+      await expect(runCommand({}, 'get', [])).rejects.toThrow('x');
+    });
+  });
+
+  it('closeUnclosedOperation 可独立调用（幂等，无 audit 也不抛）', () => {
+    const { closeUnclosedOperation } = require('../core/runtime/run-command');
+    expect(() => closeUnclosedOperation({}, new Error('x'))).not.toThrow();
+    expect(() => closeUnclosedOperation(null, new Error('x'))).not.toThrow();
+  });
+});

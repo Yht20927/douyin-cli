@@ -38,7 +38,36 @@ async function runCommand(ctx, name, argv = []) {
     err.code = 'UNKNOWN_COMMAND';
     throw err;
   }
-  return handler(ctx, argv);
+
+  try {
+    return await handler(ctx, argv);
+  } catch (e) {
+    closeUnclosedOperation(ctx, e);
+    throw e;
+  }
+}
+
+/**
+ * 审计兜底：命令中途抛错且没自己收尾时，把未闭合的操作记为 error。
+ *
+ * 改造前这段逻辑写在 cli.js 的 catch 里，桌面应用走 runCommand 就漏掉了 ——
+ * 于是 GUI 侧的执行失败不会进 events 表，事件日志与失败模式学习都会缺数据。
+ * 移到 core 后 CLI 与 GUI 得到同一保证。
+ *
+ * endOperation 自身对 `_noLog` 与 `_currentOp` 为 null 都有守卫，
+ * 因此这里重复调用是安全且幂等的（命令已自行收尾时不会产生第二条记录）。
+ *
+ * @param {object} ctx
+ * @param {Error} e
+ */
+function closeUnclosedOperation(ctx, e) {
+  try {
+    if (ctx && ctx.audit && typeof ctx.audit.endOperation === 'function') {
+      ctx.audit.endOperation('error', {}, null, (e && e.message) || String(e));
+    }
+  } catch (_) {
+    // 兜底逻辑本身绝不能掩盖原始错误
+  }
 }
 
 /**
@@ -81,4 +110,5 @@ module.exports = {
   hasCommand,
   runCommand,
   describeError,
+  closeUnclosedOperation,
 };
