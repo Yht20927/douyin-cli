@@ -3,11 +3,19 @@
 [![test](https://github.com/Yht20927/douyin-cli/actions/workflows/test.yml/badge.svg)](https://github.com/Yht20927/douyin-cli/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> 适用版本: v4 · 最后更新: 2026-08-27 · 维护者: Yht20927
+> 最后更新: 2026-09-18 · 维护者: Yht20927
 
-> 抖音评论运营 CLI 工具。基于 Bridge Framework（Bridge Server + 油猴脚本），支持视频搜索、评论获取、**AI 人格化回复**、**ReplyEngine 独立生成**、**草稿管理**、运营仪表盘。
+> 抖音评论运营工具。基于 Bridge Framework（Bridge Server + 油猴脚本），
+> 通过**你自己浏览器里已登录的抖音页面**执行操作。提供**桌面应用**（主推）与**命令行**两种用法，
+> 共用同一套 `core/`。
 
-核心亮点：**ReplyEngine 评论生成引擎**（generateComment / generateReply / generateReplies）+ **A-F 六类回复策略** + **Anthropic & OpenAI 双 Provider 支持** + **Token 用量追踪**，让代管自有账号的评论运营全流程自动化。
+核心亮点：**把运营规则从文档变成代码强制** —— 改造前 15 条红线只写在 markdown 里靠自觉遵守，
+代码零实现；现在由 PolicyEngine 拦截，裸调命令行也跳不掉。
+配套 **ReplyEngine 评论生成引擎**（三层上下文 + 人格绑定）+ **固定内容/AI 可切换的回复来源** +
+**Anthropic & OpenAI 双 Provider 支持**。
+
+> 每条运营规则的默认值、理由与**生效状态**（硬强制 / 只提示 / 不生效）见
+> [`运营规则说明.md`](./运营规则说明.md)。
 
 ---
 
@@ -29,19 +37,17 @@
 
 | 功能 | 说明 |
 |------|------|
-| 🔍 视频搜索 | 关键词搜索视频 |
-| 💬 评论获取 | 获取评论及嵌套回复，`--new` 增量拉取 |
+| 🖥️ **桌面应用** | Electron 界面：队列倒计时、发布二次确认（**发布永远由人点**）、任务可取消 |
+| 🔍 视频搜索 / 💬 评论获取 | 含嵌套回复，`--new` 增量拉取 |
 | 🖼️ **图片评论** | 发表带图评论/回复（ImageX 上传链路，`--image` 可多张） |
-| 🧠 **ReplyEngine** | 独立评论生成引擎，3 种模式 + 人格绑定 + 上下文隔离 |
-| 🤖 **AI 人格化回复** | 7 种人格自动轮换，A-F 六类回复策略，避免"AI 味" |
-| 📝 **草稿管理** | 回复草稿 save/list/show/post/delete 完整生命周期 |
-| 🎭 **行为模拟** | 模拟真实浏览（搜索→看视频→点赞），穿插在发布流程中 |
-| ⏱️ **随机延迟** | 发布间隔 40-55s 随机 + 疲劳累加，模拟真人节奏 |
-| 🎲 **请求参数随机化** | browser_version 动态获取、paste_edit_method / enter_from 随机切换 |
-| 🛡️ 风控断路器 | 10 分钟内 post 失败 ≥3 次自动暂停 |
-| 📥 视频下载 | 下载视频+音频（BGM），支持 ffmpeg 截图多模态分析 |
-| 📊 运营仪表盘 | 本地 HTML 可视化，含推广活动卡片 |
-| 💾 持久化记忆 | SQLite schema v8（events / users / videos / comments / corpus / failures / campaigns / llm_usage / drafts） |
+| 🧠 **ReplyEngine** | 独立评论生成引擎：三层上下文隔离 + 人格绑定 + 5 种 prompt 组装器 |
+| 🎭 **7 种人格** | 参数（权重/温度/长度/emoji 概率/禁用词/示例语料）全部可在界面改，可加自定义人格 |
+| 🔀 **回复来源可切** | AI / 固定内容 / 混合三种模式；固定内容支持**顺序 / 随机 / 洗牌不重复 / 加权**四种循环 |
+| 🛡️ **PolicyEngine** | 运营规则代码化：每日配额、轮次、单轮上限、去重、熔断、发布前内容校验 |
+| ⏱️ **随机器节奏** | 写操作 40–55s / 读操作 30–50s 随机，写间隔硬强制 |
+| 💾 持久化记忆 | SQLite schema v10（评论/用户/视频/语料/失败模式/草稿/用量） |
+| 📝 草稿箱 | 生成→审核→发布全流程；草稿可带附图 |
+| 🧩 **配置全部可改** | 9 个分组、60+ 项，改完立即生效；未生效的项目在界面上会被明确标出 |
 
 ---
 
@@ -85,31 +91,37 @@ node cli.js upload-image --image cover.jpg
 
 ## 🚀 快速开始
 
+### 桌面应用（推荐）
+
 ```bash
 npm install
 
-# 1. 复制配置
-cp config.example.json config.json
-# 编辑 config.json：填入 bridge.token 和 llm.api_key
-# 支持 OpenAI 兼容 API 和 Anthropic 原生 Messages API（自动检测切换）
-
-# 2. 启动 Bridge Server
-node server.js
-
-# 3. Chrome 安装油猴脚本 scripts/douyin.user.js
-#    ⚠️ Chrome 用户：需先在 Tampermonkey 中启用"允许访问文件网址"
-#    详见下方「疑难排解」→ Chrome 连接问题
-#    打开 douyin.com 并登录
-
-# 4. 验证连接
-node cli.js my
-
-# 5. 开始使用
-node cli.js search "关键词"
-node cli.js get <aweme_id> --pages 1 --count 5
-node cli.js suggest <aweme_id> --auto
-node cli.js getReply <aweme_id> --batch
+# 构建渲染层并启动
+npm run app:start
 ```
+
+首次启动后：
+
+1. **连接页**点「安装油猴脚本」——脚本里的 bridge token 由服务端现场注入，不需要手工复制
+2. Chrome 里确认 Tampermonkey 已启用该脚本
+   （Chrome 用户需在扩展设置里打开「允许访问文件网址」，见下方疑难排解）
+3. 打开并登录 `douyin.com`，**保持这个页面开着**
+4. 连接页显示「已连接」即可开始
+
+配置、人格、提示词都在**设置页**里改，保存即生效。
+
+### 命令行
+
+```bash
+node server.js                 # 启动 Bridge Server（桌面应用已内嵌，CLI 下需单独起）
+node cli.js my                 # 验证连接
+node cli.js search "关键词"
+node cli.js get <aweme_id> --new --depth 1
+node cli.js getReply <aweme_id> <cid>      # 按配置的 reply.mode 生成
+node cli.js post <aweme_id> "内容" --reply-to <cid>
+```
+
+命令行与桌面应用共用 `core/`，配置也是同一份。
 
 ---
 
@@ -134,8 +146,16 @@ node cli.js getReply <aweme_id> --batch              # 自动跳过作者自评
 **ReplyEngine 架构**：
 - **人格绑定**（persona-binder）：同视频复用人格，第 8 条自动换风格，microAdjust 微调温度
 - **上下文隔离**（context-scope）：L1 本视频语料 → L2 全局成功语料 → L3 失败模式避雷
-- **多模态**（video-context）：支持 text-only / screenshots（ffmpeg 取帧）/ video 三种模式
-- **A-F 回复策略**：提问型 / 赞美型 / 讨论型 / 简短型 / 批评质疑型 / 艾特型
+- **多模态**（video-context）：支持 text-only / screenshots（ffmpeg 取帧）/ video 三种模式。
+  桌面版不内置 ffmpeg，缺依赖时会**自动降级**回 text-only
+
+**回复策略的单一真源**是 `prompts/partial-reply-strategy.md`，由各模板的
+`{{STRATEGY_BLOCK}}` 注入。以前这份策略在三个地方各存一份且内容不同（其中一份还被
+从中间截断到 500 字，导致后半部分策略从未生效），现已合并为一处，可在设置页的
+「提示词」里编辑。
+
+> `getReply` 会按配置的 `reply.mode` 分发到 **AI / 固定内容 / 混合** 三种来源，
+> `--mode` 可临时覆盖。所以上面的命令在「固定内容」模式下不调用任何 LLM。
 
 ---
 
@@ -153,33 +173,24 @@ node cli.js getReply <aweme_id> --batch              # 自动跳过作者自评
 | 轻松幽默型 | 玩梗、自嘲、夸张 | "我的手：我会了 我的脑：不你不会" |
 | 简短反应型 | 极简，3-15 字 | "真实👍" "马住了" |
 
+这 7 个只是**默认值**。权重、温度、长度区间、emoji 概率、禁用词、示例语料都能在
+设置页的「人格」里改，也可以加自定义人格、停用不想要的。
+
+> ⚠️ 默认的示例语料是**美妆/购物语境**（从原项目继承的占位内容）。它只用来给模型
+> 示范句子长度与口气，不影响你发什么。把它们换成你自己领域里的例句，是提升生成
+> 质量最直接的一步。
+
 使用：
 ```bash
 # 生成建议（不发布，看风格）
 node cli.js suggest <aweme_id>
 
-# 自动发布（人格轮换 + 随机延迟 + 浏览穿插）
+# 自动发布（人格轮换 + 随机延迟）
 node cli.js suggest <aweme_id> --auto
 
 # ReplyEngine 单条回复（自动绑定人格 + 用户画像注入）
 node cli.js getReply <aweme_id> <cid>
 ```
-
----
-
-## 🎭 行为模拟（browse）
-
-模拟真实用户浏览行为，解决"只发不看"的账户不对称检测：
-
-```bash
-# 随机搜索热门词 → 看 1-2 个视频 → 偶尔点赞评论
-node cli.js browse --max-notes 2 --like-chance 0.2
-
-# 指定关键词浏览
-node cli.js browse 穿搭 美食 --max-notes 3
-```
-
-`suggest --auto` 已内置 browse 穿插：**每发约 5 条评论自动穿插一次浏览+点赞**。
 
 ---
 
@@ -198,123 +209,115 @@ node cli.js browse 穿搭 美食 --max-notes 3
 
 ## 📋 命令清单
 
-### 核心操作
+> 桌面应用里这些能力都在界面上；命令行适合脚本化与调试。
+> 完整的 27 个命令见 [`SKILL.md`](./SKILL.md)。
 
-| 命令 | 用途 | 示例 |
-|------|------|------|
-| `my` | 我的作品列表 | `node cli.js my` |
-| `user` | 查看用户作品信息 | `node cli.js user <sec_user_id\|主页URL>` |
-| `search` | 搜索视频 | `node cli.js search "关键词" --count 5` |
-| `get` | 获取评论 | `node cli.js get <id> --pages 1 --count 5` |
-| `replies` | 获取回复列表 | `node cli.js replies <cid> <aweme_id>` |
-| `post` | 发表评论/回复 | `node cli.js post <id> "内容" --reply-to <cid>` |
-| `post --image` | 发表图片评论/回复 | `node cli.js post <id> "内容" --image cover.jpg` |
-| `upload-image` | 仅上传图片取 uri（不发评论） | `node cli.js upload-image --image cover.jpg` |
-| `like` | 点赞视频 | `node cli.js like <id>` |
-| `delete-comment` | 删除评论 | `node cli.js delete-comment <cid>` |
-| `download` | 下载视频+音频 | `node cli.js download <id> [--audio-only]` |
-
-### AI 与运营
-
-| 命令 | 用途 | 示例 |
-|------|------|------|
-| `analyze` | AI 分析评论情感/优先级 | `node cli.js analyze <id>` |
-| `suggest` | AI 回复建议 + 自动发布 | `node cli.js suggest <id> --auto` |
-| `getReply` | **ReplyEngine 生成评论/回复** | `node cli.js getReply <id> [<cid>] [--batch]` |
-| `draft` | **草稿管理** | `node cli.js draft <list\|save\|show\|post\|delete>` |
-| `browse` | 模拟浏览行为 | `node cli.js browse --max-notes 2` |
-| `dashboard` | 运营仪表盘 HTML | `node cli.js dashboard` |
-
-### 反馈闭环（SQLite 记忆层）
+### 读
 
 | 命令 | 用途 |
 |------|------|
-| `replied` | 已回复 cid 列表 |
-| `corpus search/recent/stats` | 回复语料库 |
-| `failures` | 失败模式 top-N（避雷清单） |
-| `dedup` | 查重护栏 |
-| `whois` | 用户全量画像 |
-| `note` | 用户标记（tier/tag/notes） |
-| `comment` | **单条评论实体查询** |
-| `profile` | 用户交互历史 |
-| `events` | 原始事件流 |
-| `log` | 操作日志 |
+| `my` | 我的作品列表 |
+| `user <sec_user_id\|主页URL>` | 用户主页作品 |
+| `search "关键词"` | 搜索视频 |
+| `get <aweme_id>` | 拉取评论（`--new` 增量 / `--all` 全量 / `--depth` 嵌套） |
+| `replies <aweme_id> <cid>` | 单条评论的回复列表 |
+| `dm` | 私信会话与消息 |
 
-### 守卫与推广
+### 写（受策略闸门 + 节奏强制）
 
 | 命令 | 用途 |
 |------|------|
-| `preflight` | 节奏守卫自检 |
-| `repo-info` | GitHub 仓库真实信息（推广事实源） |
-| `factcheck` | 推广评论发布前事实校验 |
-| `campaign` | 推广引擎（create/plan/run/stop/status） |
-| `validate-prompts` | **校验提示词模板格式** |
+| `post <aweme_id> "内容"` | 发表评论/回复（`--reply-to <cid>`、`--image <路径>`） |
+| `upload-image <路径>` | 仅上传图片取 uri，不发布（调试链路） |
+| `like <aweme_id>` | 点赞/取消点赞 |
+| `delete-comment <cid>` | 删除自己的评论 |
 
-### 其他
+### AI
 
 | 命令 | 用途 |
 |------|------|
-| `dm` | 私信发送/监听/列表 |
+| `analyze <aweme_id>` | AI 分析评论情感/优先级 |
+| `suggest <aweme_id>` | AI 回复建议 |
+| `getReply <aweme_id> [<cid>]` | 生成回复，**按配置的 `reply.mode` 分发**（AI/固定内容/混合），`--mode` 可临时覆盖 |
+| `validate-prompts` | 校验提示词模板格式与占位符 |
+
+### 记忆层与运维
+
+| 命令 | 用途 |
+|------|------|
+| `whois` / `profile` / `note` | 用户画像 / 交互历史 / 标记 |
+| `comment` / `corpus` / `failures` | 单条评论 / 回复语料库 / 失败模式 top-N |
+| `dedup` / `replied` | 查重护栏 / 已回复 cid |
+| `draft` | 草稿箱 |
+| `events` / `log` | 事件流 / 操作日志 |
+| `preflight` | 节奏自检（现在能不能写、还要等多久） |
 | `cleanup` | 清理过期记忆（TTL） |
+
+> 输出约定：**stdout 只放 JSON**，日志走 stderr，可安全管道给 `jq`。
 
 ---
 
 ## ⚙️ 配置
 
-`config.json`（从 `config.example.json` 复制）：
+**桌面应用里在设置页改**（9 个分组、60+ 项，保存即生效）。命令行下也可以直接编辑
+`<数据目录>/config.json` —— 只写你要改的项，其余用内置默认值。
 
-```json
+带注释的完整参考见 [`config.example.json`](./config.example.json)（`bridge` / `llm` /
+`intervals` / `multimodal` 四组）；其余分组（`account` / `personas` / `reply` / `policy` /
+`filters`）的默认值见 `core/config/index.js` 的 `DEFAULTS`，在设置页里逐项都有说明。
+
+```jsonc
 {
-  "bridge": {
-    "host": "127.0.0.1",
-    "port": 19422,
-    "token": "your-bridge-token"
-  },
+  "bridge": { "host": "127.0.0.1", "port": 19422, "token": "..." },
   "llm": {
     "api_key": "sk-...",
     "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini",
-    "max_tokens": 4096,
-    "timeout_ms": 60000,
-    "max_retries": 3
+    "model": "gpt-4o-mini"
   },
-  "vision": {
-    "screenshot_count": 4,
-    "screenshot_width": 1024
-  }
+  "intervals": { "write": [40, 55], "read": [30, 50] },
+  "policy":  { "dailyWriteQuota": 30, "dailyRounds": 3 },
+  "reply":   { "mode": "ai" },          // ai | fixed | hybrid
+  "personas": { "disabled": [], "overrides": [], "custom": [] }
 }
 ```
 
-**LLM Provider 自动检测**：
-- `base_url` 含 `anthropic.com` → Anthropic 原生 Messages API
-- `base_url` 含 `xiaomimimo.com` → MiMo API（api-key 头）
-- 其他 → OpenAI 兼容格式（Bearer token）
+**几条例外，值得单独说**：
 
-环境变量（优先级更高）：
-```bash
-export OPENAI_API_KEY="sk-..."
-export OPENAI_BASE_URL="https://..."
-export OPENAI_MODEL="gpt-4o-mini"
-```
+- `bridge.token` **不要在界面上改** —— 它由应用生成并注入油猴脚本，
+  手改会让浏览器里已装的那份对不上，症状是「明明连上了却一直认证失败」且没有提示。
+  要换 token 请重连一次（连接页有一键安装）。所以它不在设置页里。
+- `intervals.readEnforce`：命令行下默认关（否则每次查询卡 30 秒），
+  桌面端由主进程在启动时打开。**你在设置页显式改过之后，就以你的为准** ——
+  这个"形态默认"不会把你的选择覆盖掉。
+- 非法值不会让应用起不来：校验失败会回退默认值，并把告警显示在设置页与诊断页。
+
+**LLM Provider 自动检测**：`base_url` 含 `anthropic.com` → Anthropic 原生 Messages API；
+含 `xiaomimimo.com` → MiMo 分支；其余按 OpenAI 兼容格式。
+
+环境变量（优先级更高）：`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`。
 
 ---
 
 ## 🏗️ 架构
 
 ```
-CLI (cli.js) → HTTP/WS → Bridge Server (:19422) → 油猴脚本 → 页面 fetch → 抖音 API
+桌面应用 / CLI ──HTTP──▶ 内嵌 Bridge Server (:19422) ──长轮询──▶ 油猴脚本 ──▶ 页面 fetch ──▶ 抖音
 ```
 
-**签名安全**：油猴脚本在页面上下文执行，使用页面原生 `fetch`，自动携带真实 Cookie 和签名。
+**签名安全**：油猴脚本在页面上下文执行，用页面原生 `fetch`，自动携带真实 Cookie 与签名。
+Node 侧除了本地文件读写之外不直接访问抖音。
 
 **核心模块**：
-- `lib/reply-engine/` — ReplyEngine 评论生成引擎（5 模块）
-- `lib/risk-control.js` — 请求节奏守卫（写操作硬强制，单一间隔源）
-- `lib/jitter.js` — 节奏与拟人化延迟工具库
-- `lib/personas.js` — 7 种人格模板池
-- `lib/llm.js` — LLM 客户端（OpenAI + Anthropic 双 Provider，A-F 策略，Token 追踪）
-- `lib/commands/browse.js` — 模拟浏览行为
-- `lib/commands/campaign.js` — P4 推广引擎
+
+| 模块 | 职责 |
+|------|------|
+| `core/policy/` | PolicyEngine —— 把运营规则变成代码强制（配额/轮次/熔断/去重/内容校验） |
+| `core/reply-source/` | 回复来源分发：AI / 固定内容 / 混合 + 四种循环方式 + 图片附加 |
+| `core/reply-engine/` | ReplyEngine 评论生成引擎（5 模块，三层上下文隔离） |
+| `core/runtime/` | 可嵌入化运行时：串行任务队列、结构化日志、可取消的等待 |
+| `core/risk-control.js` | 请求节奏守卫（写操作硬强制，间隔单一源） |
+| `core/personas.js` | 人格：内置定义 + 配置叠加 → 生效列表 |
+| `core/llm.js` | LLM 客户端（OpenAI + Anthropic 双 Provider，Token 追踪） |
 
 ---
 
@@ -322,91 +325,57 @@ CLI (cli.js) → HTTP/WS → Bridge Server (:19422) → 油猴脚本 → 页面 
 
 > 语义边界：这是 rate-limit pacing（请求节奏化）+ content humanization（内容拟人化），
 > 服务于用户**自有账号**的代管运营，避免触发接口频控、维护账号健康。
-> 它不是"逃避平台内容审核"——内容真实性与反刷量由 内容禁令 + corpus 去重 + factcheck 保证。
+> 它不是"逃避平台内容审核"——内容真实性与反刷量由内容校验 + 语料去重保证。
 
 | 维度 | 对策 |
 |------|------|
-| **固定时间间隔** | 写操作 40-55s 硬强制（`risk-control` 守卫，读 config.json:intervals） |
-| **AI 内容特征** | 7 种人格轮换 + A-F 六类回复策略 + AI 特征词黑名单 |
-| **只发不看** | 每发 ~5 条穿插 browse 浏览+点赞 |
-| **静态请求指纹** | browser_version 动态获取、paste_edit_method / enter_from 随机化 |
-| **重复内容** | reply_corpus UNIQUE 去重 + LLM 重写 |
-| **回复质量** | 禁止单字/单表情回复，最少 8 字，ReplyEngine 上下文隔离 |
+| **固定时间间隔** | 写操作 40–55s 硬强制；桌面端读操作同样强制 |
+| **AI 内容特征** | 7 种人格轮换 + AI 特征词黑名单 + 发布前硬校验 |
+| **重复内容** | 语料库 UNIQUE 去重 + 固定内容支持「洗牌不重复」 |
+| **回复质量** | 长度硬校验（3–55 字）、行数上限、结构化模式正则 |
 | **高频失败** | 10 分钟窗口断路器（非累计值） |
+| **请求指纹** | browser_version 动态获取、paste_edit_method / enter_from 随机化 |
+
+> ⚠️ 改造前这里还写着「每发 ~5 条穿插 browse 浏览+点赞」「禁止单字回复，最少 8 字」等。
+> browse 功能已移除；长度下限的实际值是 3 字（见 `运营规则说明.md §4`）。
 
 ---
 
 ## 📁 项目结构
 
 ```
-douyin-cli/
-├── cli.js                    # CLI 入口（命令路由 + help）
-├── server.js                 # Bridge Server（WebSocket + HTTP /api/status）
-├── config.example.json       # 配置模板（bridge + llm + vision）
-├── CONTRIBUTING.md           # 贡献指南
-├── SECURITY.md               # 安全策略
-├── DISCLAIMER.md             # 免责声明
-├── lib/
-│   ├── commands/             # 命令模块（33 个命令，注册在 index.js）
-│   │   ├── get/post/like/delete-comment.js    # 核心 CRUD
-│   │   ├── upload-image.js                    # 仅上传图片取 uri（图片评论辅助）
-│   │   ├── search/my/user/replies/download.js # 读取类
-│   │   ├── analyze/suggest.js                 # LLM 分析与回复
-│   │   ├── getReply.js                        # ReplyEngine 评论/回复生成
-│   │   ├── draft.js                           # 草稿管理
-│   │   ├── comment.js                         # 单条评论查询
-│   │   ├── validatePrompts.js                 # 提示词模板校验
-│   │   ├── browse.js                          # 模拟浏览行为
-│   │   ├── campaign.js                        # P4 推广引擎
-│   │   ├── preflight/repo-info/factcheck.js   # 节奏与事实守卫
-│   │   ├── whois/note/events/log/profile.js   # 记忆层查询
-│   │   ├── corpus/failures/dedup/replied.js   # 语料 / 失败 / 查重
-│   │   └── dashboard/dm/cleanup.js
-│   ├── reply-engine/         # ReplyEngine 评论生成引擎（v4 新增）
-│   │   ├── index.js          # 主类（generateComment/generateReply/generateReplies）
-│   │   ├── persona-binder.js # 人格绑定 + microAdjust
-│   │   ├── context-scope.js  # 三层上下文隔离（L1/L2/L3）
-│   │   ├── prompt-builder.js # 5 种 Prompt 模式组装器
-│   │   └── video-context.js  # 视频上下文加载（含 ffmpeg 截图）
-│   ├── memory/               # SQLite 持久化记忆层
-│   │   ├── db.js             # 单例 + WAL + schema 迁移（v8）
-│   │   ├── events/users/comments/videos.js
-│   │   ├── corpus/failures/campaigns.js
-│   │   ├── drafts.js         # 草稿管理（v4 新增）
-│   │   └── llm-usage.js      # LLM Token 用量追踪（v4 新增）
-│   ├── shared/               # 共享工具
-│   │   ├── serialize.js / parseResponse.js / protocol.js
-│   │   ├── sanitize.js       # 评论清洗 / 引号剥离 / HTML 转义
-│   │   └── caseConvert.js    # camelCase → snake_case（v4 新增）
-│   ├── client/               # Bridge 客户端
-│   ├── server/               # WS Hub + Router + Registry
+douyinToolApp/
+├── core/                     # 业务逻辑（Electron 主进程直接 require，无原生依赖）
+│   ├── config/               # 配置单一真源（默认值 + 校验 + 热重载 + 运行时覆盖）
+│   ├── paths.js              # 运行时路径解析（数据目录可重定向）
+│   ├── runtime/              # logger / context / run-command / task-queue / abort
+│   ├── policy/               # PolicyEngine（运营规则代码化）+ filters（评论筛选决策树）+ rounds
+│   ├── reply-source/         # 回复来源分发（ai/fixed/hybrid）+ 四种循环方式 + 图片附加
+│   ├── reply-engine/         # ReplyEngine（人格绑定 + 三层上下文 + 5 种 prompt 组装）
+│   ├── memory/               # SQLite（经 sqlite-driver 适配 node:sqlite，schema v10）
+│   ├── commands/             # 27 个命令
+│   ├── server/               # 内嵌 Bridge Server（可 start/stop）
+│   ├── shared/               # 序列化 / 解析 / 协议 / 清洗
+│   ├── personas.js           # 人格：内置定义 + 配置叠加 → 生效列表
+│   ├── prompts.js            # 提示词模板读写 / 备份 / 恢复默认 / 缓存失效
 │   ├── comment-image.js      # 评论图片：校验 / 分块 / 经 Bridge 上传
-│   ├── risk-control.js       # 请求节奏守卫 + 自适应风控
-│   ├── llm.js                # LLM 客户端（OpenAI + Anthropic + Token 追踪）
-│   ├── personas.js           # 7 种人格模板池
-│   ├── jitter.js             # 节奏与拟人化延迟
-│   ├── audit.js              # 审计日志（SQLite 双写）
-│   └── dashboard.js          # HTML 仪表盘
-├── prompts/                  # LLM Prompt 模板（用户可编辑，单一真源）
-│   ├── analyze.md            # 评论分析 Prompt
-│   ├── suggest.md            # 回复建议 Prompt
-│   ├── comment.md            # 顶级评论生成 Prompt
-│   ├── reply.md              # 单条回复 Prompt
-│   ├── replies-batch.md      # 批量回复 Prompt
-│   └── partial-*.md          # 跨模板共享策略块（A-F 策略等，validate-prompts 跳过）
-├── scripts/
-│   ├── douyin.user.js        # 油猴脚本（页面 fetch + 参数随机化）
-│   ├── _template.user.js     # 新站点油猴模板
-│   └── bridge.sh             # Bridge Server 生命周期管理
-├── tests/                    # vitest（234 用例，21 文件）
-│   ├── server/               # Router 三路分发 / WS 心跳测试
-│   ├── shared/               # 共享工具测试
-│   ├── reply-engine/         # ReplyEngine 测试（v4 新增）
-│   ├── drafts.test.js        # 草稿测试（v4 新增）
-│   └── caseConvert.test.js   # caseConvert 测试（v4 新增）
-├── storage/                  # SQLite DB（gitignore）
-└── logs/                     # 审计日志 + 结果文件（gitignore）
+│   ├── risk-control.js       # 请求节奏守卫
+│   └── llm.js                # LLM 客户端（OpenAI + Anthropic + Token 追踪）
+├── app/                      # Electron 应用
+│   ├── main/                 # 数据目录 / 桥接管理 / 窗口 / 托盘 / IPC
+│   ├── preload/              # contextBridge 白名单
+│   └── renderer/             # React 界面
+│       ├── views/            # 队列 / 作品 / 工作台 / 草稿箱 / 设置 / 连接 / 诊断
+│       └── settings/         # 设置页字段表 + 通用控件 + 人格/提示词编辑器
+├── prompts/                  # 6 个内置 prompt 模板（用户覆盖写 <数据目录>/prompts/）
+├── scripts/                  # 油猴脚本源模板 + 构建脚本
+├── tests/                    # vitest（39 文件 / 675 用例）
+├── cli.js                    # 命令行入口（薄壳，调 core/runtime/run-command）
+└── server.js                 # 独立 Bridge Server 入口（调试用）
 ```
+
+数据目录（`<安装目录>/data` 优先，不可写则回退用户数据目录）：
+`config.json` / `storage/douyin.db` / `reply-state.json` / `prompts/` / `logs/`。
 
 ---
 
@@ -453,11 +422,13 @@ douyin-cli/
 
 | 现象 | 可能原因 | 解决 |
 |------|----------|------|
-| `Unauthorized` | token 不匹配 | 检查 `config.json` 和油猴脚本中的 `token` 是否一致 |
+| `Unauthorized` | token 不匹配 | 油猴脚本里的 token 是安装时由服务端注入的。若你手工改过 `bridge.token`，两边就对不上了 —— 到连接页重装一次脚本即可 |
 | `抖音返回了 HTML 页面` | 登录态失效 | 刷新 `douyin.com` 并重新登录 |
-| `Request timeout` | 浏览器未打开 douyin.com | 确保已打开并登录抖音 |
+| `Request timeout` | 浏览器未打开 douyin.com，或页面被休眠 | 打开并登录抖音，把标签页保持在前台附近；长时间挂后台会被浏览器回收 |
 | 写操作频繁失败 | 触发风控 | 等待 30 分钟后再试，检查 `preflight` 状态 |
-| `Request body too large`（服务端日志） | 搜索结果等响应超过请求体上限 | 默认上限 64MB（`config.json` → `bridge.maxBodySize`，单位字节），一般无需调整；若仍触发可调大后重启 `node server.js` |
+| `Request body too large`（服务端日志） | 搜索结果等响应超过请求体上限 | 默认上限 64MB（`bridge.maxBodySize`，单位字节），一般无需调整 |
+| 固定内容模式报「列表是空的」 | `reply.fixed.items` 没配 | 设置页 → 回复策略，加几条；或把模式改回 AI |
+| 发了但评论区看不到 | 抖音审核中 | 等 1–2 分钟，通常会自动出现 |
 
 ---
 

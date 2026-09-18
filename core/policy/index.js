@@ -2,7 +2,7 @@
 //
 // 这个模块存在的全部理由
 // ----------------------
-// 全局规则.md 与 评论区运营.md 里写着十几条硬性红线 —— 每日 ≤3 轮 ≤30 条、
+// 改造前有十几条硬性红线只写在 md 里 —— 每日 ≤3 轮 ≤30 条、
 // 单轮 ≤10 条后强制冷却 3-5 分钟、同一 cid 一生只回一次、超 2 轮风控概率显著上升、
 // 命中风控码停写 30 分钟……改造前**这些没有一条写在代码里**。
 // risk-control.js 的注释自己都承认过："过去间隔只写在 7 份 .md 里，
@@ -27,9 +27,16 @@ const { summarizeRounds } = require('./rounds');
 // 后，这里仍指向旧库，表现为"明明写了记录却统计为 0"。
 // 同类问题在 run-command 的命令注册表上也踩过一次。
 function eventsModule() { return require('../memory/events'); }
+// 发布前要查的三类对象。都在调用时才 require —— 这些模块会碰数据库，
+// 顶层 require 会把实例钉死在旧的 dataDir 上（见开发进度.md 的陷阱 2.4）。
+function commentsModule() { return require('../memory/comments'); }
+function usersModule() { return require('../memory/users'); }
+function corpusModule() { return require('../memory/corpus'); }
 
 /** 写操作命令族（与 risk-control 的 WRITE_COMMANDS 保持一致） */
 const WRITE_COMMANDS = ['post', 'like', 'unlike', 'delete_comment'];
+/** 真正算作"回复"的写命令。maxPerVideoPerRound / maxPerUidPerRound 只数这些 */
+const REPLY_COMMANDS = ['post'];
 
 /** 一次统计最多取多少行 —— 今日写操作不可能超过这个量级 */
 const MAX_ROWS = 5000;
@@ -91,7 +98,7 @@ function createPolicyEngine(opts = {}) {
    */
   function queryWrites(o = {}) {
     try {
-      const f = { commands: WRITE_COMMANDS, platform: 'douyin' };
+      const f = { commands: o.commands || WRITE_COMMANDS, platform: 'douyin' };
       if (o.since !== undefined) f.since = o.since;
       if (o.status) f.status = o.status;
       if (o.uid) f.uid = String(o.uid);
@@ -206,7 +213,9 @@ function createPolicyEngine(opts = {}) {
     const cfg = p();
     const blockers = [];
     const warnings = [];
-    let waitMs = 0;
+    let cooldownWaitMs = 0;   // 轮次冷却（assertWritable 负责等）
+    let cadenceWaitMs = 0;    // 写操作最小间隔（risk-control.enforceDelay 负责等）
+    let waitMs = 0;           // 两者取大，保持对既有调用方的兼容
 
     // ── 风控熔断：优先级最高，命中就是全局停写 ──
     if (s.risk.blocked) {
@@ -239,7 +248,11 @@ function createPolicyEngine(opts = {}) {
         action: 'stop',
       });
     } else if (s.cooldownRemainingMs > 0) {
-      waitMs = Math.max(waitMs, s.cooldownRemainingMs);
+      // 分两个数记：cooldownWaitMs 是"轮次冷却"，cadenceWaitMs 是"写操作最小间隔"。
+      // 两者由不同的层负责等待 —— 冷却由命令入口的 assertWritable 等，
+      // 最小间隔由 risk-control.enforceDelay 等。混成一个数会让 assertWritable
+      // 把该由 enforceDelay 干的活也干一遍，变成双重等待（实测多等 40 秒）。
+      cooldownWaitMs = Math.max(cooldownWaitMs, s.cooldownRemainingMs);
       blockers.push({
         reason: `本轮已写 ${s.roundWrites}/${s.roundMaxWrites} 条，需冷却 ${Math.ceil(s.cooldownRemainingMs / 1000)}s 后开启新一轮`,
         action: 'wait',
@@ -248,8 +261,20 @@ function createPolicyEngine(opts = {}) {
 
     // ── 节奏下限（与 intervals.write 同源）──
     if (s.nextWriteAllowedInMs > 0) {
-      waitMs = Math.max(waitMs, s.nextWriteAllowedInMs);
+      // 这个是"距上次写不足最小间隔"，由 risk-control.enforceDelay 负责等。
+      //
+      // 用**含随机量**的版本（msUntilNextWriteJittered）而不是 stats 里的
+      // nextWriteAllowedInMs（只算硬下限）：桌面队列等完这个数之后会给命令补
+      // --no-throttle 跳过 enforceDelay，如果这里只等 40s，每一笔写操作就会是
+      // 精确的 40.0 秒 —— 比命令行还机械，而两边的文档都写着 40–55s 随机。
+      try {
+        const rc = require('../risk-control');
+        cadenceWaitMs = Math.max(cadenceWaitMs, rc.msUntilNextWriteJittered());
+      } catch (e) {
+        cadenceWaitMs = Math.max(cadenceWaitMs, s.nextWriteAllowedInMs);
+      }
     }
+    waitMs = Math.max(cooldownWaitMs, cadenceWaitMs);
 
     // ── 单轮内细分的配额 ──
     if (meta.uid) {
@@ -262,7 +287,16 @@ function createPolicyEngine(opts = {}) {
       }
     }
     if (meta.awemeId) {
-      const used = queryWrites({ since: s.roundsToday ? currentRoundStart() : todayStart(), status: 'success', awemeId: meta.awemeId }).length;
+      // 只数**回复类**写操作。改造前把整个写命令族（含 like/unlike/delete-comment）
+      // 都算进来，而 like 也带 aweme_id —— 于是在同一个视频上反复点赞 30 次之后，
+      // 发任何一条回复都会被拦下，提示"本轮在该视频下已回复 30 条"，
+      // 而实际上一条回复都没发过。
+      const used = queryWrites({
+        since: s.roundsToday ? currentRoundStart() : todayStart(),
+        status: 'success',
+        awemeId: meta.awemeId,
+        commands: REPLY_COMMANDS,
+      }).length;
       if (used >= cfg.maxPerVideoPerRound) {
         blockers.push({
           reason: `本轮在该视频下已回复 ${used} 条（上限 ${cfg.maxPerVideoPerRound}）`,
@@ -275,6 +309,48 @@ function createPolicyEngine(opts = {}) {
     if (meta.cid && cfg.skipReplied !== false && isReplied(meta.cid)) {
       blockers.push({ reason: '这条评论已经回复过了', action: 'stop' });
     }
+
+    // ── 发布对象检查：贴纸评论 / 黑名单用户 ──
+    //
+    // 这三条（含下面的语料查重）原先写在 risk-control 的 preflightPublish 里，
+    // 而那个函数**全仓没有任何调用方** —— 于是"发布前检查重复、黑名单、贴纸"
+    // 这条改造计划明确承诺过的护栏，实际上一条都没生效：
+    // 同一句话可以重复发出去，被拉黑的人照样回。
+    // 现在接在真正的发布闸门 beforeWrite 上。
+    if (meta.cid) {
+      try {
+        const c = commentsModule().get(String(meta.cid));
+        if (c && c.isSticker && cfg.skipSticker !== false) {
+          // 注意字段名：comments.get 返回的是驼峰 isSticker。
+          // preflightPublish 里读的是 c.is_sticker（永远 undefined），
+          // 所以即便接上调用方那条判断也是恒假的。
+          blockers.push({ reason: '这是一条贴纸评论，按规则跳过', action: 'stop' });
+        }
+      } catch (e) { logger.debug('[policy] 查贴纸标记失败: ' + e.message); }
+    }
+    if (meta.uid) {
+      try {
+        const u = usersModule().get(String(meta.uid));
+        if (u && (u.tier === 'blacklist' || u.tier === 'spam')) {
+          blockers.push({ reason: `该用户被标记为 ${u.tier}，不回复`, action: 'stop' });
+        }
+      } catch (e) { logger.debug('[policy] 查用户分级失败: ' + e.message); }
+    }
+
+    if (meta.text) {
+      // 语料库查重：同一句话之前发过就改写。
+      // 这是「不使用同一份固定模板连发」那条规则的运行时兜底。
+      try {
+        const hit = corpusModule().findByText(meta.text);
+        if (hit) {
+          blockers.push({
+            reason: `这句话之前已经发过（${hit.replyCid ? 'cid ' + hit.replyCid : '语料库去重'}），换一句`,
+            action: 'rewrite',
+          });
+        }
+      } catch (e) { logger.debug('[policy] 语料查重失败: ' + e.message); }
+    }
+
     if (meta.text) {
       const v = filters.validateReply(meta.text);
       for (const x of v.violations) {
@@ -301,6 +377,9 @@ function createPolicyEngine(opts = {}) {
       hardBlockers,
       warnings,
       waitMs,
+      // 分开的等待时长，供调用方各取所需（见上面的注释）
+      cooldownWaitMs,
+      cadenceWaitMs,
       stats: s,
     };
   }
@@ -322,16 +401,50 @@ function createPolicyEngine(opts = {}) {
    * @param {object} meta
    * @throws {Error} 被拦下时抛出，message 即界面可直接展示的原因
    */
-  function assertWritable(meta = {}) {
-    const r = beforeWrite(meta);
-    if (!r.ok) {
-      const reasons = r.hardBlockers.map(b => b.reason).join('；');
-      const err = new Error(`运营策略拦下本次操作：${reasons}`);
-      err.code = 'POLICY_BLOCKED';
-      err.blockers = r.hardBlockers;
-      throw err;
+  /**
+   * 命令入口的发布闸门。
+   *
+   * ⚠️ 这是 **async** 的，调用方必须 await。
+   *
+   * 为什么需要 async：beforeWrite 有两类拦截 —— `stop`/`rewrite` 是"不能发"，
+   * 而 `wait` 是"现在还不能发，等一会儿"。改造前这个函数只看 hardBlockers
+   * （stop/rewrite），**wait 被直接忽略** —— 于是"单轮触顶后冷却 300 秒"和
+   * "每日 ≤3 轮"这两条在命令行下完全没有约束力：
+   * 连续 post 时每轮间隔由 risk-control 控在 40-55s，远小于 300s 的冷却，
+   * 所以永远算同一轮，roundsToday 一整天恒为 1，`每日轮次上限` 那条分支不可达。
+   * 只有走桌面队列时才有人等（task-queue 里读 waitMs）。
+   *
+   * 那两个数字在 运营规则说明.md 里被标为「硬强制」，那就得真的强制。
+   *
+   * @param {object} meta
+   * @param {object} [opts]
+   * @param {AbortSignal} [opts.signal]
+   * @param {(info:object)=>void} [opts.onWait] - 等待开始时的回调（CLI 打日志 / GUI 画倒计时）
+   */
+  async function assertWritable(meta = {}, opts = {}) {
+    // 可能要多轮：等完冷却之后策略会随时间变化（比如刚好跨到新一轮）
+    for (let round = 0; round < 20; round++) {
+      const r = beforeWrite(meta);
+      if (!r.ok) {
+        const reasons = r.hardBlockers.map(b => b.reason).join('；');
+        const err = new Error(`运营策略拦下本次操作：${reasons}`);
+        err.code = 'POLICY_BLOCKED';
+        err.blockers = r.hardBlockers;
+        throw err;
+      }
+      // 只等「轮次冷却」。写操作的最小间隔由 risk-control.enforceDelay 负责，
+      // 那里还会叠加随机抖动；在这里再等一遍就是双重等待（而且等的是没有抖动的那份）。
+      if (r.cooldownWaitMs <= 0) return r;
+
+      const reason = (r.blockers.find(b => b.action === 'wait') || {}).reason
+        || `轮次冷却 ${Math.ceil(r.cooldownWaitMs / 1000)}s`;
+      if (opts.onWait) opts.onWait({ waitMs: r.cooldownWaitMs, reason });
+      const { sleepAbortable } = require('../runtime/abort');
+      await sleepAbortable(r.cooldownWaitMs, opts.signal);
     }
-    return r;
+    const err = new Error('运营策略反复要求等待，已放弃本次操作');
+    err.code = 'POLICY_BLOCKED';
+    throw err;
   }
 
   // ═══════════════════════════════════════════════════════════

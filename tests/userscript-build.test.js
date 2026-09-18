@@ -117,3 +117,52 @@ describe('构建脚本', () => {
     expect(r.stdout).toContain('// ==UserScript==');
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 源模板被"渲染产物"覆盖时必须拒绝渲染
+//
+// 回归背景：实测发生过 —— 工作区里的 scripts/douyin.user.js 变成了
+// 带**真实 token** 的渲染产物（占位符没了）。而 renderUserscript 当时只检查
+// "替换后还有没有残留占位符"，源里既然没有占位符，替换就什么都不做，
+// 于是它照常返回"成功"，把那份产物原样发给每一位装机用户。
+//
+// 结果有两层：① 所有人的脚本里都是同一个人的凭证；
+// ② 安装端点返回的内容与当前实例的 token 对不上，且没有任何报错。
+// ═══════════════════════════════════════════════════════════
+describe('油猴脚本 / 源模板不再是模板时拒绝渲染', () => {
+  const { renderUserscript } = require('../core/userscript');
+
+  /** 造一份"渲染过的产物"当源文件：没有占位符，但嵌着一个真实凭证 */
+  function renderedSource(tmp, token) {
+    const p = path.join(tmp, 'rendered.user.js');
+    fs.writeFileSync(p, fs.readFileSync(SOURCE, 'utf8')
+      .split('{{BRIDGE_TOKEN}}').join(token)
+      .split('{{SITE_KEY}}').join('douyin.com'), 'utf8');
+    return p;
+  }
+
+  it('拒绝把渲染产物当模板用，并说清怎么修', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dy-src-'));
+    try {
+      const fake = renderedSource(tmp, 'a'.repeat(48));
+      expect(() => renderUserscript({ token: 'b'.repeat(48), sourceFile: fake }))
+        .toThrow(/缺少占位符/);
+      // 报错要能直接照着修，而不是只说"出错了"
+      expect(() => renderUserscript({ token: 'b'.repeat(48), sourceFile: fake }))
+        .toThrow(/git checkout/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('正常的源模板照常渲染（防呆不能把正常路径也拦住）', () => {
+    const out = renderUserscript({ token: 'c'.repeat(48) });
+    expect(out).toContain('c'.repeat(48));
+    expect(out).not.toContain('{{BRIDGE_TOKEN}}');
+    expect(out).not.toContain('{{SITE_KEY}}');
+  });
+
+  it('缺 token 仍然先报缺 token（错误信息不能互相盖住）', () => {
+    expect(() => renderUserscript({ token: '' })).toThrow(/缺少 token/);
+  });
+});

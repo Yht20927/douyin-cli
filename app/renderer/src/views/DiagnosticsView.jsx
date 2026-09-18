@@ -83,9 +83,16 @@ export default function DiagnosticsView({ info, status, actions }) {
                     <button
                       className="btn btn-quiet"
                       style={{ marginLeft: 8, padding: '1px 8px', fontSize: 12 }}
+                      onClick={actions.openUserscript}
+                    >
+                      一键安装
+                    </button>
+                    <button
+                      className="btn btn-quiet"
+                      style={{ marginLeft: 4, padding: '1px 8px', fontSize: 12 }}
                       onClick={actions.copyUserscriptUrl}
                     >
-                      复制
+                      复制地址
                     </button>
                   </div>
                 </>

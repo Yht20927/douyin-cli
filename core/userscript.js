@@ -49,6 +49,29 @@ function renderUserscript(opts = {}) {
     throw new Error(`油猴脚本源模板不可读 (${file}): ${e.message}`);
   }
 
+  // ── 前置校验：源文件必须**还是模板** ──
+  //
+  // 这一步看着多余（下面已经查"替换后有没有残留占位符"了），但它挡的是另一件事：
+  // 源模板一旦被"渲染后的产物"覆盖（比如有人 `--out scripts/douyin.user.js`，
+  // 或者手滑把 dist 里的产物拷了回来），文件里就没有占位符可换了 ——
+  // 下面的替换会**什么都不做**，然后把那份产物原样发出去。
+  //
+  // 而那份产物里嵌着的是**上一个渲染它的人的真实 bridge token**。
+  // 于是每一位装机用户拿到的都是同一个 token，且没有任何报错。
+  // 实测发生过一次：工作区里的 scripts/douyin.user.js 就是带真实 token 的产物，
+  // 而当时 renderUserscript 照常返回"成功"。
+  //
+  // 宁可拒绝渲染、让安装端点报 500，也不能把别人的凭证发出去。
+  const missing = PLACEHOLDERS.filter(p => !out.includes(p));
+  if (missing.length) {
+    throw new Error(
+      `油猴脚本源模板缺少占位符: ${missing.join(', ')}（${file}）。` +
+      '这个文件必须保持为模板，不能被渲染后的产物覆盖 —— ' +
+      '否则会把上一次渲染时写入的真实 token 原样发给所有装机用户。' +
+      '请用 git 还原该文件（git checkout HEAD -- scripts/douyin.user.js）。'
+    );
+  }
+
   out = out.split('{{BRIDGE_TOKEN}}').join(token);
   out = out.split('{{SITE_KEY}}').join(site);
 

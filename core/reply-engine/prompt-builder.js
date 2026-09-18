@@ -28,7 +28,8 @@ let _partialCache = {};
 function loadTemplate(name) {
   if (_templateCache[name]) return _templateCache[name];
   try {
-    const raw = fs.readFileSync(path.join(paths.promptsDir(), name), 'utf8');
+    // 逐文件解析：用户覆盖目录优先，缺则回退打包目录（见 core/paths.resolvePrompt）
+    const raw = fs.readFileSync(paths.resolvePrompt(name).path, 'utf8');
     const sysMatch = raw.match(/=== SYSTEM ===\n([\s\S]*?)(?=\n=== USER ===|$)/);
     const userMatch = raw.match(/=== USER ===\n([\s\S]*)$/);
     const tpl = {
@@ -48,7 +49,7 @@ function loadPartial(name) {
   if (_partialCache[name]) return _partialCache[name];
   try {
     const raw = stripHtmlComments(
-      fs.readFileSync(path.join(paths.promptsDir(), name), 'utf8')
+      fs.readFileSync(paths.resolvePrompt(name).path, 'utf8')
     ).trim();
     _partialCache[name] = raw;
     return raw;

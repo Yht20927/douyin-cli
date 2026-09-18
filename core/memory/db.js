@@ -31,7 +31,7 @@ const paths = require('../paths');
 const { Database: SqliteDatabase } = require('./sqlite-driver');
 
 // 当前 schema 版本（每次新增 migration → 自增）
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 let _db = null;
 
@@ -282,6 +282,16 @@ function migrate(db) {
         if (!cols.includes(col)) db.exec(`ALTER TABLE videos ADD COLUMN ${col} INTEGER`);
       }
       db.exec(`CREATE INDEX IF NOT EXISTS idx_videos_mine ON videos(platform, is_mine, last_get_ts DESC);`);
+    },
+    // v9 → v10：草稿支持附图（D9 图片回复：本地文件路径）
+    //
+    // 图片回复生成出来的草稿如果记不住图片路径，"存草稿→稍后发布"就会静默丢掉
+    // 附图，只剩文字发出去 —— 这正是本表要避免的那种"不报错、只是结果不对"。
+    () => {
+      const cols = db.prepare(`PRAGMA table_info(drafts)`).all().map(c => c.name);
+      if (!cols.includes('image_path')) {
+        db.exec(`ALTER TABLE drafts ADD COLUMN image_path TEXT`);
+      }
     },
   ];
 

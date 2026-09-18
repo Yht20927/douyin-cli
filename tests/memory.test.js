@@ -117,14 +117,25 @@ describe('audit double-write', () => {
     expect(evt.sessionId).toBeTruthy();
   }));
 
-  it('--no-log 不写 events 也不写 audit.json', withTempProject(async (tmp) => {
+  it('--no-log 只关文件日志，events 表照记', withTempProject(async (tmp) => {
     const { AuditLogger } = require('../core/audit');
     const events = require('../core/memory/events');
     const a = new AuditLogger();
     a.setNoLog(true);
     a.startOperation('get', { aweme_id: 'v1' });
     a.endOperation('success', { comments: 0 }, null);
-    expect(events.count()).toBe(0);
+
+    // 契约变更（本次审查修正）：`--no-log` 关掉的是**日志文件**，
+    // 不是 events 表。events 是策略闸门与节奏守卫的唯一数据源
+    // （配额/轮次/熔断/距上次写多久全靠它）。
+    //
+    // 旧行为是"events 也一条不写"，后果是 `post --no-log` 顺手拿到了
+    // 「配额清零 + 节奏不等待」的效果 —— 一个叫"别记日志"的选项，
+    // 实际把风控全关了，而且 help 里没有任何提示。
+    expect(events.count()).toBe(1);
+    expect(events.query({ limit: 1 })[0].awemeId).toBe('v1');
+
+    // 文件侧仍然不写
     expect(fs.existsSync(path.join(tmp, 'logs', 'audit.json'))).toBe(false);
   }));
 

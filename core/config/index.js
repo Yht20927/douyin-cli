@@ -29,6 +29,14 @@
 const fs = require('fs');
 const path = require('path');
 const paths = require('../paths');
+// cycles.js 是纯算法叶子模块（不 require 任何东西），从这里取循环名可以保证
+// 「配置校验认的名字」与「取样器实现的名字」永远同一份，不会各写一份然后漂移。
+const { CYCLE_NAMES } = require('../reply-source/cycles');
+
+/** 回复来源模式。reply-source 从这里取，不另立一份 */
+const REPLY_MODES = ['ai', 'fixed', 'hybrid'];
+/** 图片附加的触发方式 */
+const IMAGE_MODES = ['always', 'ratio', 'keyword'];
 
 // ═══════════════════════════════════════════════════════════
 // 默认值
@@ -83,24 +91,143 @@ const DEFAULTS = {
   },
 
   // ═══════════════════════════════════════════════════════════
+  // account —— 账号身份
+  //
+  // 这几个键是从改造前的账号文档抢救来的（改造计划 §5.10 / §9.3）。
+  // 那份文档随 P4.4 一并删除，而 **email 在全项目只有那一处**，
+  // 不先落到这里就等于永久丢失。
+  //
+  // 关于"死配置"的例外说明
+  // ----------------------
+  // 本文件开头的原则是"只放真正被代码消费的配置项"。下面四个里只有一个
+  // 符合，另外三个是**纯信息留存**，这一点必须说清楚而不是假装它们有用：
+  //
+  //   roleProfile  有消费点 —— 非空时注入 AI 的人设背景（core/personas.js）
+  //   email        无消费点 —— 改造计划 §11#10 已确认「保留，属纯信息留存」，
+  //                界面按敏感字段打码、导出配置时剔除
+  //   douyinId     无消费点 —— 记录本机操作的是哪个号，多账号时用来区分
+  //   githubOwner  无消费点 —— 原本供 repo-info 使用，该命令已随 D8 移除
+  //
+  // 这与"看着能配、实际不生效"的旧毛病有区别：那批死配置没有任何说明，
+  // 用户改完以为生效了。这里每一项在设置页都标明了是否影响行为。
+  // ═══════════════════════════════════════════════════════════
+  account: {
+    /** 抖音号。仅作记录 */
+    douyinId: '',
+    /** GitHub 用户名。仅作记录（原供推广功能使用，已移除） */
+    githubOwner: '',
+    /** 联系邮箱。仅作记录；按敏感字段处理 */
+    email: '',
+    /**
+     * 角色定位（人设背景）。**非空时会注入到 AI 生成时的系统提示里**，
+     * 影响生成的语气与视角。留空则不加这一段。
+     */
+    roleProfile: '',
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // reply —— 内容来源：回复从哪来
+  //
+  // 三种模式由 core/reply-source 分发，接入点是 getReply 命令内部的 cid 分支，
+  // 所以 CLI 与桌面应用走的是同一条路径（队列、进度、取消全部复用）。
+  //
+  // 与 reply-engine 的分工：reply-engine 只管"怎么用 LLM 生成"，
+  // 这里管"这一次到底用不用 LLM"。
+  // ═══════════════════════════════════════════════════════════
+  reply: {
+    /** ai = 全部走 LLM；fixed = 只取固定列表（零成本零延迟）；hybrid = 按比例混用 */
+    mode: 'ai',
+    hybrid: {
+      /** hybrid 模式下走 AI 的概率，其余次走固定内容 */
+      aiRatio: 0.7,
+      /** AI 调用失败/超时时降级到固定内容，而不是整条生成失败 */
+      fallbackToFixed: true,
+    },
+    fixed: {
+      /**
+       * 固定回复内容。**默认空**，不预置示例文本 ——
+       * 预置示例有被连带发布出去的风险，需要什么由用户自己在设置页加。
+       * @type {Array<{text:string, weight:number, enabled:boolean}>}
+       */
+      items: [],
+      /** 循环方式，见 core/reply-source/cycles.js（D14 四种全做） */
+      cycle: 'shuffle-no-repeat',
+      /** 同一句至少间隔多少次才可复用。0 = 不限制 */
+      minGapBetweenReuse: 0,
+    },
+    image: {
+      /** 是否在回复时附带图片 */
+      enabled: false,
+      /** always = 每条都带；ratio = 按比例；keyword = 评论命中关键词才带 */
+      mode: 'ratio',
+      ratio: 0.3,
+      /** mode=keyword 时生效 */
+      keywords: [],
+      /**
+       * 本地图片路径列表（D9：只支持本地文件，不做图库/URL）。
+       * 支持 jpg/png/webp/gif/bmp/heic，单张上限 10MB —— 见 core/comment-image.js。
+       */
+      paths: [],
+      /** 多图选取策略，与 fixed.cycle 同一套算法 */
+      pick: 'shuffle-no-repeat',
+      /** 带图回复是否同时带文字 */
+      withText: true,
+    },
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // personas —— 人格（语气模板）
+  //
+  // 内置 7 个人格的**定义**在 core/personas.js（那是默认值），这里只放"用户改了什么"。
+  // 三者叠加得到实际生效的列表，见 personas.effectivePersonas()。
+  //
+  // 为什么 overrides / custom 是数组而不是以 id 为键的对象：
+  // 设置页的保存走"只允许 DEFAULTS 里已知路径"的守卫（app/main/ipc.js），
+  // 以用户数据为键意味着路径无法预先列出。数组形式让每个路径都是静态可知的。
+  // ═══════════════════════════════════════════════════════════
+  personas: {
+    /** 停用的内置人格 id。用"停用"而不是"启用"，是为了让将来新增的内置人格默认可用 */
+    disabled: [],
+    /**
+     * 只覆盖改过的字段，未列出的沿用内置值。
+     * @type {Array<{id:string} & Partial<{name:string, weight:number, temperature:number,
+     *        lengthRange:[number,number], emojiChance:number, promptPrefix:string,
+     *        forbiddenWords:string[], examples:string[], enabled:boolean}>>}
+     */
+    overrides: [],
+    /**
+     * 自定义人格，字段与内置同构。id 撞上内置时忽略这一条。
+     * @type {Array<object>}
+     */
+    custom: [],
+  },
+
+  // ═══════════════════════════════════════════════════════════
   // policy —— 节奏决策：能发多快
   //
-  // 这些默认值全部来自 全局规则.md 与 评论区运营.md，但改造前**代码里一条都没实现**，
+  // 这些默认值全部来自改造前那批运营文档，而当时**代码里一条都没实现**，
   // 只写在 markdown 里靠人自觉。现在由 core/policy 强制，并在界面上可视。
+  // 那批文档已随 P4.4 删除；每条规则的默认值、理由与**生效状态**
+  // （硬强制 / 只提示 / 不生效）都记在 运营规则说明.md。
   // ═══════════════════════════════════════════════════════════
   policy: {
-    // ── 总量与轮次（全局规则.md §1）──
+    // ── 总量与轮次 ──
     /** 每日写操作上限 */
     dailyWriteQuota: 30,
     /** 每日轮次上限 */
     dailyRounds: 3,
     /** 单轮连续写操作上限，达到后强制冷却 */
     roundMaxWrites: 10,
-    /** 单轮触顶后的强制冷却时长（秒）。全局规则写的是 3-5 分钟，取中 */
+    /** 单轮触顶后的强制冷却时长（秒）。原文档写的是 3-5 分钟，取中 */
     roundCooldownSec: 300,
     /**
-     * 超过这个轮次后风控概率显著上升（全局规则.md §88）。
-     * 不是硬拦截，而是把界面提示升级为"本日不建议继续"。
+     * 超过这个轮次后风控概率显著上升（原文档：第 3 轮起风控概率显著上升）。
+     *
+     * ⚠️ **不是硬拦截** —— 只在界面上弹一条"本日不建议继续"的黄条。
+     * 原文档要求的是"第 3 轮遇风控即当日停写"，那个没有实现，理由见
+     * 运营规则说明.md §2：是否"当日不再写"取决于账号状态与是否误伤，
+     * 代码拿不到这些信息，硬拦会拦掉本来该继续的情况。
+     * 设置页把这一项标为「只提示」，避免误以为它在拦。
      */
     riskEscalateAfterRounds: 2,
 
@@ -112,7 +239,7 @@ const DEFAULTS = {
     /** 连续失败断路器：窗口内失败次数达到阈值即暂停自动发布 */
     circuitBreaker: { windowMs: 600000, failThreshold: 3 },
 
-    // ── 单轮内的细分上限（评论区运营.md）──
+    // ── 单轮内的细分上限 ──
     /** 同一作品单轮最多回复多少条 */
     maxPerVideoPerRound: 30,
     /** 同一用户单轮最多回复多少条（不同评论也算） */
@@ -124,8 +251,8 @@ const DEFAULTS = {
   // ═══════════════════════════════════════════════════════════
   // filters —— 内容决策：回不回、怎么回
   //
-  // 决策树来自 评论区运营.md 的评论分类流程；词表从 reply-strategy.md 与
-  // 评论风格指南.md 抢救而来。词表放这里（而非 prompt 文本里）是为了让
+  // 决策树与词表都是从改造前那批运营文档抢救来的（完整说明见 运营规则说明.md §3 §4）。
+  // 词表放这里（而非 prompt 文本里）是为了让
   // **发布前的自动校验**能用同一份数据 —— 见 D22 的"能结构化的就结构化"。
   // ═══════════════════════════════════════════════════════════
   filters: {
@@ -144,7 +271,7 @@ const DEFAULTS = {
     skipWater: true,
     /**
      * 短评论判定为水评候选的长度上限（**含**）。
-     * 默认 3，对应 评论区运营.md 的「长度 < 4 且无明确语义」。
+     * 默认 3，对应原文档的「长度 < 4 且无明确语义」。
      * 注意是"候选"：还要么命中 waterWords，要么没有任何优先信号，才会真的跳过。
      */
     waterCommentMaxLen: 3,
@@ -170,7 +297,13 @@ const DEFAULTS = {
       '路过', '打卡', '+1', 'dd', '顶', '阅', '好', '嗯', '哦',
     ],
 
-    /** 社区调性词（评论风格指南.md）—— 鼓励使用 */
+    /**
+     * 社区调性词。从原文档抢救来的词表。
+     *
+     * ⚠️ 当前**没有任何生成或校验路径读取它** —— 改它不影响 AI 输出，
+     * 也不影响发布校验。保留是因为内容本身有效，删了就找不回来。
+     * 设置页把这一项标为「不生效」。理由见 运营规则说明.md §4。
+     */
     toneWords: [
       '大佬', '学到了', '太强了', 'yyds', 'DNA动了',
       '狠狠共情了', '破防了', '真实', '谁懂', '绝了',
@@ -179,8 +312,27 @@ const DEFAULTS = {
     /**
      * 禁止出现的措辞。**这是发布前硬校验用的机器可读清单**，
      * 同时经 {{FORBIDDEN_PHRASES}} 注入 prompt —— 单一来源，不会漂移。
-     * 前 8 条是 AI 腔特征（reply-strategy.md），后 3 条是敷衍表达（评论风格指南.md）。
+     * 前 8 条是 AI 腔特征，后 3 条是敷衍表达 —— 都从原文档抢救而来。
      */
+    /**
+     * 合规红线类禁用措辞 —— 与上面那份"文风"清单**分开**存放，因为两者的性质不同：
+     *
+     *   文风清单（AI 腔、敷衍表达）  —— 影响像不像真人，命中只是"这条写得不好"
+     *   合规清单（下面这份）        —— 影响账号安全，命中是"这条不能发"
+     *
+     * 界面上两者的措辞也应当不同，所以不合并成一个数组。
+     *
+     * 来源：原文档的「❌ 不承诺效果、不透露隐私、不攻击他人、不竞品贴脸
+     * ❌ 不提具体收益、保证效果」。那批文档已随 P4.4 删除，这里是唯一的落点。
+     *
+     * 默认值只是**几个最典型的句式**，不是穷举 —— 合格的清单取决于你的实际场景。
+     * 这一条建议只增不减：删掉等于放开对应的合规约束。
+     */
+    forbiddenClaims: [
+      '保证收益', '保证效果', '稳赚不赔', '包你满意',
+      '一定有效', '百分百', '绝对能', '保证能',
+    ],
+
     forbiddenPhrases: [
       '值得注意的是',
       '综上所述',
@@ -205,10 +357,19 @@ const DEFAULTS = {
       { name: '三段式', pattern: '首先[\\s\\S]{0,40}其次', hint: '不要写"首先…其次…最后…"' },
       { name: '完整 GitHub 链接', pattern: 'https?://(?:www\\.)?github\\.com/\\S+', hint: '直贴链接会被限流，改写成 owner/repo' },
       { name: '过长段落', pattern: '\\n[\\s\\S]*\\n[\\s\\S]*\\n', hint: '最多三行' },
+      {
+        // 来源：原文档的「完整的主谓宾长句（超过 30 字且无停顿）」。
+        // 这条规则以前只以散文形式存在于策略 prompt 里 —— 模型"看到了"，
+        // 但发布前没有任何校验能拦下它。
+        // 只匹配连续中文：放宽到英文/数字会误伤 URL 与版本号。
+        name: '长句无停顿',
+        pattern: '[\\u4e00-\\u9fa5]{30,}',
+        hint: '一句话超过 30 字不停顿，改短或加标点拆开',
+      },
     ],
 
     /**
-     * 纯表情评论的回复方式（评论区运营.md 的表情映射表）。
+     * 纯表情评论的回复方式（原文档的表情映射表，见 运营规则说明.md §3）。
      *
      * match 里同时列出 Unicode 与抖音方括号两种形式：接口返回的表情有时是
      * 真实 Unicode 字符，有时就是 `[玫瑰]` 这样的文本（尤其用户从面板里选的表情），
@@ -240,8 +401,28 @@ const DEFAULTS = {
   },
 };
 
-/** 敏感字段路径（点号分隔）。GUI 默认打码、导出配置时剔除 */
-const SENSITIVE_KEYS = ['llm.api_key', 'bridge.token'];
+/**
+ * 敏感字段路径（点号分隔）。GUI 默认打码、导出配置时剔除。
+ * account.email 是纯信息留存（改造计划 §11#10 确认保留），但它和密钥一样
+ * 不该出现在截图、导出文件、诊断报告里，所以一并按敏感处理。
+ */
+const SENSITIVE_KEYS = ['llm.api_key', 'bridge.token', 'account.email'];
+
+/**
+ * describe() 给敏感字段用的打码文案。
+ *
+ * 单独提出来是因为它有一个**必须被挡住**的用法：界面拿到脱敏快照后，
+ * 如果整份配置原样回写，这个占位符就会变成真的 api_key。所以 set() 里
+ * 对敏感字段做了显式拒绝（见 looksRedacted）。格式改动时两处一起看。
+ */
+function redactedPlaceholder(value) {
+  return `***已设置（${String(value).length} 字符）***`;
+}
+
+/** 判断一个值是不是 describe() 产出的打码文案（而不是用户真的想填这个） */
+function looksRedacted(v) {
+  return typeof v === 'string' && /^\*\*\*已设置（\d+ 字符）\*\*\*$/.test(v);
+}
 
 // ═══════════════════════════════════════════════════════════
 // 内部状态
@@ -253,6 +434,8 @@ let _merged = null;
 let _raw = null;
 /** 上次加载的校验告警 */
 let _warnings = [];
+/** 运行时覆盖片段（不落盘）。见 setRuntimeOverrides() */
+let _runtimeOverrides = null;
 
 // ═══════════════════════════════════════════════════════════
 // 工具
@@ -437,7 +620,7 @@ function validate(cfg) {
       );
     }
   }
-  for (const k of ['waterWords', 'toneWords', 'forbiddenPhrases', 'forbiddenPatterns']) {
+  for (const k of ['waterWords', 'toneWords', 'forbiddenPhrases', 'forbiddenClaims', 'forbiddenPatterns']) {
     if (!Array.isArray(getByPath(cfg, `filters.${k}`))) {
       fail(`filters.${k}`, `需为数组，实际为 ${JSON.stringify(getByPath(cfg, `filters.${k}`))}`, DEFAULTS.filters[k]);
     }
@@ -453,6 +636,198 @@ function validate(cfg) {
       && Array.isArray(eo.pool) && eo.pool.length > 0;
     if (!ok) {
       fail('filters.emojiOnly', `需为 { enabled, map:[], pool:[] }，实际为 ${JSON.stringify(eo)}`, DEFAULTS.filters.emojiOnly);
+    }
+  }
+
+  // account
+  {
+    for (const k of ['douyinId', 'githubOwner', 'email', 'roleProfile']) {
+      const v = getByPath(cfg, `account.${k}`);
+      if (typeof v !== 'string') {
+        fail(`account.${k}`, `需为字符串，实际为 ${JSON.stringify(v)}`, DEFAULTS.account[k]);
+      }
+    }
+  }
+
+  // reply —— 回复来源
+  {
+    const m = getByPath(cfg, 'reply.mode');
+    if (!REPLY_MODES.includes(m)) {
+      fail('reply.mode', `需为 ${REPLY_MODES.join(' / ')} 之一，实际为 ${JSON.stringify(m)}`, DEFAULTS.reply.mode);
+    }
+
+    const ratio = getByPath(cfg, 'reply.hybrid.aiRatio');
+    if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+      fail('reply.hybrid.aiRatio', `需为 0-1 之间的数，实际为 ${JSON.stringify(ratio)}`, DEFAULTS.reply.hybrid.aiRatio);
+    }
+    if (typeof getByPath(cfg, 'reply.hybrid.fallbackToFixed') !== 'boolean') {
+      fail('reply.hybrid.fallbackToFixed', '需为布尔值', DEFAULTS.reply.hybrid.fallbackToFixed);
+    }
+
+    const cycle = getByPath(cfg, 'reply.fixed.cycle');
+    if (!CYCLE_NAMES.includes(cycle)) {
+      fail('reply.fixed.cycle', `需为 ${CYCLE_NAMES.join(' / ')} 之一，实际为 ${JSON.stringify(cycle)}`, DEFAULTS.reply.fixed.cycle);
+    }
+    const gap = getByPath(cfg, 'reply.fixed.minGapBetweenReuse');
+    if (!Number.isInteger(gap) || gap < 0) {
+      fail('reply.fixed.minGapBetweenReuse', `需为不小于 0 的整数，实际为 ${JSON.stringify(gap)}`, DEFAULTS.reply.fixed.minGapBetweenReuse);
+    }
+    {
+      // 条目逐条筛：单条写坏（比如少了 text）不该把整份列表退回空。
+      // 不合格的条目丢掉并告警，其余的照常可用。
+      const items = getByPath(cfg, 'reply.fixed.items');
+      if (!Array.isArray(items)) {
+        fail('reply.fixed.items', `需为数组，实际为 ${JSON.stringify(items)}`, DEFAULTS.reply.fixed.items);
+      } else {
+        const kept = [];
+        const dropped = [];
+        items.forEach((it, i) => {
+          if (!isPlainObject(it)) { dropped.push(`#${i + 1} 不是对象`); return; }
+          if (typeof it.text !== 'string' || !it.text.trim()) { dropped.push(`#${i + 1} 缺少 text`); return; }
+          if (it.weight !== undefined && !(typeof it.weight === 'number' && Number.isFinite(it.weight) && it.weight >= 0)) {
+            dropped.push(`#${i + 1} weight 需为不小于 0 的数`);
+            return;
+          }
+          if (it.enabled !== undefined && typeof it.enabled !== 'boolean') {
+            dropped.push(`#${i + 1} enabled 需为布尔值`);
+            return;
+          }
+          kept.push({
+            text: it.text,
+            weight: it.weight === undefined ? 1 : it.weight,
+            enabled: it.enabled === undefined ? true : it.enabled,
+          });
+        });
+        if (dropped.length) {
+          warnings.push({
+            key: 'reply.fixed.items',
+            message: `有 ${dropped.length} 条固定回复被忽略：${dropped.slice(0, 3).join('；')}${dropped.length > 3 ? ' …' : ''}`,
+            fallback: kept,
+          });
+          setByPath(cfg, 'reply.fixed.items', kept);
+        }
+      }
+    }
+
+    const imgMode = getByPath(cfg, 'reply.image.mode');
+    if (!IMAGE_MODES.includes(imgMode)) {
+      fail('reply.image.mode', `需为 ${IMAGE_MODES.join(' / ')} 之一，实际为 ${JSON.stringify(imgMode)}`, DEFAULTS.reply.image.mode);
+    }
+    if (typeof getByPath(cfg, 'reply.image.enabled') !== 'boolean') {
+      fail('reply.image.enabled', '需为布尔值', DEFAULTS.reply.image.enabled);
+    }
+    if (typeof getByPath(cfg, 'reply.image.withText') !== 'boolean') {
+      fail('reply.image.withText', '需为布尔值', DEFAULTS.reply.image.withText);
+    }
+    const imgRatio = getByPath(cfg, 'reply.image.ratio');
+    if (typeof imgRatio !== 'number' || !Number.isFinite(imgRatio) || imgRatio < 0 || imgRatio > 1) {
+      fail('reply.image.ratio', `需为 0-1 之间的数，实际为 ${JSON.stringify(imgRatio)}`, DEFAULTS.reply.image.ratio);
+    }
+    const pick = getByPath(cfg, 'reply.image.pick');
+    if (!CYCLE_NAMES.includes(pick)) {
+      fail('reply.image.pick', `需为 ${CYCLE_NAMES.join(' / ')} 之一，实际为 ${JSON.stringify(pick)}`, DEFAULTS.reply.image.pick);
+    }
+    for (const k of ['keywords', 'paths']) {
+      const v = getByPath(cfg, `reply.image.${k}`);
+      if (!Array.isArray(v)) {
+        fail(`reply.image.${k}`, `需为字符串数组，实际为 ${JSON.stringify(v)}`, DEFAULTS.reply.image[k]);
+        continue;
+      }
+      // 逐条筛而不是整份回退成空数组。
+      // 改动前 `v.every(...)` 为假就 fail(...) → 整份被替换成 []，而且 config.set()
+      // 会把这个空数组写进用户的 config.json —— 混进一个 null 就让配好的 20 张图
+      // 全部消失，只有一条告警。这与 reply.fixed.items / personas.* 的容错语义
+      // 也不一致（那两处都是逐条筛）。
+      const kept = v.filter(x => typeof x === 'string' && x.trim());
+      if (kept.length !== v.length) {
+        warnings.push({
+          key: `reply.image.${k}`,
+          message: `有 ${v.length - kept.length} 项不是有效路径/关键词，已忽略（其余 ${kept.length} 项保留）`,
+          fallback: kept,
+        });
+        setByPath(cfg, `reply.image.${k}`, kept);
+      }
+    }
+  }
+
+  // personas —— 逐条筛，坏的那条丢掉并告警，其余照常可用
+  // （与 reply.fixed.items 同一套思路：一条写坏不该让整份列表失效）
+  {
+    const disabled = getByPath(cfg, 'personas.disabled');
+    if (!Array.isArray(disabled) || disabled.some(x => typeof x !== 'string')) {
+      fail('personas.disabled', `需为字符串数组，实际为 ${JSON.stringify(disabled)}`, DEFAULTS.personas.disabled);
+    }
+
+    for (const key of ['overrides', 'custom']) {
+      const list = getByPath(cfg, `personas.${key}`);
+      if (!Array.isArray(list)) {
+        fail(`personas.${key}`, `需为数组，实际为 ${JSON.stringify(list)}`, DEFAULTS.personas[key]);
+        continue;
+      }
+      const kept = [];
+      const dropped = [];
+      list.forEach((it, i) => {
+        if (!isPlainObject(it)) { dropped.push(`#${i + 1} 不是对象`); return; }
+        if (typeof it.id !== 'string' || !it.id.trim()) { dropped.push(`#${i + 1} 缺少 id`); return; }
+        // custom 必须有 promptPrefix：没有它这个"人格"对模型来说什么都不表示
+        if (key === 'custom' && (typeof it.promptPrefix !== 'string' || !it.promptPrefix.trim())) {
+          dropped.push(`#${i + 1}（${it.id}）缺少 promptPrefix`);
+          return;
+        }
+        if (it.weight !== undefined && !(Number.isFinite(it.weight) && it.weight >= 0)) {
+          dropped.push(`#${i + 1}（${it.id}）weight 需为不小于 0 的数`);
+          return;
+        }
+        if (it.temperature !== undefined && !(Number.isFinite(it.temperature) && it.temperature >= 0 && it.temperature <= 2)) {
+          dropped.push(`#${i + 1}（${it.id}）temperature 需为 0-2 之间的数`);
+          return;
+        }
+        if (it.emojiChance !== undefined && !(Number.isFinite(it.emojiChance) && it.emojiChance >= 0 && it.emojiChance <= 1)) {
+          dropped.push(`#${i + 1}（${it.id}）emojiChance 需为 0-1 之间的数`);
+          return;
+        }
+        // 下面这几个键**必须**查类型：applyOverride 是整体替换语义，
+        // 一旦它们不是声明的类型，生成时会在 buildSystemPrompt / buildUserPrefix
+        // 里抛 TypeError（forbiddenWords.join / examples.map），
+        // 报错是 TypeError 而不是可读原因，配置层还一条告警都不给。
+        if (it.name !== undefined && typeof it.name !== 'string') {
+          dropped.push(`#${i + 1}（${it.id}）name 需为字符串`);
+          return;
+        }
+        if (it.promptPrefix !== undefined && typeof it.promptPrefix !== 'string') {
+          dropped.push(`#${i + 1}（${it.id}）promptPrefix 需为字符串`);
+          return;
+        }
+        for (const arrKey of ['forbiddenWords', 'examples']) {
+          const v = it[arrKey];
+          if (v !== undefined && !(Array.isArray(v) && v.every(x => typeof x === 'string'))) {
+            dropped.push(`#${i + 1}（${it.id}）${arrKey} 需为字符串数组`);
+            return;
+          }
+        }
+        const lr = it.lengthRange;
+        if (lr !== undefined
+          && !(Array.isArray(lr) && lr.length === 2 && lr.every(n => Number.isInteger(n) && n > 0) && lr[0] <= lr[1])) {
+          dropped.push(`#${i + 1}（${it.id}）lengthRange 需为 [最小, 最大] 两个正整数`);
+          return;
+        }
+        kept.push(it);
+      });
+      if (dropped.length) {
+        warnings.push({
+          key: `personas.${key}`,
+          message: `有 ${dropped.length} 条人格设置被忽略：${dropped.slice(0, 3).join('；')}${dropped.length > 3 ? ' …' : ''}`,
+          fallback: kept,
+        });
+        setByPath(cfg, `personas.${key}`, kept);
+      }
+    }
+
+    // 停用清单里指向不存在的人格只是无效，不是错误 —— 用户可能先停用再删掉自定义人格。
+    // 但重复项会让界面上出现两条同样的记录，去个重。
+    const uniq = Array.isArray(disabled) ? [...new Set(disabled)] : DEFAULTS.personas.disabled;
+    if (Array.isArray(disabled) && uniq.length !== disabled.length) {
+      setByPath(cfg, 'personas.disabled', uniq);
     }
   }
 
@@ -502,7 +877,7 @@ function ensureLoaded() {
   if (_merged) return;
   const { raw, warning } = readRaw();
   _raw = raw;
-  const merged = deepMerge(DEFAULTS, _raw);
+  const merged = composeConfig(_raw);
   const warns = validate(merged);
   // 文件级告警放在最前，便于诊断页优先展示
   _warnings = warning ? [warning, ...warns] : warns;
@@ -515,6 +890,58 @@ function ensureLoaded() {
  */
 function reload() {
   _merged = null;
+  ensureLoaded();
+  return deepClone(_merged);
+}
+
+/**
+ * 合成最终配置：内置默认 → 用户配置 → 运行时覆盖（**只填用户没显式设过的键**）。
+ *
+ * 最后那条限制是关键。运行时覆盖代表"当前形态下的合理默认"（桌面端把
+ * readEnforce 打开），它只在用户没表态时生效 —— 一旦用户在设置页把这一项
+ * 显式改成了别的值，那份值就写进了 _raw，**用户说了算**。
+ *
+ * 若让覆盖无脑压过用户配置，就会造出一个假开关：
+ * 用户关掉它 → 下次启动又被改回来 → 设置项永远显示的是它想让你看到的那个值。
+ *
+ * @param {object} raw - 用户配置原文
+ */
+function composeConfig(raw) {
+  const merged = deepMerge(DEFAULTS, raw);
+  if (!_runtimeOverrides) return merged;
+
+  const out = deepClone(merged);
+  const walk = (node, prefix) => {
+    for (const k of Object.keys(node)) {
+      const p = prefix ? `${prefix}.${k}` : k;
+      const v = node[k];
+      if (isPlainObject(v)) { walk(v, p); continue; }
+      // 用户显式写过这个路径 → 尊重用户的值
+      if (getByPath(raw, p) !== undefined) continue;
+      setByPath(out, p, deepClone(v));
+    }
+  };
+  walk(_runtimeOverrides, '');
+  return out;
+}
+
+/**
+ * 设置运行时覆盖：**只影响本进程的内存值，不写盘**。
+ *
+ * 用在"同一个配置项在 CLI 与桌面端该有不同的默认值"的场合。目前只有一个：
+ *
+ *   intervals.readEnforce —— 改造计划 §5.4 定的「CLI 下 false（保持交互式查询
+ *   不卡 30 秒），桌面 GUI 下 true（GUI 里没有 agent 自觉遵守间隔，必须由代码兜住）」。
+ *
+ * 为什么不让主进程直接 config.set()：那会把值写进用户的 config.json。
+ * 用户在设置页关掉它之后，下次启动又会被主进程改回来 —— 配置项就变成了假的。
+ * 运行时覆盖不落盘，用户显式改过的那份始终说了算。
+ *
+ * @param {object|null} obj - 覆盖片段（深合并到内存配置之上），null 表示清除
+ */
+function setRuntimeOverrides(obj) {
+  _runtimeOverrides = obj ? deepClone(obj) : null;
+  _merged = null;   // 下次 get() 重新合并
   ensureLoaded();
   return deepClone(_merged);
 }
@@ -561,8 +988,25 @@ function set(patch) {
   ensureLoaded();
   if (!isPlainObject(patch)) throw new TypeError('config.set(patch) 需要一个对象');
 
+  // 拒绝把 describe() 的打码文案当真实值写回。
+  //
+  // 这条防护针对的是一个很容易踩中的场景：设置页加载脱敏快照 → 用户改了一个
+  // 无关字段 → 保存时把整份配置回写 → api_key 变成 "***已设置（48 字符）***"。
+  // 它不会报任何错，只会让所有 AI 调用在下一次失败，属于最难查的那类故障。
+  for (const key of SENSITIVE_KEYS) {
+    const v = getByPath(patch, key);
+    if (looksRedacted(v)) {
+      throw new Error(
+        `拒绝写入 ${key}：这是一个打码后的占位符，不是真实值。` +
+        '如果你确实要改它，请填写新的完整值；不想改就不要提交这个字段。'
+      );
+    }
+  }
+
   const nextRaw = deepMerge(_raw, patch);
-  const probe = deepMerge(DEFAULTS, nextRaw);
+  // 用 composeConfig 而不是裸的深合并：合成规则只有一处，
+  // 否则"保存后立刻生效的值"与"重启后加载的值"可能不是同一个
+  const probe = composeConfig(nextRaw);
   const warnings = validate(probe);
 
   // 把校验修正回写到用户配置，保证落盘的文件里不含非法值。
@@ -598,7 +1042,7 @@ function describe() {
   const redacted = deepClone(_merged);
   for (const key of SENSITIVE_KEYS) {
     const v = getByPath(redacted, key);
-    if (v) setByPath(redacted, key, `***已设置（${String(v).length} 字符）***`);
+    if (v) setByPath(redacted, key, redactedPlaceholder(v));
   }
   const file = paths.configFile();
   return {
@@ -606,8 +1050,35 @@ function describe() {
     exists: fs.existsSync(file),
     sensitiveKeys: SENSITIVE_KEYS,
     config: redacted,
+    // 设置页每项要显示"默认值是多少"、并提供逐项恢复默认，因此把默认值一并给出。
+    // 敏感项的默认值都是空串，不会泄露任何东西。
+    //
+    // 注意这里给的是 **composeConfig({})**（= DEFAULTS 叠加运行时覆盖），
+    // 而不是裸的 DEFAULTS。差别在「恢复默认」按钮上：
+    // 桌面端用运行时覆盖把 intervals.readEnforce 打开，如果这里回 DEFAULTS 的 false，
+    // 用户点一下「恢复默认」就会把那个键**显式写进** config.json，
+    // 而"用户显式写过"会让运行时覆盖从此失效 —— 一次点错就永久关掉了读操作强制间隔，
+    // 而界面上还显示"已恢复默认"。
+    defaults: composeConfig({}),
     warnings: getWarnings(),
   };
+}
+
+/**
+ * 列出所有合法的配置叶子路径（点号分隔），供界面做"只允许改已知项"的守卫。
+ * @returns {string[]}
+ */
+function listLeafPaths() {
+  const out = [];
+  const walk = (node, prefix) => {
+    if (isPlainObject(node)) {
+      for (const k of Object.keys(node)) walk(node[k], prefix ? `${prefix}.${k}` : k);
+      return;
+    }
+    if (prefix) out.push(prefix);
+  };
+  walk(DEFAULTS, '');
+  return out;
 }
 
 /** 清空内存缓存（测试用） */
@@ -615,17 +1086,22 @@ function reset() {
   _merged = null;
   _raw = null;
   _warnings = [];
+  _runtimeOverrides = null;
 }
 
 module.exports = {
   DEFAULTS,
   SENSITIVE_KEYS,
+  REPLY_MODES,
+  IMAGE_MODES,
   get,
   getRaw,
   getWarnings,
   set,
   reload,
+  setRuntimeOverrides,
   describe,
+  listLeafPaths,
   reset,
   // 供测试与工具使用
   _internal: { deepMerge, deepClone, validate },

@@ -81,7 +81,7 @@ scripts/_template.user.js 新站点油猴脚本模板
 4. 补测试到对应 `tests/p<N>-*.test.js`
 
 ### 节奏守卫（`lib/risk-control.js`）
-- 间隔单一源 = `config.json:intervals`（write 40-55s / read 30-50s），与 `全局规则.md §1` 引用同一处
+- 间隔单一源 = `config.json:intervals`（write 40-55s / read 30-50s），出处与理由见 `运营规则说明.md §1`
 - 写命令入口调 `enforceDelay('write')`；命令内部调用（suggest/campaign）传 `--no-throttle` 由各自节奏接管
 - 新增写命令记得接线 `enforceDelay`，否则守卫失效
 

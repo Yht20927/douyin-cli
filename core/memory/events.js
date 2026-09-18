@@ -148,9 +148,19 @@ function cleanupBefore(ts, opts = {}) {
       return db.prepare('SELECT count(*) AS n FROM events WHERE ts < ?').get(ts).n;
     }
     const limit = opts.limit || 1000;
-    return db.prepare('DELETE FROM events WHERE ts < ? LIMIT ?').run(ts, limit).changes;
+    // 用子查询取 rowid 再删：`DELETE ... LIMIT` 需要 SQLite 编译期开
+    // SQLITE_ENABLE_UPDATE_DELETE_LIMIT，而 Node 内置的 SQLite 没开 ——
+    // 直接写会抛 "near \"LIMIT\": syntax error"，被下面的 catch 吞掉返回 0。
+    // 症状是 dry-run 报告 would_delete: N、真跑报告 deleted: 0，不报错不告警，
+    // 表因此无界增长。子查询形式在任何构建下都成立。
+    return db.prepare(
+      'DELETE FROM events WHERE rowid IN (SELECT rowid FROM events WHERE ts < ? LIMIT ?)'
+    ).run(ts, limit).changes;
   } catch (e) {
-    logger.debug('[events.cleanupBefore] failed: ' + e.message);
+    // 用 warn 而不是 debug：这里失败的表现是「报告删了 0 条」——
+    // 看起来像「没有东西要清理」，用户不会去查 debug 日志。
+    // 之前 DELETE ... LIMIT 的语法错误就是这样静默存在了很久。
+    logger.warn('[events.cleanupBefore] 清理失败（本次 0 条被删除）: ' + e.message);
     return 0;
   }
 }

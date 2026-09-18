@@ -209,9 +209,19 @@ function myUid() {
   }
 }
 
-function count() {
+/**
+ * 视频总数。
+ * @param {object} [opts]
+ * @param {boolean} [opts.isMine] - 只数我的作品
+ */
+function count(opts = {}) {
   try {
-    return getDb().prepare(`SELECT count(*) AS n FROM videos WHERE platform = ?`).get(PLATFORM).n;
+    const where = ['platform = ?'];
+    const params = [PLATFORM];
+    if (opts.isMine != null) { where.push('is_mine = ?'); params.push(opts.isMine ? 1 : 0); }
+    return getDb().prepare(
+      `SELECT count(*) AS n FROM videos WHERE ${where.join(' AND ')}`
+    ).get(...params).n;
   } catch (e) { return 0; }
 }
 

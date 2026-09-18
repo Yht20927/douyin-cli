@@ -66,19 +66,19 @@ function validateTemplate(filePath) {
 async function cmdValidatePrompts(ctx, args) {
   const targetFile = args[0] || null;
 
+  // 用 listPromptFiles() 取两个目录的并集，而不是 readdir 某一个目录 ——
+  // 逐文件覆盖下，"用户目录里只有 1 个文件"是常态，直接 readdir 会漏掉其余模板。
+  const available = paths.listPromptFiles().filter(f => !f.partial);
+
   let files;
   if (targetFile) {
-    const fp = path.join(paths.promptsDir(), targetFile);
-    if (!fs.existsSync(fp)) throw new Error(`模板文件不存在: ${targetFile}`);
-    files = [fp];
-  } else {
-    try {
-      files = fs.readdirSync(paths.promptsDir())
-        .filter(f => f.endsWith('.md') && !f.startsWith('partial-'))
-        .map(f => path.join(paths.promptsDir(), f));
-    } catch (e) {
-      throw new Error(`无法读取 prompts 目录: ${paths.promptsDir()}`);
+    // available 是实际扫出来的，在里面就说明两个目录里至少有一个存在
+    if (!available.some(f => f.name === targetFile)) {
+      throw new Error(`模板文件不存在: ${targetFile}`);
     }
+    files = [paths.resolvePrompt(targetFile).path];
+  } else {
+    files = available.map(f => paths.resolvePrompt(f.name).path);
   }
 
   if (files.length === 0) {

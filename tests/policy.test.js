@@ -1,6 +1,6 @@
 // tests/policy.test.js — 运营规则的代码强制
 //
-// 这是整个改造里价值最集中的一块：全局规则.md 与 评论区运营.md 里那十几条
+// 这是整个改造里价值最集中的一块：改造前那十几条
 // 硬性红线，改造前**没有一条写在代码里**。本文件把它们逐条固化成断言。
 
 const fs = require('fs');
@@ -298,7 +298,7 @@ describe('assertWritable：命令入口的强制闸门', () => {
   }, async ({ events, engine }) => {
     events.append({ ts: Date.now(), command: 'post', status: 'success' });
     let caught = null;
-    try { engine.assertWritable({}); } catch (e) { caught = e; }
+    try { await engine.assertWritable({}); } catch (e) { caught = e; }
     expect(caught).toBeTruthy();
     expect(caught.code).toBe('POLICY_BLOCKED');
     expect(caught.message).toContain('运营策略拦下');
@@ -311,13 +311,33 @@ describe('assertWritable：命令入口的强制闸门', () => {
     events.append({ ts: Date.now(), command: 'post', status: 'success' });
     events.append({ ts: Date.now(), command: 'post', status: 'error', error: 'x' });
     let caught = null;
-    try { engine.assertWritable({}); } catch (e) { caught = e; }
+    try { await engine.assertWritable({}); } catch (e) { caught = e; }
     expect(caught.blockers.length).toBeGreaterThanOrEqual(2);
   }));
 
   it('合规时返回判定结果而不抛错', withTempEnv({}, async ({ engine }) => {
-    const r = engine.assertWritable({});
+    // assertWritable 现在是 async：它要处理 wait 类拦截（单轮冷却 / 每日轮次），
+    // 改造前那类拦截被静默忽略，等于两条标着"硬强制"的红线在命令行下不存在
+    const r = await engine.assertWritable({});
     expect(r.ok).toBe(true);
+  }));
+
+  it('冷却期内会等待而不是直接放行', withTempEnv({
+    policy: { roundMaxWrites: 1, roundCooldownSec: 2 },
+  }, async ({ events, engine }) => {
+    // 先写满一轮
+    events.append({ ts: Date.now(), command: 'post', status: 'success' });
+
+    const checked = engine.beforeWrite({});
+    expect(checked.ok).toBe(true);          // 不是"不能发"
+    expect(checked.waitMs).toBeGreaterThan(0);  // 而是"要等"
+
+    // assertWritable 必须真的等，而不是像改造前那样直接返回
+    let waited = 0;
+    const t0 = Date.now();
+    await engine.assertWritable({}, { onWait: (i) => { waited = i.waitMs; } });
+    expect(waited).toBeGreaterThan(0);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(waited - 50);
   }));
 });
 

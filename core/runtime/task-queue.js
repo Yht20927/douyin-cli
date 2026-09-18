@@ -2,7 +2,8 @@
 //
 // 为什么必须是串行的
 // ------------------
-// 全局规则.md §1 的第一条就是「🔴 严禁并发执行任何 CLI 命令」，理由写在 §11：
+// 运营规则说明.md §1「节奏类」的第一条就是「严禁并发」——
+// 原文档（已随 P4.4 删除）把理由写在：
 // 并发或过快间隔会触发风控（限流 / 验证码 / 封号）。改造前这条靠 agent 自觉遵守，
 // 而 risk-control 的 enforceDelay 只读 events 表的 max(ts)，**进程内没有互斥** ——
 // 两个并发请求可以同时通过检查。所以串行必须由队列来保证，而不是靠约定。
@@ -331,6 +332,15 @@ function createTaskQueue(opts = {}) {
       }
 
       if (check.waitMs <= 0) return true;
+
+      // 「跳过本次等待」：只跳过**等待**，不跳过上面那批拦截。
+      // 放在 check.ok 判断之后是有意的 —— 这个开关是"我可以现在发"，
+      // 不是"绕过规则"，配额/去重/内容校验该拦还是拦。
+      // 改造前渲染层勾了这个框，值传给 onConfirm 后没人接，等于没有这个功能。
+      if (task.meta && task.meta.skipWait === true) {
+        rootLogger.info(`[queue] ${task.label} 按用户选择跳过本次等待（${Math.ceil(check.waitMs / 1000)}s）`);
+        return true;
+      }
 
       // 上报等待：界面据此本地倒计时，不必每秒推 IPC
       const reason = (check.blockers.find(b => b.action === 'wait') || {}).reason

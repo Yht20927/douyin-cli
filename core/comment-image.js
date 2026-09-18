@@ -61,6 +61,50 @@ function loadImage(filePath) {
   return { path: filePath, format, size: stat.size, base64, large: stat.size > WARN_IMAGE_BYTES };
 }
 
+/**
+ * 只做校验、不读文件内容的轻量预检。
+ *
+ * loadImage 会把整张图读成 base64（10MB 图 = 13MB 字符串），在"这批路径里
+ * 哪些能用"这种批量判断里代价太大。选图时、以及每次生成回复挑选图片时
+ * 都用这个，把"文件不存在/格式不支持/超限"提前暴露出来，
+ * 而不是等到上传到一半才失败。
+ *
+ * @param {string} filePath
+ * @returns {{ok:true, format:string, size:number, large:boolean}
+ *          | {ok:false, reason:string, code:'format'|'missing'|'toobig'|'empty'}}
+ */
+function checkImage(filePath) {
+  if (!filePath || typeof filePath !== 'string') {
+    return { ok: false, code: 'missing', reason: '路径为空' };
+  }
+  const ext = extOf(filePath);
+  const format = FORMAT_BY_EXT[ext];
+  if (!format) {
+    return {
+      ok: false,
+      code: 'format',
+      reason: `不支持的格式 ${ext || '(无扩展名)'}，支持 ${Object.keys(FORMAT_BY_EXT).join('/')}`,
+    };
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (_) {
+    return { ok: false, code: 'missing', reason: '文件不存在或不可读' };
+  }
+  if (!stat.isFile()) return { ok: false, code: 'missing', reason: '不是一个文件' };
+  if (stat.size === 0) return { ok: false, code: 'empty', reason: '文件为空' };
+  if (stat.size > MAX_IMAGE_BYTES) {
+    return {
+      ok: false,
+      code: 'toobig',
+      reason: `${(stat.size / 1048576).toFixed(1)}MB，超过上限 ${MAX_IMAGE_BYTES / 1048576}MB`,
+    };
+  }
+  return { ok: true, format, size: stat.size, large: stat.size > WARN_IMAGE_BYTES };
+}
+
 /** 把 base64 切成可分片递送的数组 */
 function chunkBase64(base64, size = CHUNK_SIZE) {
   if (typeof base64 !== 'string') throw new Error('chunkBase64 需要字符串');
@@ -138,6 +182,7 @@ module.exports = {
   CHUNK_SIZE,
   FORMAT_BY_EXT,
   extOf,
+  checkImage,
   loadImage,
   chunkBase64,
   collectImageArgs,

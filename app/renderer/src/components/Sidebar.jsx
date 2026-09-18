@@ -1,11 +1,12 @@
 import React from 'react';
 import { describeStatus } from '../status.js';
 
-/** 目前真实存在的页面。后续会加：私信 / 事件日志 / 设置 */
+/** 目前真实存在的页面。后续会加：私信 / 事件日志 */
 const NAV = [
   { key: 'queue', label: '队列', badge: 'queue' },
   { key: 'works', label: '我的作品' },
   { key: 'drafts', label: '草稿箱', badge: 'draft' },
+  { key: 'settings', label: '设置' },
   { key: 'connection', label: '连接' },
   { key: 'diagnostics', label: '诊断' },
 ];

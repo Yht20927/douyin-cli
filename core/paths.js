@@ -110,16 +110,87 @@ function appLogFile() {
 }
 
 /**
- * prompt 模板目录。
- * 优先取 dataDir 下的同名目录（用户可在 GUI 里编辑、覆盖），
- * 不存在则回退到随应用打包的 prompts/（只读默认值）。
+ * 随应用打包的 prompt 模板目录（只读默认值）。
+ */
+function bundledPromptsDir() {
+  return path.join(appRoot(), 'prompts');
+}
+
+/**
+ * 用户可写的 prompt 覆盖目录（设置页编辑后写这里）。
+ * 目录可能不存在 —— 不存在就是"一个都没覆盖"。
+ */
+function userPromptsDir() {
+  return path.join(dataDir(), 'prompts');
+}
+
+/**
+ * 解析某个模板文件的实际路径：**先看用户目录，没有再回退打包目录**。
+ *
+ * 这里刻意做成逐文件回退，而不是"用户目录存在就整体顶替"。改造前是后者，
+ * 后果很隐蔽：用户在界面上只编辑了一个模板，保存时建出了 data/prompts/，
+ * 于是其余五个模板**全部消失**（读不到 → prompt-builder 静默返回 null
+ * → 那几类生成悄悄退化成没有模板的状态）。逐文件回退下，只有真正改过的
+ * 那个文件被覆盖。
+ *
+ * @param {string} name - 模板文件名，如 'reply.md'
+ * @returns {{path:string, source:'user'|'bundled', userPath:string, bundledPath:string}}
+ */
+function resolvePrompt(name) {
+  const bundledPath = path.join(bundledPromptsDir(), name);
+  const userPath = path.join(userPromptsDir(), name);
+  try {
+    if (fs.existsSync(userPath)) return { path: userPath, source: 'user', userPath, bundledPath };
+  } catch (e) { /* 权限问题按未覆盖处理 */ }
+  return { path: bundledPath, source: 'bundled', userPath, bundledPath };
+}
+
+/**
+ * 列出全部可用模板（两个目录的**并集**），标注各自来自哪里、是否被覆盖。
+ *
+ * @returns {Array<{name:string, path:string, source:string, overridden:boolean,
+ *                  userPath:string, editable:boolean, partial:boolean}>}
+ */
+function listPromptFiles() {
+  const seen = new Map();
+  const collect = (dir, source) => {
+    let names = [];
+    try {
+      names = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
+    } catch (e) { return; }
+    for (const name of names) {
+      if (!seen.has(name)) seen.set(name, { name, source, userPath: path.join(userPromptsDir(), name) });
+      else if (source === 'user') seen.get(name).source = 'user';
+    }
+  };
+  // 用户目录优先登记，这样同名文件的 source 是 user
+  collect(userPromptsDir(), 'user');
+  collect(bundledPromptsDir(), 'bundled');
+
+  return [...seen.values()]
+    .map(f => ({
+      name: f.name,
+      source: f.source,
+      overridden: f.source === 'user',
+      userPath: f.userPath,
+      editable: true,
+      // partial-*.md 是跨模板共享的片段，不是完整模板，validatePrompts 会跳过它们
+      partial: f.name.startsWith('partial-'),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * @deprecated 用 resolvePrompt() / listPromptFiles()。
+ * 保留是因为它仍在诊断页之类的只读展示里用到；它只回答"用户目录在不在"，
+ * **不能**用来拼文件路径（那样会重新引入整目录遮蔽的问题）。
  */
 function promptsDir() {
-  const override = path.join(dataDir(), 'prompts');
+  const override = userPromptsDir();
   try {
     if (fs.existsSync(override)) return override;
   } catch (e) { /* 权限问题则忽略，走默认 */ }
-  return path.join(appRoot(), 'prompts');
+  return bundledPromptsDir();
 }
 
 /** 视频截图临时目录（多模态截图用；D11 后默认不启用） */
@@ -191,6 +262,10 @@ module.exports = {
   resultsDir,
   appLogFile,
   promptsDir,
+  bundledPromptsDir,
+  userPromptsDir,
+  resolvePrompt,
+  listPromptFiles,
   screenshotsDir,
   // 工具
   ensureDir,

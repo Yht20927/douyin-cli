@@ -1,7 +1,28 @@
-// lib/personas.js — 评论人格模板池（抖音版）
+// core/personas.js — 评论人格模板池（抖音版）
 // 为 LLM 生成回复提供多样化的风格模板，避免所有评论都是同一种"自然亲切"的 AI 味。
+//
+// ── 关于「内置」与「生效」的区分（D18 / 改造计划 §5.7）──
+//
+// 下面这份 BUILTIN 是**默认值**，不是最终结果。改造前它同时扮演两个角色，
+// 于是 examples 里写着美妆/购物语料却改不动（硬编码在 JS 里）。
+// 现在实际使用的是 effectivePersonas()：内置 → 叠加 config 的 overrides
+// → 追加 custom → 去掉 disabled。
+//
+// 消费者（pickPersona / findPersona / listPersonas）的签名一个都没变，
+// 因此 reply-engine / llm.js / 各命令不需要跟着改。
+//
+// 配置形状（见 core/config 的 DEFAULTS.personas）：
+//   personas.disabled   = ['enthusiastic_fan']            停用哪些内置人格
+//   personas.overrides  = [{ id:'casual_friend', temperature: 0.9 }]   只写要覆盖的字段
+//   personas.custom     = [{ id, name, promptPrefix, ... }]            完整定义
+//
+// overrides 与 custom 用**数组**而不是以 id 为键的对象，是为了配合
+// "配置补丁只允许已知路径"的守卫（app/main/ipc.js）：以 id 为键意味着
+// 路径数量取决于用户数据，守卫没法预先列出，只能整个放开。
 
-const PERSONAS = [
+const config = require('./config');
+
+const BUILTIN = [
   {
     id: 'casual_friend',
     name: 'casual 朋友',
@@ -144,17 +165,119 @@ const PERSONAS = [
   },
 ];
 
+// ═══════════════════════════════════════════════════════════
+// 生效人格 = 内置 + 覆盖 + 自定义 - 停用
+// ═══════════════════════════════════════════════════════════
+
+/** 允许被 overrides 覆盖的字段。其余字段（尤其是 id）不允许改，否则找不到原始定义 */
+const OVERRIDABLE = ['name', 'weight', 'temperature', 'lengthRange', 'emojiChance', 'promptPrefix', 'forbiddenWords', 'examples', 'enabled'];
+
+/** 覆盖一个内置人格。数组整体替换（与 config 的深合并语义一致） */
+function applyOverride(base, override) {
+  if (!override || typeof override !== 'object') return base;
+  const out = { ...base };
+  for (const k of OVERRIDABLE) {
+    if (override[k] !== undefined) out[k] = override[k];
+  }
+  return out;
+}
+
+/**
+ * 把一条自定义人格规范化成与内置完全同构的形状。
+ *
+ * 缺字段的一律补默认值而不是丢弃 —— 用户只填了 id 和 promptPrefix 也应该能用，
+ * 而不是生成时才炸。真正的合法性（id 非空、promptPrefix 非空）由 config 校验负责，
+ * 到这里说明已经过了一遍校验，这里只是补齐可选项。
+ */
+function normalizeCustom(raw) {
+  return {
+    id: String(raw.id),
+    name: raw.name || String(raw.id),
+    weight: Number.isFinite(raw.weight) ? raw.weight : 10,
+    temperature: Number.isFinite(raw.temperature) ? raw.temperature : 0.7,
+    lengthRange: Array.isArray(raw.lengthRange) && raw.lengthRange.length === 2 ? raw.lengthRange : [10, 45],
+    emojiChance: Number.isFinite(raw.emojiChance) ? raw.emojiChance : 0.3,
+    promptPrefix: raw.promptPrefix || '',
+    forbiddenWords: Array.isArray(raw.forbiddenWords) ? raw.forbiddenWords : [],
+    examples: Array.isArray(raw.examples) ? raw.examples : [],
+    custom: true,
+  };
+}
+
+/**
+ * 当前真正生效的人格列表。
+ *
+ * 每次调用都重新读配置（config.get 本身有缓存，成本很低）——
+ * 不做模块级缓存，否则设置页改完不重启不生效，正是 C4 那个老问题。
+ */
+function effectivePersonas(opts = {}) {
+  const includeDisabled = opts.includeDisabled === true;
+  const cfg = config.get('personas') || {};
+  const disabled = new Set(Array.isArray(cfg.disabled) ? cfg.disabled : []);
+  const overrides = Array.isArray(cfg.overrides) ? cfg.overrides : [];
+  const custom = Array.isArray(cfg.custom) ? cfg.custom : [];
+
+  const byId = new Map();
+  for (const o of overrides) if (o && o.id) byId.set(o.id, o);
+
+  // 内置：叠加覆盖。includeDisabled 时不看停用状态 ——
+  // 设置页要显示"停用的那些现在被改成什么样了"，否则用户展开一个停用的人格
+  // 看到的是内置原值，一编辑就会把之前的改动覆盖掉。
+  const builtin = BUILTIN
+    .map(p => applyOverride(p, byId.get(p.id)))
+    .filter(p => includeDisabled || (!disabled.has(p.id) && p.enabled !== false));
+
+  const builtinIds = new Set(BUILTIN.map(p => p.id));
+  const myCustom = custom
+    .filter(c => c && c.id)
+    // 自定义人格的 id 撞上内置 id 时忽略自定义的那条：内置是更明确的意图
+    .filter(c => !builtinIds.has(c.id))
+    .map(normalizeCustom)
+    .filter(c => includeDisabled || (!disabled.has(c.id) && c.enabled !== false));
+
+  return [...builtin, ...myCustom];
+}
+
+/** 全部停用时回退到内置全部 —— 总比"生成时没有可用人格"要好 */
+function safePersonas() {
+  const list = effectivePersonas();
+  return list.length ? list : BUILTIN;
+}
+
 let lastPersonaId = null;
 
+/**
+ * 随机挑一个人格（按 weight 加权）。
+ *
+ * 排除项支持两种写法：
+ *   opts.excludeId  单个 id
+ *   opts.excludeIds  id 数组
+ * 复数形式以前就被调用方使用（persona-binder.js 的 bulkAdvance），但这里从来没读过它，
+ * 于是"这批别再用这几个"实际只有 lastPersonaId 生效。两种写法都支持后，
+ * 调用方不必再关心哪个才对。
+ */
 function pickPersona(opts = {}) {
-  const excludeIds = new Set([opts.excludeId, lastPersonaId].filter(Boolean));
-  const candidates = PERSONAS.filter(p => !excludeIds.has(p.id));
-  if (candidates.length === 0) return PERSONAS[0];
+  const list = safePersonas();
+  const excluded = new Set([
+    opts.excludeId,
+    lastPersonaId,
+    ...(Array.isArray(opts.excludeIds) ? opts.excludeIds : []),
+  ].filter(Boolean));
 
-  const totalWeight = candidates.reduce((sum, p) => sum + p.weight, 0);
+  const candidates = list.filter(p => !excluded.has(p.id));
+  if (candidates.length === 0) return list[0];
+
+  const totalWeight = candidates.reduce((sum, p) => sum + (p.weight > 0 ? p.weight : 0), 0);
+  // 权重全为 0（或负数）时退回等概率，否则会一直返回最后一个人格
+  if (totalWeight <= 0) {
+    const p = candidates[Math.floor(Math.random() * candidates.length)];
+    lastPersonaId = p.id;
+    return p;
+  }
+
   let rnd = Math.random() * totalWeight;
   for (const p of candidates) {
-    rnd -= p.weight;
+    rnd -= (p.weight > 0 ? p.weight : 0);
     if (rnd <= 0) { lastPersonaId = p.id; return p; }
   }
   lastPersonaId = candidates[candidates.length - 1].id;
@@ -163,6 +286,16 @@ function pickPersona(opts = {}) {
 
 function buildSystemPrompt(persona, baseStrategy) {
   const parts = [persona.promptPrefix];
+
+  // 账号人设背景（改造计划 §5.10 的 account.roleProfile）。
+  // 从改造前的账号文档抢救来的（那份文档已随 P4.4 删除）—— 这里是**唯一的消费点**，
+  // 去掉它这个配置项就变成"能配不生效"了。
+  // 留空则整段不加，所以默认（空串）下与改造前行为完全一致。
+  const roleProfile = config.get('account.roleProfile');
+  if (typeof roleProfile === 'string' && roleProfile.trim()) {
+    parts.push(`\n账号背景（只影响你看问题的视角，不要直接复述）：\n${roleProfile.trim()}`);
+  }
+
   parts.push(`\n通用约束：\n- 回复长度控制在 ${persona.lengthRange[0]}-${persona.lengthRange[1]} 字之间\n- 绝对禁止出现以下 AI 特征词：${persona.forbiddenWords.join('、')}\n- 不要写完整段落，用短句或换行\n- 不要过度礼貌或正式\n- 必须为每条传入的评论都生成一条回复（不要跳过任何一条）`);
   // 注：改造前这里对策略文本做 .slice(0, 300) 截断，会从句子中间切断策略内容
   // （实测截到"### B. 赞美型 / 好看/厉害/喜欢/绝了"），导致后半部分策略从未生效。
@@ -185,12 +318,17 @@ function getTemperature(persona) {
   return Math.max(0.1, Math.min(1.0, (persona.temperature || 0.7) + jitter));
 }
 
+/**
+ * 精简列表（只 id/name/weight），供日志与概览用。
+ * 刻意不带 promptPrefix / examples —— 那些内容很长，混进日志会淹掉有用信息。
+ * 需要完整字段（设置页）请用 effectivePersonas()。
+ */
 function listPersonas() {
-  return PERSONAS.map(p => ({ id: p.id, name: p.name, weight: p.weight }));
+  return effectivePersonas().map(p => ({ id: p.id, name: p.name, weight: p.weight }));
 }
 
 function findPersona(id) {
-  return PERSONAS.find(p => p.id === id) || null;
+  return effectivePersonas().find(p => p.id === id) || null;
 }
 
 function resetState() {
@@ -205,5 +343,12 @@ module.exports = {
   listPersonas,
   findPersona,
   resetState,
-  PERSONAS,
+  // 生效列表（设置页要展示"现在实际有哪些"）
+  // effectivePersonas({ includeDisabled: true }) 用于编辑器：显示全部，
+  // 且内置项显示的是叠加覆盖之后的**生效值**
+  effectivePersonas,
+  // 内置默认值。设置页拿它做"恢复默认"，也用于判断某条是内置还是自定义
+  BUILTIN,
+  // 兼容旧名：改造前 PERSONAS 就是上面那份内置定义，语义没变
+  PERSONAS: BUILTIN,
 };

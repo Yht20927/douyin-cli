@@ -2,7 +2,8 @@
 //
 // 来源
 // ----
-// 改造前这套判定逻辑只存在于 评论区运营.md 的散文里（L32-55），代码零实现：
+// 改造前这套判定逻辑只存在于一份写给 agent 的文档里（散文形式），代码零实现。
+// 那份文档已随 P4.4 删除，规则与理由现在记在 运营规则说明.md §3。
 //
 //   读入 (text, cid, uid):
 //     1. cid 已回复过                        → 跳过
@@ -99,7 +100,7 @@ function containsAny(text, words) {
 // ═══════════════════════════════════════════════════════════
 
 /**
- * 为纯表情评论挑回复表情（评论区运营.md 的映射表）。
+ * 为纯表情评论挑回复表情（映射表见 运营规则说明.md §3）。
  * 判断不出类型时用兜底池。
  *
  * @param {string} text
@@ -245,7 +246,15 @@ function validateReply(text, opts = {}) {
   const len = textLength(s);
   const rl = f.replyLength || {};
 
-  if (Number.isInteger(rl.hardMin) && len < rl.hardMin) {
+  // 纯表情回复不受长度下限约束。
+  //
+  // 这条例外是必须的：决策树对纯表情评论给出的处置就是「只回一个表情」
+  // （filters.emojiOnly），工具自己推荐的候选是 🌹 ❤️ 这类单个 emoji。
+  // 而 textLength 按 UTF-16 码元计数，'🌹'.length === 2 < hardMin 3 ——
+  // 用户照着工具的提示发，会被自己的校验以「过短」拦下，整条路径发不出去。
+  // 长度下限防的是「敷衍的水评」，而纯表情回复本身就是设计好的处置方式。
+  const emojiOnlyReply = isEmojiOnly(s);
+  if (Number.isInteger(rl.hardMin) && len < rl.hardMin && !emojiOnlyReply) {
     violations.push({ rule: '过短', hint: `至少 ${rl.hardMin} 个字，当前 ${len}` });
   }
   if (Number.isInteger(rl.hardMax) && len > rl.hardMax) {
@@ -268,6 +277,16 @@ function validateReply(text, opts = {}) {
     violations.push({
       rule: '禁用措辞',
       hint: `出现 ${hitPhrases.map(p => `「${p}」`).join('、')}`,
+    });
+  }
+
+  // 合规红线单独报，文案也不一样 —— 用户看到「禁用措辞」会当成文风问题去润色，
+  // 而「合规红线」是在说这条发出去有风险，处置方式不同
+  const hitClaims = containsAny(s, f.forbiddenClaims);
+  if (hitClaims.length) {
+    violations.push({
+      rule: '合规红线',
+      hint: `出现承诺/保证类措辞 ${hitClaims.map(p => `「${p}」`).join('、')}，这类内容发出去有风险`,
     });
   }
 

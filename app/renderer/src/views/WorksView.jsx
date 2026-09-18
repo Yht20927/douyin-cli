@@ -70,7 +70,14 @@ function Cover({ url }) {
   );
 }
 
-export default function WorksView({ videos, loading, actions }) {
+/**
+ * 我的作品列表。
+ *
+ * `total` 是**数据库里的真实作品数**，来自 data.videos 的返回。
+ * 改造前这里把 list.length 当总数显示（"共 50 个作品"），而有 120 个作品时
+ * 第 51 个以后既看不到也点不进去 —— 工作台的唯一入口就在这一行。
+ */
+export default function WorksView({ videos, total, loading, actions }) {
   const list = videos || [];
 
   return (
@@ -89,7 +96,8 @@ export default function WorksView({ videos, loading, actions }) {
           刷新列表
         </button>
         <span className="muted" style={{ alignSelf: 'center', fontSize: 12.5 }}>
-          共 {list.length} 个作品
+          共 {total || list.length} 个作品
+          {total > list.length && `（当前显示最近 ${list.length} 个）`}
         </span>
       </div>
 

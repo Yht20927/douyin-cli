@@ -183,8 +183,16 @@ class ReplyEngine {
     if (typeof personaArg === 'object' && personaArg !== null) {
       return personaArg;
     }
-    // 'auto' — 自动绑定
-    return this._binder.bind(bindKey);
+
+    // 'auto'：先确保这个 key（= awemeId）已绑定人格，再推进一次计数器。
+    //
+    // 这两步缺一不可。改造前只调了 bind()，而 bind 是"已绑定就原样返回"，
+    // 于是 **同一个视频下的所有回复永远用同一个人格** ——
+    // persona-binder 里那套 microAdjust（前 3 条基准、4-6 条微调温度、
+    // 第 8 条换风格）**全仓没有任何调用方**，写完就没人接过。
+    // README 与 SKILL 上写的"7 种人格自动轮换、每条风格不同"因此从未发生。
+    this._binder.bind(bindKey);
+    return this._binder.microAdjust(bindKey) || this._binder.getActive(bindKey);
   }
 
   /** 加载视频上下文（无 bridgeCall 时返回最小 fallback） */

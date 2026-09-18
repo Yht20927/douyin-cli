@@ -1,43 +1,91 @@
 /* app/renderer/src/styles.css
  *
- * 设计原则（贯穿全案的一条）
+ * 设计语言：Warp（暖炭灰）
  * --------------------------
- * **颜色只用来表示状态。** 按钮、选中态、焦点环一律中性灰白，
- * 饱和度整个让给「已连接 / 等待 / 中断」三态。
+ * 完整说明见仓库根目录的 DESIGN.md。这里只写"改代码时必须知道"的三条。
  *
- * 这么定的理由：这个工具的存在意义是让人守在发布节奏里，
- * 界面最重要的信息永远是"现在能不能发"。如果按钮也是彩色的，
- * 状态色就会被稀释；现在它是屏幕上唯一有彩度的东西，一眼就能看到。
+ * 1. **颜色只用来表示状态。** 按钮、选中态、焦点环一律中性（暖白 / 炭灰），
+ *    饱和度整个让给「已连接 / 等待 / 中断」三态。
+ *    理由：这个工具的存在意义是让人守在发布节奏里，界面最重要的信息永远是
+ *    "现在能不能发"。如果按钮也是彩色的，状态色就会被稀释；现在它是屏幕上
+ *    唯一有彩度的东西，一眼就能看到。
  *
- * 配色刻意避开"中性冷灰以外"的路子：长时间盯屏不刺眼，
- * 也不喧宾夺主。深色但不发蓝。
+ * 2. **画布是暖炭灰，不是冷灰。** 冷暖不是随便挑的：长时间盯屏时暖色比冷蓝
+ *    更不容易累，而且冷灰在深色下容易显廉价。所以背景一律带一点红黄
+ *    （#2b2622 而不是 #0E0F12），文字是暖白而不是纯白。
+ *
+ * 3. **一切尺寸走 token，不要写死数字。** 间距用 --sp-*，字号用 --fs-*，
+ *    圆角用 --r-*。改造前这里有 25 处内联 style 和 5 种散落的字号
+ *    （13.5 / 12.5 / 12 / 11.5…），没有刻度就谈不上节奏，这是"看着乱"的根因。
  */
 
 :root {
-  /* ── 中性层 ── */
-  --bg:      #0E0F12;
-  --bg-1:    #131519;   /* 侧栏 */
-  --bg-2:    #191C21;   /* 卡片 / 输入 */
-  --bg-3:    #23272E;   /* hover / 激活底 */
-  --line:    #24282F;
-  --line-2:  #32383F;
+  /* ── 表面层级（Warp：canvas → canvas-soft → elevated）── */
+  --bg:      #2b2622;   /* 画布 */
+  --bg-1:    #252120;   /* 侧栏（比画布暗一档，靠"退后"而不是靠边框分隔）*/
+  --bg-2:    #383330;   /* 卡片 / 输入框 */
+  --bg-3:    #423c37;   /* hover / 激活底 */
+  --bg-4:    #4d4642;   /* 再上一层（极少用，留给选中卡片）*/
+  --line:    #3f3a36;   /* 发丝线 */
+  --line-2:  #55504a;   /* 强一些的分隔（按钮描边）*/
 
-  /* ── 文字层级 ── */
-  --text:    #E9EBEF;
-  --text-2:  #98A0AB;
-  --text-3:  #616973;
+  /* ── 文字层级（四档，不是三档）──
+     改造前只有三档，于是"标题下的说明"和"最次要的脚注"被迫用同一个颜色，
+     层级一糊，界面就显乱。四档是能看出层次的最小数目。 */
+  --text:    #f7f5f0;   /* 暖白：主文字、标题 */
+  --text-2:  #c9c0ad;   /* 次要：说明、正文 */
+  --text-3:  #aea69c;   /* 更弱：元信息、标签 */
+  --text-4:  #7d766d;   /* 最弱：脚注、占位符、禁用 */
 
-  /* ── 状态（唯一有彩度的地方）── */
-  --ok:      #46C08A;
-  --wait:    #D9A33F;
-  --bad:     #DE6A5E;
+  /* ── 状态（唯一有彩度的地方）──
+     每色配一个 soft 变体（15% 透明）做底色。改造前这些是硬编码的 rgba，
+     而且两处还不一致（警示 .07、成功 .14），同一个界面里两种浓度看着就是"没做完"。 */
+  --ok:      #5cbe8b;
+  --wait:    #d9a33f;
+  --bad:     #de6a5e;
+  --info:    #7ba7d4;
+  --ok-soft:   rgba(92, 190, 139, .15);
+  --wait-soft: rgba(217, 163, 63, .15);
+  --bad-soft:  rgba(222, 106, 94, .15);
+  --info-soft: rgba(123, 167, 212, .15);
 
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
           'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
 
-  --r:    8px;
-  --r-sm: 6px;
+  /* ── 间距刻度（4 起，翻倍式）── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* ── 字号阶 ── */
+  --fs-xs: 11px;    /* 角标、最小元信息 */
+  --fs-sm: 12px;    /* 说明、等宽数字 */
+  --fs-md: 13px;    /* 界面默认 */
+  --fs-lg: 15px;    /* 强调正文 */
+  --fs-xl: 20px;    /* 页面标题 */
+  --fs-2xl: 30px;   /* 倒计时这类"最该看见"的数字 */
+
+  /* ── 圆角（Warp 偏紧，"工程感"来自小圆角）── */
+  --r-xs:  3px;
+  --r-sm:  4px;     /* 按钮 / 输入框 */
+  --r-md:  6px;     /* 卡片 / 容器 */
+  --r-lg:  10px;    /* 模态框 */
+  --r-pill: 999px;
+
+  /* --r 是改造前就在用的旧名（到处引用），保留并指向 md。
+     新代码请直接用 --r-xs/sm/md/lg，别再引入没刻度的数字。 */
+  --r: var(--r-md);
+
+  /* ── 高度层级（深色下靠"更亮 + 更重的影子"表达抬起）── */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --sh-2: 0 8px 24px rgba(0, 0, 0, .45);
+
   --sidebar-w: 208px;
 }
 
@@ -101,14 +149,23 @@ code {
 }
 .sidebar button, .sidebar a { -webkit-app-region: no-drag; }
 
+/* 名字与版本**上下排**，不是并排。
+   并排时中文名 + 版本号在 208px 宽的侧栏里放不下，只能折行或省略 ——
+   折行破坏左侧对齐，省略则把名字截断。上下排两样都避免，顺带把版本号
+   降成最弱一档（它是最不重要的信息，不该和名字抢同一行）。 */
 .sidebar-brand {
   padding: 0 8px 18px;
   display: flex;
-  align-items: baseline;
-  gap: 7px;
+  flex-direction: column;
+  gap: 1px;
 }
-.brand-name { font-size: 13.5px; font-weight: 600; letter-spacing: .01em; }
-.brand-ver  { font-size: 11px; color: var(--text-3); font-family: var(--mono); }
+/* 品牌名不许换行。改造前这里会折成"抖音评论运 / 营"两行 ——
+   侧栏宽度是固定的，文字一折就破坏了左侧的整齐边。宁可省略号。 */
+.brand-name {
+  font-size: var(--fs-md); font-weight: 600; letter-spacing: .01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.brand-ver  { font-size: var(--fs-xs); color: var(--text-4); font-family: var(--mono); flex: none; }
 
 .nav { display: flex; flex-direction: column; gap: 1px; }
 
@@ -169,10 +226,13 @@ code {
   overflow-y: auto;
   padding: 26px 32px 40px;
 }
-.main-col { max-width: 860px; }
+/* 内容居中，不是靠左。
+   宽窗口下靠左会让整页内容挤在左边、右边空出一大块 —— 那看起来像"没做完"，
+   而不是"留白"。居中之后空出来的部分左右对称，读起来是刻意的。 */
+.main-col { max-width: 880px; width: 100%; margin: 0 auto; }
 
 .page-title {
-  font-size: 20px;
+  font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -.01em;
   margin: 0 0 2px;
@@ -274,7 +334,8 @@ code {
   color: var(--bg);
   font-weight: 500;
 }
-.btn-primary:hover:not(:disabled) { background: #fff; border-color: #fff; }
+/* hover 用比 --text 更亮一档的暖白，而不是纯白 —— 纯白在暖色画布上会发青 */
+.btn-primary:hover:not(:disabled) { background: #fffdf8; border-color: #fffdf8; }
 
 .btn-quiet { background: transparent; border-color: transparent; color: var(--text-2); }
 .btn-quiet:hover:not(:disabled) { background: var(--bg-3); color: var(--text); }
@@ -311,6 +372,19 @@ code {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .row-meta { flex: none; font-size: 12px; color: var(--text-3); }
+
+/* 任务的完整执行结果（队列页「查看结果」展开）
+   max-height + 滚动：拉评论这类结果可能有几百行，不能把整页撑开 */
+.task-result {
+  margin: 8px 0 2px;
+  padding: 9px 11px;
+  max-height: 260px; overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--text-2);
+  white-space: pre-wrap; word-break: break-all;
+}
 
 .state-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--text-3); }
 .state-dot-on  { background: var(--ok); }
@@ -394,7 +468,7 @@ code {
    ══════════════════════════════════════════════ */
 
 .countdown {
-  font-size: 30px;
+  font-size: var(--fs-2xl);
   font-weight: 600;
   letter-spacing: .01em;
   color: var(--wait);
@@ -495,7 +569,17 @@ code {
    评论工作台
    ══════════════════════════════════════════════ */
 
-.workspace { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* ⚠️ max-width 是必需的。改造前没有它，工作台在宽窗口上会拉到 1700px 以上：
+   两块面板各自变成"汪洋中的一小撮内容"，读起来要来回扫视 ——
+   这是"看着丑"最大的一个来源，比配色影响大得多。
+   1240px 是"两栏列表 + 详情"能保持可读的上限。 */
+.workspace {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  max-width: 1240px;
+  width: 100%;
+  margin: 0 auto;   /* 与 .main-col 同样的理由：宽窗口下横向居中 */
+}
 
 .ws-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .ws-title { flex: 1; min-width: 0; }
@@ -522,10 +606,16 @@ code {
 .tab-search { margin-left: auto; width: 180px; }
 
 .ws-body {
-  flex: 1; min-height: 0;
+  /* 按内容高度收缩，不是强行撑满 —— 这是修"两个巨大空盒子"的关键。
+     `flex: 1` 会让它无论有几条评论都占满可用高度，一条评论时就是
+     一整屏的空白。改成 `0 1 auto`：有多少内容占多高，
+     内容多到超过 68vh 才封顶并各自滚动。min-height 保证空态不被压扁。 */
+  flex: 0 1 auto;
+  min-height: 300px;
+  max-height: 68vh;
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.1fr);
-  gap: 16px;
+  gap: var(--sp-4);
 }
 
 .ws-list {
@@ -559,10 +649,12 @@ code {
 .cmt-reason { font-size: 11.5px; color: var(--text-3); }
 .cmt-digg { font-size: 11.5px; color: var(--text-3); margin-left: auto; }
 
-.tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; }
-.tag-ok   { background: rgba(70,192,138,.14); color: var(--ok); }
-.tag-warn { background: rgba(217,163,63,.14); color: var(--wait); }
-.tag-dim  { background: var(--bg-3); color: var(--text-3); }
+.tag { font-size: var(--fs-xs); padding: 1px 7px; border-radius: var(--r-pill); }
+/* 底色统一走 --*-soft token。改造前这里是三处硬编码的 rgba，
+   而「命中合规红线」那处用的又是另一个浓度（.07），同一个界面两种深浅。 */
+.tag-ok   { background: var(--ok-soft);   color: var(--ok); }
+.tag-warn { background: var(--wait-soft); color: var(--wait); }
+.tag-dim  { background: var(--bg-3);      color: var(--text-3); }
 
 .ws-detail {
   overflow-y: auto;
@@ -585,6 +677,14 @@ code {
 
 .reply-box { width: 100%; margin-top: 12px; resize: vertical; }
 .reply-meta { font-size: 11.5px; margin-top: 4px; text-align: right; }
+
+/* 这条回复是怎么来的（AI / 固定内容 / 降级 / 附图）。
+   标签本身用 tag-ok / tag-dim 表示来源，颜色沿用「只有状态才上色」的约定。 */
+.reply-origin {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-top: 8px;
+}
+.reply-origin-note { font-size: 12px; color: var(--text-3); }
 
 .detail-actions { display: flex; gap: 8px; margin-top: 12px; }
 
@@ -614,6 +714,13 @@ code {
 .draft-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .draft-video { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .draft-text { font-size: 13px; line-height: 1.6; }
+/* 草稿针对哪条评论 —— 用引用条与草稿正文分开，别让人以为是正文的一部分 */
+.draft-target {
+  margin: 0 0 7px; padding-left: 8px;
+  border-left: 2px solid var(--line);
+  font-size: 12px; line-height: 1.45; color: var(--text-3);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 .draft-meta { font-size: 11.5px; margin-top: 4px; }
 
 /* ══════════════════════════════════════════════
@@ -634,13 +741,18 @@ code {
   width: 100%; max-width: 520px;
   max-height: 100%;
   display: flex; flex-direction: column;
-  background: var(--bg-1);
+  background: var(--bg-2);   /* 比画布亮一档：弹窗是"抬起来"的东西，
+                                用 --bg-1（侧栏色）会比背景还暗，看着像陷进去 */
   border: 1px solid var(--line-2);
-  border-radius: 10px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.55);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2);
 }
-.modal-head { padding: 16px 20px 0; }
-.modal-title { margin: 0; font-size: 15px; font-weight: 600; }
+/* 标题行要能放关闭按钮，所以是 flex 而不是纯 padding */
+.modal-head {
+  padding: var(--sp-4) var(--sp-5) 0;
+  display: flex; align-items: center; gap: var(--sp-3);
+}
+.modal-title { margin: 0; font-size: var(--fs-lg); font-weight: 600; flex: 1; min-width: 0; }
 .modal-body { padding: 14px 20px; overflow-y: auto; }
 .modal-foot {
   padding: 12px 20px 16px;
@@ -652,6 +764,9 @@ code {
 
 .kv-tight dt, .kv-tight dd { padding: 7px 0; }
 .kv-tight dd { font-size: 13px; }
+
+/* 附图的完整路径：可能很长，允许换行且不撑破弹窗 */
+.kv dd .path-line { word-break: break-all; font-size: 11px; }
 
 .publish-text {
   padding: 10px 12px;
@@ -675,3 +790,485 @@ code {
 }
 .work-date { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .work-fetch { font-size: 11.5px; white-space: nowrap; }
+
+/* ══════════════════════════════════════════════
+   设置页
+   ══════════════════════════════════════════════ */
+
+.settings-tabs {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin: 16px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+/* 标签右下角的提示点：哪个分组改过东西，切到别的分组也看得到 */
+.settings-tab-dot {
+  display: inline-block;
+  width: 5px; height: 5px; border-radius: 50%;
+  margin-left: 5px; vertical-align: middle;
+  background: var(--wait);
+}
+
+.settings-field { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.settings-field:last-child { border-bottom: none; }
+
+.settings-field-label {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 13.5px; margin-bottom: 7px;
+}
+.settings-dirty {
+  font-size: 11px; color: var(--wait);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.settings-reset {
+  background: none; border: none; padding: 0;
+  color: var(--text-3); font: inherit; font-size: 11px;
+  cursor: pointer; text-decoration: underline;
+}
+.settings-reset:hover { color: var(--text-2); }
+
+.settings-hint { font-size: 11.5px; color: var(--text-3); margin-top: 5px; line-height: 1.55; }
+.settings-default { font-size: 11px; margin-top: 3px; }
+.settings-error { font-size: 12px; color: var(--bad); margin-top: 5px; }
+.settings-note { font-size: 12px; margin-top: 20px; }
+
+.settings-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.settings-num { width: 88px; }
+.settings-wide { width: 100%; max-width: 460px; }
+.settings-textarea {
+  width: 100%; max-width: 560px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.6;
+}
+.settings-json { color: var(--text-2); }
+
+/* 保存条：常驻底部，滚到长分组末尾时不用翻回去找按钮 */
+.settings-savebar {
+  position: sticky; bottom: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  margin-top: 24px; padding: 12px 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  font-size: 13px;
+}
+.settings-savebar .row { gap: 8px; }
+
+/* ── 固定回复内容列表 ── */
+.fixed-items { display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
+.fixed-item { display: flex; align-items: center; gap: 8px; }
+.fixed-item-off .fixed-item-text { color: var(--text-3); text-decoration: line-through; }
+.fixed-item-text { flex: 1; }
+.fixed-item-weight { width: 72px; flex: none; }
+.fixed-item-enabled { flex: none; display: flex; align-items: center; }
+.fixed-item-del { flex: none; padding: 4px 9px; }
+
+/* ── 图片列表 ── */
+.image-paths { display: flex; flex-direction: column; gap: 10px; max-width: 640px; }
+.image-path {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 11px;
+  background: var(--bg-3);
+  border-radius: var(--r-sm);
+}
+.image-path-main { flex: 1; min-width: 0; }
+.image-path-name { font-size: 13px; }
+.image-path-full { font-size: 11px; word-break: break-all; margin-top: 2px; }
+.image-path-meta { font-size: 11px; margin-top: 2px; }
+
+/* ── 人格编辑器 ── */
+.personas { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+
+.persona { border: 1px solid var(--line); border-radius: var(--r-sm); }
+.persona-off { opacity: .5; }
+
+.persona-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
+.persona-toggle { display: flex; align-items: center; flex: none; }
+
+.persona-name {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: none; padding: 0;
+  color: var(--text); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer;
+}
+.persona-name:hover .persona-label { text-decoration: underline; }
+.persona-label { font-weight: 500; }
+.persona-meta { flex: none; font-size: 11.5px; }
+
+.persona-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+/* ── 提示词编辑器 ── */
+.prompt-layout { display: flex; gap: 16px; align-items: flex-start; max-width: 1100px; }
+
+.prompt-list { width: 230px; flex: none; display: flex; flex-direction: column; gap: 2px; }
+.prompt-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 9px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--text-2); font: inherit; font-size: 12.5px;
+  text-align: left; cursor: pointer;
+}
+.prompt-item:hover { background: var(--bg-3); color: var(--text); }
+.prompt-item-active { background: var(--bg-3); border-color: var(--line-2); color: var(--text); }
+.prompt-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.prompt-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.prompt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+
+.prompt-textarea {
+  width: 100%;
+  min-height: 460px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.prompt-backups { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.prompt-backup {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 0;
+  font-size: 11.5px;
+}
+
+/* 「这一项到底管不管用」的说明 —— 基础样式见文件末尾的「设置页里用了、
+   但从来没定义过的类」一节（那里还补了 .settings-status-<status> 三个变体）。
+   这里只保留"为什么用等待色"这条设计说明。 */
+/*
+   用等待色（--wait）是因为它是"需要注意"而不是"出错了" ——
+   这些项本身是合法的，只是改它不影响行为。
+*/
+
+/* 工作台筛选行的排序下拉与列表规模提示 */
+.tab-sort { margin-left: auto; font-size: 12.5px; padding: 5px 8px; }
+.ws-listmeta {
+  font-size: 11.5px; padding: 0 2px 8px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+/* 全选按钮靠右，与左边的计数分开，免得被误读成计数的一部分 */
+.ws-pickall { margin-left: auto; font-size: 11.5px; padding: 2px 8px; flex: none; }
+
+/* ── 工作台：多选与批量 ──
+   勾选框放在按钮**外面**（.cmt-row 里 label + button 两个兄弟节点）。
+   塞进 .cmt 里面的话，就是 button 里套 input —— 无效 HTML，
+   点击行为在 Chromium 下不可靠（勾选会连带触发整行选中）。 */
+.cmt-row {
+  display: flex; align-items: stretch;
+  border-top: 1px solid var(--line);
+}
+.cmt-row:first-child { border-top: none; }
+.cmt-row:hover { background: var(--bg-3); }
+.cmt-pick {
+  display: flex; align-items: flex-start;
+  padding: 12px 0 12px 12px;
+  cursor: pointer;
+}
+.cmt-pick input {
+  width: 14px; height: 14px; margin: 1px 0 0;
+  accent-color: var(--text); cursor: pointer;
+}
+/* 行内边距与分隔线交给 .cmt-row，.cmt 自己不再画线，否则会出双线 */
+.cmt-row .cmt { flex: 1; min-width: 0; border-top: 0; padding-left: 10px; }
+
+/* 批量操作条：有勾选时才出现 */
+.ws-bulkbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--bg-2);
+}
+.ws-bulkbar-main { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-2); }
+
+/* 批量生成的结果：一行一条，失败的标红 */
+.bulk-result { max-height: 200px; overflow-y: auto; margin-top: 8px; }
+.bulk-result-row {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 12px; padding: 3px 0;
+  border-top: 1px solid var(--line);
+}
+.bulk-result-row:first-child { border-top: none; }
+.bulk-result-row b { flex: none; font-weight: 500; }
+
+/* 列表里「我当时回了什么」的引用行 —— 与评论正文区分开，不上色只降级 */
+.cmt-reply {
+  margin-top: 5px; padding-left: 8px;
+  border-left: 2px solid var(--line);
+  font-size: 12px; line-height: 1.45; color: var(--text-3);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* 详情面板里已发出的回复：它是既成事实，用与评论正文同样的块，但加一条边线区分 */
+.detail-reply { margin-top: 10px; }
+.detail-reply-label { font-size: 11.5px; color: var(--text-3); margin-bottom: 4px; }
+.detail-reply-text {
+  padding: 10px 12px;
+  border-left: 2px solid var(--ok);
+  background: var(--bg-3);
+  border-radius: var(--r-sm);
+  font-size: 13px; line-height: 1.6;
+}
+
+/* ══════════════════════════════════════════════════════════
+   反馈组件
+   ──────────────────────────────────────────────────────────
+   这一节是这一轮补的。改造前这里缺的东西很集中：
+     - 进度条：core 一直上报 current/total，界面从没读过
+     - spinner：全项目 0 个，按钮点下去界面纹丝不动
+     - toast 变体：成功与失败长得一样
+     - 骨架屏：0 个，"正在读取…"会和"没有数据"混淆
+   它们都是"能用但没反馈"的缺口，而不是功能缺失 —— 所以统一放一节。
+   ══════════════════════════════════════════════════════════ */
+
+/* ── 进度条 ── */
+
+.progress { width: 100%; }
+
+.progress-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: 5px;
+}
+.progress-label { font-size: var(--fs-sm); color: var(--text-2); }
+.progress-value { font-size: var(--fs-sm); color: var(--text-2); }
+.progress-pct { color: var(--text-4); }
+
+.progress-track {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--text-3);
+  /* 进度推进用过渡而不是瞬跳：批量生成每完成一条会重算一次百分比，
+     没有过渡的话那根条是"跳"的，看起来像卡顿 */
+  transition: width .3s ease-out;
+}
+.progress[data-tone='ok']   .progress-fill { background: var(--ok); }
+.progress[data-tone='wait'] .progress-fill { background: var(--wait); }
+.progress[data-tone='bad']  .progress-fill { background: var(--bad); }
+
+/* 不知道总量时的滚动条纹：表达"在跑，但不知道还要多久"。
+   注意它**不能**退化成 0% 的实心条 —— 那会被读成"卡住了"。 */
+.progress-fill-indeterminate {
+  width: 35%;
+  background: linear-gradient(90deg,
+    transparent 0%, var(--text-4) 35%, var(--text-4) 65%, transparent 100%);
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.progress-compact .progress-track { height: 3px; }
+
+/* ── 转圈 ── */
+
+.spinner {
+  display: inline-block;
+  flex: none;
+  border: 1.5px solid var(--text-4);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  vertical-align: -1px;
+}
+@keyframes spin { to { transform: rotate(360deg) } }
+
+/* 按钮里的 spinner 跟着文字走，不额外占高 */
+.btn .spinner { margin-right: 6px; }
+
+/* ── 轻提示 ── */
+
+.toasts {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  display: flex; flex-direction: column-reverse; gap: var(--sp-2);
+  z-index: 60;
+  max-width: min(560px, 82vw);
+  pointer-events: none;   /* 容器不吃点击，只有单条提示吃（关按钮）*/
+}
+
+.toast {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  pointer-events: auto;
+  padding: 9px 10px 9px 14px;
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  box-shadow: var(--sh-2);
+  animation: toast-in .16s ease-out;
+}
+/* 左侧彩条表达提示的性质。提示条**本身就是状态**，
+   所以这里的颜色不违反"颜色只用来表示状态"。 */
+.toast::before {
+  content: ''; flex: none; align-self: stretch;
+  width: 3px; border-radius: 2px; background: var(--text-4);
+}
+.toast[data-tone='ok']::before   { background: var(--ok); }
+.toast[data-tone='bad']::before  { background: var(--bad); }
+.toast[data-tone='wait']::before { background: var(--wait); }
+.toast[data-tone='info']::before { background: var(--info); }
+
+.toast-msg { flex: 1; min-width: 0; word-break: break-word; }
+
+.toast-close {
+  flex: none;
+  width: 20px; height: 20px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: var(--r-xs);
+  color: var(--text-4); font-size: 15px; line-height: 1;
+  cursor: pointer;
+}
+.toast-close:hover { background: var(--bg-4); color: var(--text); }
+
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px) } }
+
+/* ── 空态 / 加载态 ── */
+
+.empty {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-4);
+  background: var(--bg-2);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: var(--fs-md);
+}
+.empty-compact { padding: var(--sp-3) var(--sp-4); }
+.empty-body { min-width: 0; }
+.empty-title { color: var(--text); }
+.empty-title strong { color: var(--text); font-weight: 500; }
+.empty-hint {
+  color: var(--text-3); font-size: var(--fs-sm);
+  margin-top: 3px; line-height: 1.55;
+}
+.empty-action { margin-top: var(--sp-3); }
+.empty-spinner { margin-top: 2px; }
+
+/* 加载态用实线框而不是虚线：虚线暗示"这里缺东西"，
+   而加载态缺的只是时间，不是内容 */
+.empty[data-variant='loading'] { border-style: solid; border-color: var(--line); }
+
+/* ── 骨架屏 ── */
+
+.skeleton-list { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+
+.skeleton-row {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+}
+.skeleton-row:first-child { border-top: none; }
+
+.skeleton-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+
+.skeleton-block {
+  display: block;
+  border-radius: var(--r-xs);
+  background: linear-gradient(90deg,
+    var(--bg-3) 0%, var(--bg-4) 50%, var(--bg-3) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-thumb { width: 40px; height: 40px; border-radius: var(--r-sm); flex: none; }
+.skeleton-title { width: 45%; height: 13px; }
+.skeleton-line { height: 10px; }
+.skeleton-line-short { width: 30%; }
+
+/* ── 模态框 ── */
+
+.modal-close {
+  margin-left: auto;
+  flex: none;
+  width: 24px; height: 24px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; line-height: 1;
+}
+
+/* ══════════════════════════════════════════════════════════
+   设置页里用了、但从来没定义过的类
+   ──────────────────────────────────────────────────────────
+   fields.jsx 引用了 .settings-check 与 .settings-status-<status>，
+   而 styles.css 里**一个都没有**（grep 0 命中）—— 于是布尔字段的
+   "已开启 / 已关闭"标签和状态说明块一直是无样式渲染的纯文字。
+   这类"类名对不上"的静默失败在这个项目里已经出现过好几次。
+   ══════════════════════════════════════════════════════════ */
+
+.settings-check {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  cursor: pointer;
+  font-size: var(--fs-md);
+}
+.settings-check input {
+  width: 14px; height: 14px; margin: 0;
+  accent-color: var(--text); cursor: pointer;
+}
+
+.settings-status {
+  margin-top: 6px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--text-4);
+  background: var(--bg-3);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+/* 状态说明的配色跟着 status 走 —— 它说的是"这一项管不管用"，本身就是状态 */
+.settings-status-inactive { border-left-color: var(--wait); background: var(--wait-soft); }
+.settings-status-advisory { border-left-color: var(--wait); background: var(--wait-soft); }
+.settings-status-active   { border-left-color: var(--ok);   background: var(--ok-soft); }
+
+/* ── 队列行里的进度 / 拦截 / 告警 ── */
+
+.row-progress { margin-top: 9px; max-width: 420px; }
+
+.row-blockers { margin-top: 7px; display: flex; flex-direction: column; gap: 3px; }
+.row-blocker {
+  display: flex; align-items: baseline; gap: 7px;
+  font-size: var(--fs-sm); color: var(--text-2);
+}
+
+.row-warnings {
+  margin-top: 7px;
+  padding: 6px 9px;
+  border-left: 2px solid var(--wait);
+  background: var(--wait-soft);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm); color: var(--text-2); line-height: 1.55;
+}
+
+/* 标签补齐第四种。原来只有 ok / warn / dim 三种，
+   "不能发"这类硬拦截只能借用 dim，看起来和"跳过"一样轻 */
+.tag-bad { background: var(--bad-soft); color: var(--bad); }
+
+/* 工作台列表的内边距容器（加载态与空态都用它，免得贴在边框上） */
+.ws-list-pad { padding: var(--sp-4); }
+
+/* 工作台里批量任务的进度条：贴在操作条下面 */
+.ws-bulkprogress {
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}

@@ -37,8 +37,14 @@ contextBridge.exposeInMainWorld('dy', {
   },
 
   config: {
-    /** 脱敏后的配置快照（api_key / token 已打码） */
+    /** 脱敏后的配置快照（api_key / token 已打码）+ 默认值（供逐项恢复默认） */
     describe: () => ipcRenderer.invoke('config:describe'),
+    /**
+     * 保存设置页改动。**只传改动过的字段**，不要整份回写 ——
+     * 手里那份是脱敏的，整份回写会把 api_key 写成打码文案。
+     * 主进程与 core/config 各有一道拦截，但传补丁才是正确用法。
+     */
+    set: (patch) => ipcRenderer.invoke('config:set', patch),
   },
 
   queue: {
@@ -74,11 +80,49 @@ contextBridge.exposeInMainWorld('dy', {
     videoStats: (awemeId) => ipcRenderer.invoke('data:videoStats', awemeId),
     comments: (awemeId, opts) => ipcRenderer.invoke('data:comments', awemeId, opts),
     comment: (cid) => ipcRenderer.invoke('data:comment', cid),
+    /** 评论列表可用的排序方式（由 core 提供） */
+    commentOrders: () => ipcRenderer.invoke('data:commentOrders'),
     drafts: () => ipcRenderer.invoke('data:drafts'),
   },
 
   draft: {
     save: (spec) => ipcRenderer.invoke('draft:save', spec),
     remove: (id) => ipcRenderer.invoke('draft:delete', id),
+    /** 发布成功后标记草稿已发布（否则它会一直留在草稿箱里） */
+    markPosted: (id) => ipcRenderer.invoke('draft:mark-posted', id),
   },
+
+  personas: {
+    /** 生效人格（内置 + 覆盖 + 自定义 - 停用）、内置默认值、以及相关配置 */
+    describe: () => ipcRenderer.invoke('personas:describe'),
+  },
+
+  prompts: {
+    /** 模板清单：来自哪个目录、是否被覆盖、是不是 partial 片段 */
+    list: () => ipcRenderer.invoke('prompts:list'),
+    /** 读一个模板（同时带出内置原文，供"恢复默认"预览） */
+    read: (name) => ipcRenderer.invoke('prompts:read', name),
+    /** 保存（会自动备份上一版并清模板缓存，改完立即生效） */
+    save: (name, text) => ipcRenderer.invoke('prompts:save', name, text),
+    /** 恢复默认：删掉用户目录那份，回退到内置 */
+    reset: (name) => ipcRenderer.invoke('prompts:reset', name),
+    /** 历史备份（新→旧） */
+    backups: (name) => ipcRenderer.invoke('prompts:backups', name),
+    /** 从某个备份恢复 */
+    restore: (name, file) => ipcRenderer.invoke('prompts:restore', name, file),
+  },
+
+  reply: {
+    /** 当前回复来源模式（ai/fixed/hybrid）与固定内容、图片配置的可用情况 */
+    describe: () => ipcRenderer.invoke('reply:describe'),
+    /** 选图时的即时预检：文件是否存在、格式是否支持、是否超限 */
+    checkImage: (p) => ipcRenderer.invoke('reply:check-image', p),
+    /** 固定内容 / 图片的循环跑到第几条了 */
+    cycleProgress: () => ipcRenderer.invoke('reply:cycle-progress'),
+    /** 重置循环进度（只清状态文件，不动配置） */
+    resetCycle: (section) => ipcRenderer.invoke('reply:reset-cycle', section),
+  },
+
+  /** 系统文件选择器。只返回路径，可用性由 reply.checkImage 判定。 */
+  pickImages: () => ipcRenderer.invoke('dialog:pick-images'),
 });

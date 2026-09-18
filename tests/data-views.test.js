@@ -163,7 +163,7 @@ describe('评论列表与判定', () => {
     addComment(cmts, 'v1', 'c2', '666');
     addComment(cmts, 'v1', 'c3', '😊');
 
-    const list = views.listComments('v1');
+    const list = views.listComments('v1').items;
     const by = Object.fromEntries(list.map(c => [c.cid, c.decision]));
     expect(by.c1.action).toBe('reply');
     expect(by.c2.action).toBe('skip');
@@ -174,7 +174,7 @@ describe('评论列表与判定', () => {
     vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
     addComment(cmts, 'v1', 'done', '这个怎么做的', { replied: true, replyCid: 'r1' });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.replied).toBe(true);
     expect(c.decision.action).toBe('skip');
     expect(c.decision.reason).toContain('已回复');
@@ -186,7 +186,7 @@ describe('评论列表与判定', () => {
     addComment(cmts, 'v1', 'c2', '666');
     addComment(cmts, 'v1', 'c3', '请问在哪里买');
 
-    const replies = views.listComments('v1', { filter: 'reply' });
+    const replies = views.listComments('v1', { filter: 'reply' }).items;
     expect(replies.map(c => c.cid).sort()).toEqual(['c1', 'c3']);
   }));
 
@@ -195,7 +195,7 @@ describe('评论列表与判定', () => {
     addComment(cmts, 'v1', 'c1', '这个是怎么做到的？');
     addComment(cmts, 'v1', 'c2', '666');
 
-    expect(views.listComments('v1', { filter: 'skip' }).map(c => c.cid)).toEqual(['c2']);
+    expect(views.listComments('v1', { filter: 'skip' }).items.map(c => c.cid)).toEqual(['c2']);
   }));
 
   it('按已回复状态过滤走 SQL，不被判定过滤干扰', withTempEnv({}, async ({ views, vids, cmts }) => {
@@ -203,8 +203,8 @@ describe('评论列表与判定', () => {
     addComment(cmts, 'v1', 'a', '这个怎么做的', { replied: true });
     addComment(cmts, 'v1', 'b', '这个也怎么做');
 
-    expect(views.listComments('v1', { filter: 'replied' }).map(c => c.cid)).toEqual(['a']);
-    expect(views.listComments('v1', { filter: 'pending' }).map(c => c.cid)).toEqual(['b']);
+    expect(views.listComments('v1', { filter: 'replied' }).items.map(c => c.cid)).toEqual(['a']);
+    expect(views.listComments('v1', { filter: 'pending' }).items.map(c => c.cid)).toEqual(['b']);
   }));
 
   it('搜索按评论内容或昵称匹配', withTempEnv({}, async ({ views, vids, cmts, usrs }) => {
@@ -214,8 +214,8 @@ describe('评论列表与判定', () => {
     addComment(cmts, 'v1', 'a', '关于缓存的问题', { uid: 'u1' });
     addComment(cmts, 'v1', 'b', '别的什么内容', { uid: 'u2' });
 
-    expect(views.listComments('v1', { search: '缓存' }).map(c => c.cid)).toEqual(['a']);
-    expect(views.listComments('v1', { search: '小红' }).map(c => c.cid)).toEqual(['b']);
+    expect(views.listComments('v1', { search: '缓存' }).items.map(c => c.cid)).toEqual(['a']);
+    expect(views.listComments('v1', { search: '小红' }).items.map(c => c.cid)).toEqual(['b']);
   }));
 
   it('带出用户昵称与分级', withTempEnv({}, async ({ views, vids, cmts, usrs }) => {
@@ -224,7 +224,7 @@ describe('评论列表与判定', () => {
     usrs.setTier('u1', 'vip');
     addComment(cmts, 'v1', 'a', '这个怎么做的', { uid: 'u1' });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.user).toMatchObject({ nickname: '小明', tier: 'vip' });
   }));
 
@@ -234,7 +234,7 @@ describe('评论列表与判定', () => {
     usrs.setTier('bad', 'blacklist');
     addComment(cmts, 'v1', 'a', '这个怎么做的', { uid: 'bad' });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.decision.action).toBe('skip');
     expect(c.decision.reason).toContain('blacklist');
   }));
@@ -257,7 +257,7 @@ describe('自己的评论不出现在待回复里', () => {
     addComment(cmts, 'v1', 'mine1', '这个是怎么做到的？', { uid: 'me123' });
     addComment(cmts, 'v1', 'other1', '这个是怎么做到的？', { uid: 'someone' });
 
-    const list = views.listComments('v1');
+    const list = views.listComments('v1').items;
     const by = Object.fromEntries(list.map(c => [c.cid, c.decision]));
 
     expect(by.mine1.action).toBe('skip');
@@ -270,7 +270,7 @@ describe('自己的评论不出现在待回复里', () => {
     addComment(cmts, 'v1', 'parent', '这个是怎么做到的？', { uid: 'someone' });
     cmts.upsert({ cid: 'myreply', awemeId: 'v1', uid: 'me123', text: '我回你了', parentCid: 'parent' });
 
-    const list = views.listComments('v1');
+    const list = views.listComments('v1').items;
     const mine = list.find(c => c.cid === 'myreply');
     expect(mine.decision.action).toBe('skip');
     expect(mine.decision.reason).toContain('我自己');
@@ -302,7 +302,7 @@ describe('评论时间戳单位归一', () => {
     const seconds = 1788586286;
     cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的', createdAt: seconds });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.createdAt).toBe(seconds * 1000);
     expect(c.createdAtRaw).toBe(seconds);          // 原始值保留，便于排查
     // 解出来应该是 2026 年，而不是 1970 年
@@ -314,7 +314,7 @@ describe('评论时间戳单位归一', () => {
     const ms = 1788586286000;
     cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的', createdAt: ms });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.createdAt).toBe(ms);   // 不能变成 1788586286000000
   }));
 
@@ -330,7 +330,7 @@ describe('评论时间戳单位归一', () => {
     vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
     cmts.upsert({ cid: 'a', awemeId: 'v1', uid: 'u1', text: '这个怎么做的' });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.createdAt).toBeNull();
   }));
 });
@@ -389,7 +389,7 @@ describe('与发布判定的一致性', () => {
     vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
     addComment(cmts, 'v1', 'a', '这个是怎么做到的？');
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.decision.action).toBe('reply');
 
     // 该评论本身不该触发"已回复过"之类的拦截
@@ -403,12 +403,114 @@ describe('与发布判定的一致性', () => {
     vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
     addComment(cmts, 'v1', 'done', '这个是怎么做到的？', { replied: true, replyCid: 'r1' });
 
-    const [c] = views.listComments('v1');
+    const [c] = views.listComments('v1').items;
     expect(c.decision.action).toBe('skip');
 
     // 发布侧用的是同一个 decision 依据：comments 表的 replied 列
     const policy = require('../core/policy').createPolicyEngine({});
     const r = policy.beforeWrite({ cid: 'done', awemeId: 'v1' });
     expect(r.hardBlockers.some(b => b.reason.includes('已经回复过'))).toBe(true);
+  }));
+});
+
+// ═══════════════════════════════════════════════════════════
+// 已回复的评论要能看到"当时回了什么"
+//
+// 需求(1)：在列表里选中一条已回复的评论，应当显示出回复内容。
+// 数据其实一直在库里 —— post.js 会把自己发出去的那条回复
+// **也 upsert 进 comments 表**（cid = 原评论的 reply_cid），
+// 只是视图层从来没有按 reply_cid 把它查回来。
+// ═══════════════════════════════════════════════════════════
+describe('数据层 / 已发出回复的正文可追溯', () => {
+  it('已回复的评论带回回复正文与时间', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', '这个怎么做？', { replied: true, replyCid: 'r1' });
+    // 模拟 post.js 的落库：我们发出的那条回复本身也是一行评论
+    cmts.upsert({ cid: 'r1', awemeId: 'v1', uid: 'me', text: '看这里，步骤是……', createdAt: 1700000500 });
+
+    const [c] = views.listComments('v1').items;
+    expect(c.replied).toBe(true);
+    expect(c.replyCid).toBe('r1');
+    expect(c.replyText).toBe('看这里，步骤是……');
+    // 抖音的时间字段是**秒**，交给界面之前必须归一成毫秒
+    expect(c.replyAt).toBe(1700000500 * 1000);
+  }));
+
+  it('评论行被清掉时回退到语料库', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', 'x', { replied: true, replyCid: 'r1' });
+    // 只入语料库，不入评论行 —— 模拟 cleanup 把回复那行清掉之后的状态
+    require('../core/memory/corpus').append({
+      srcCid: 'c1', replyText: '语料库里的那句', replyCid: 'r1', awemeId: 'v1', postedAt: 1700000600000,
+    });
+
+    const [c] = views.listComments('v1').items;
+    expect(c.replyText).toBe('语料库里的那句');
+  }));
+
+  it('查不到就返回 null，而不是空字符串', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    // 有 replied 标记但没有 reply_cid（早期数据）
+    cmts.upsert({ cid: 'c1', awemeId: 'v1', uid: 'u1', text: 'x' });
+    require('../core/memory/db').getDb()
+      .prepare("UPDATE comments SET replied = 1 WHERE cid = 'c1'").run();
+
+    const [c] = views.listComments('v1').items;
+    // 关键：必须是 null。空字符串会被界面读成"回过、但内容是空的"，
+    // 那是另一回事 —— 界面据此显示"回复内容未记录"而不是一片空白。
+    expect(c.replyText).toBeNull();
+  }));
+
+  it('单条详情也带回复正文', withTempEnv({}, async ({ views, vids, cmts }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', 'x', { replied: true, replyCid: 'r1' });
+    cmts.upsert({ cid: 'r1', awemeId: 'v1', uid: 'me', text: '我回的那句', createdAt: 1700000500 });
+
+    const d = views.commentDetail('c1');
+    expect(d.replyText).toBe('我回的那句');
+    expect(d.replyAt).toBe(1700000500 * 1000);
+  }));
+
+  it('草稿带上被回复评论的原文与作者 uid', withTempEnv({}, async ({ views, vids, cmts, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    addComment(cmts, 'v1', 'c1', '求个教程', { uid: 'u9' });
+    const id = drfs.save({ awemeId: 'v1', text: '来了', replyToCid: 'c1' });
+
+    const d = views.listDrafts().find(x => x.id === id);
+    expect(d.replyToText).toBe('求个教程');
+    // uid 是给发布用的：策略「同一用户每轮最多回复几条」只看 meta.uid，
+    // 不带的话这条规则从草稿箱发布时不生效，而从工作台发布就生效
+    expect(d.replyToUid).toBe('u9');
+  }));
+
+  it('getMany 批量取，且能跨越 SQLite 的参数批量上限', withTempEnv({}, async ({ cmts }) => {
+    const cids = [];
+    for (let i = 0; i < 900; i++) {
+      const cid = `c${i}`;
+      cids.push(cid);
+      cmts.upsert({ cid, awemeId: 'v1', uid: 'u1', text: `t${i}` });
+    }
+    const map = cmts.getMany(cids);
+    expect(map.size).toBe(900);
+    expect(map.get('c899').text).toBe('t899');
+    // 重复与空值不该让它出错
+    expect(cmts.getMany(['c1', 'c1', null, '']).size).toBe(1);
+    expect(cmts.getMany([]).size).toBe(0);
+  }));
+
+  it('总览的待回复口径与作品列表一致（都排掉我自己发的）', withTempEnv({}, async ({ views, vids, cmts }) => {
+    // myUid 的判定依据就是「is_mine 的视频的 author_uid」，没有单独的 setter
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true, authorUid: 'me' });
+    addComment(cmts, 'v1', 'c1', '别人的评论', { uid: 'u1' });
+    addComment(cmts, 'v1', 'c2', '我自己的回复', { uid: 'me' });
+    addComment(cmts, 'v1', 'c3', '已回过的', { uid: 'u1', replied: true, replyCid: 'r1' });
+
+    const o = views.overview();
+    // 3 条里：1 条是我的、1 条已回复 → 待回复只剩 1 条
+    expect(o.total).toBeUndefined();
+    expect(o.comments).toBe(3);
+    expect(o.mine).toBe(1);
+    expect(o.pending).toBe(1);
+    expect(o.pending).toBe(views.videoDetail('v1').commentStats.pending);
   }));
 });

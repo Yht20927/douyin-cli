@@ -66,13 +66,19 @@ class AuditLogger {
     return s;
   }
 
+  /**
+   * 开始一次操作。
+   *
+   * 关于 `--no-log`：它关掉的是**日志文件**（audit.json 与 logs/results/），
+   * **不是 events 表**。这个区分是必须的 —— events 表是策略闸门与节奏守卫的
+   * 唯一数据源（配额、轮次、熔断、距上次写多久全靠它）。
+   * 改造前 `_noLog` 让 startOperation 直接 return，于是 events 一条都不写，
+   * 后果是 `post --no-log` 顺手拿到了「配额清零 + 节奏不等待」的效果，
+   * 而这个选项的本意只是"这次别记日志"。
+   */
   startOperation(cmd, args) {
-    if (this._noLog) return;
-    this.ensureDirs();
-    this._audit = this.load();
-    const s = this.newSession();
     this._currentOp = {
-      index: s.operations.length + 1,
+      index: (this._currentOp ? this._currentOp.index + 1 : 1),
       command: cmd,
       args,
       started: new Date().toISOString(),
@@ -82,6 +88,12 @@ class AuditLogger {
       summary: {},
       apiCalls: [],
     };
+    if (this._noLog) return;   // 文件侧不记，events 侧照记（见 endOperation）
+
+    this.ensureDirs();
+    this._audit = this.load();
+    const s = this.newSession();
+    this._currentOp.index = s.operations.length + 1;
     s.operations.push(this._currentOp);
     this.save();
   }
@@ -99,7 +111,7 @@ class AuditLogger {
   }
 
   endOperation(status, summary, resultData, error) {
-    if (this._noLog || !this._currentOp) return;
+    if (!this._currentOp) return;
     this._currentOp.ended = new Date().toISOString();
     this._currentOp.durationMs = Date.now() - new Date(this._currentOp.started).getTime();
     this._currentOp.status = status;
@@ -107,7 +119,9 @@ class AuditLogger {
     if (error) this._currentOp.error = error;
 
     const largeResults = ['get', 'search', 'my', 'replies'];
-    if (resultData && largeResults.includes(this._currentOp.command) && status === 'success') {
+    if (this._noLog) {
+      // 不写任何文件，但下面 events 表那段照常走
+    } else if (resultData && largeResults.includes(this._currentOp.command) && status === 'success') {
       const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
       let label = this._currentOp.command;
       if (this._currentOp.args.aweme_id) label += '-' + this._currentOp.args.aweme_id;
@@ -125,7 +139,7 @@ class AuditLogger {
       this._currentOp.result = resultData;
     }
     // AUDIT_DOUBLE_WRITE=false 时停双写 audit.json（events 表为唯一源；默认 true 保持兼容）
-    if (process.env.AUDIT_DOUBLE_WRITE !== 'false') {
+    if (!this._noLog && process.env.AUDIT_DOUBLE_WRITE !== 'false') {
       this.save();
     }
 

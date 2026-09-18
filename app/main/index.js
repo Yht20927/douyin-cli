@@ -43,6 +43,17 @@ function bootstrap() {
   // ── 数据目录 ──
   const dataDirInfo = applyDataDir(app);
 
+  // ── 桌面形态下的运行时覆盖 ──
+  //
+  // intervals.readEnforce：改造计划 §5.4 / 风险 R6 定的「CLI 下 false、GUI 下 true」。
+  // 命令行下读操作只提示不阻塞（否则每次查询都卡 30 秒，交互没法用）；
+  // 桌面应用里没有 agent 自觉遵守间隔，读操作必须真的进队列等 —— 否则
+  // 定时拉取 + 手动刷新叠在一起，请求密度会高到触发风控。
+  //
+  // 用 setRuntimeOverrides 而不是 config.set：后者会写进用户的 config.json，
+  // 于是用户在设置页把这一项关掉之后，下次启动又被改回来 —— 配置项就变成假的了。
+  configModule.setRuntimeOverrides({ intervals: { readEnforce: true } });
+
   // ── 日志 ──
   loggerModule.configure({
     sinks: [loggerModule.consoleSink(), loggerModule.fileSink()],
@@ -62,7 +73,7 @@ function bootstrap() {
 
   const bridge = createBridgeManager({ config: configModule.get() });
 
-  // 所有命令都经这条队列执行，保证串行（全局规则 §1「严禁并发」）。
+  // 所有命令都经这条队列执行，保证串行（运营规则说明.md §1「严禁并发」）。
   // 队列不自己拼 ctx —— 由这里注入，与 CLI 共用同一套组装逻辑。
   const queue = createTaskQueue({
     policy: getPolicy(),

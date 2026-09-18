@@ -101,6 +101,39 @@ function msUntilNext(type = 'write') {
 }
 
 /** 距下次允许写还需等待的毫秒数（0 = 可立即执行） */
+/**
+ * 本次写操作的目标总间隔（秒）—— 从 [min, max] 里随机取一个。
+ *
+ * **同一个"上次写时刻"永远得到同一个值**（结果按 lastWriteTs 记忆）。
+ * 这一点很重要：队列会反复调用 beforeWrite 来刷新倒计时，如果每次都重新随机，
+ * 界面上的倒计时就会来回跳（42s → 51s → 44s），看起来像坏了。
+ * 每次真正写完之后 lastWriteTs 变了，才会重新抽一个新的。
+ */
+let _targetCache = { key: null, value: 0 };
+function jitteredWriteTargetSec() {
+  const last = lastWriteTs();
+  const [min, max] = getIntervals().write || DEFAULT_INTERVALS.write;
+  if (_targetCache.key !== last || _targetCache.value < min || _targetCache.value > max) {
+    _targetCache = { key: last, value: randomInt(min, max) };
+  }
+  return _targetCache.value;
+}
+
+/**
+ * 距"可以写"还差多少毫秒 —— **含随机量**，与 enforceDelay 的口径一致。
+ *
+ * 与 msUntilNext('write') 的区别：那个只算硬下限（intervals[0]），
+ * 这个是算到随机目标为止。桌面队列要用它来画倒计时，否则它会只等硬下限，
+ * 等完再给命令补 --no-throttle —— 于是 enforceDelay 里那段随机抖动被整个跳过，
+ * 每一笔写操作都精确间隔 40.0 秒，比命令行还机械（也违反了自己文档写的 40–55s）。
+ */
+function msUntilNextWriteJittered() {
+  const last = lastWriteTs();
+  if (!last) return 0;
+  const target = jitteredWriteTargetSec();
+  return Math.max(0, target * 1000 - (Date.now() - last));
+}
+
 function msUntilNextWrite() {
   return msUntilNext('write');
 }
@@ -178,7 +211,9 @@ async function enforceDelay(type = 'write', opts = {}) {
   const lastAfterFloor = lastOf();
   const elapsedSec = lastAfterFloor ? (Date.now() - lastAfterFloor) / 1000 : intervals[1];
   if (elapsedSec < intervals[1]) {
-    const targetTotal = randomInt(intervals[0], intervals[1]);
+    // 用与 jitteredWriteTargetSec() 相同的目标：队列若已经按它等过了，
+    // 这里自然算出 0 秒额外等待（不会双重等待）；命令行下则由这里完成整段随机。
+    const targetTotal = jitteredWriteTargetSec();
     const extra = Math.max(0, Math.round(targetTotal - elapsedSec));
     if (extra > 0) {
       reportWait('jitter', extra * 1000, `叠加随机节奏，再等 ${extra}s（目标总间隔 ${targetTotal}s）`);
@@ -240,57 +275,68 @@ function hasRecentRiskBlock(windowMs = 300000) {
     const { getDb } = require('./memory/db');
     const db = getDb();
     const since = Date.now() - windowMs;
-    const row = db.prepare(`
-      SELECT 1 AS hit FROM events
-      WHERE platform = 'douyin' AND command = 'post' AND status = 'error'
-        AND (error LIKE '%status_code=8%' OR error LIKE '%status_code=2053%')
+
+    // 风控码来自配置，不再硬编码。改造前 SQL 里写死 status_code=8 / 2053，
+    // 于是 policy.riskCodeStopList 这个配置项**只用于错误文案**（界面提示"错误码 8/2053"），
+    // 改它不影响判断 —— 用户按设置页的说明加一个码不会生效，去掉一个也不会放行，
+    // 而界面提示会显示成改过之后的样子，排查方向直接被带偏。
+    const codes = (config.get('policy.riskCodeStopList') || []).filter(Number.isInteger);
+    if (!codes.length) return false;
+
+    // 写操作族全部纳入。改造前只看 command='post'，
+    // 于是连续 like 命中风控码不触发那 30 分钟的全局停写。
+    // 注意 WRITE_COMMANDS 是个 **Set**（不是数组）：直接 .map 会抛
+    // "map is not a function"，而这里整段包在 try 里 —— 结果就是静默返回 false，
+    // 风控熔断永远不触发。先转成数组。
+    const writeCommands = [...WRITE_COMMANDS];
+    const cmdPlaceholders = writeCommands.map(() => '?').join(', ');
+
+    // SQL 只做粗筛（错误串里出现过这些数字），精判在 JS 里做。
+    // 直接在 SQL 里表达"status_code 后面的数字要完整相等"会写得又长又容易错
+    // （第一版就是这么写的，参数顺序一乱就全不命中，而且静默返回 false）。
+    const numConds = codes.map(() => "error LIKE ?").join(' OR ');
+    const numParams = codes.map(n => `%status_code=${n}%`);
+
+    const rows = db.prepare(`
+      SELECT error FROM events
+      WHERE platform = 'douyin' AND status = 'error'
+        AND command IN (${cmdPlaceholders})
+        AND (${numConds})
         AND ts >= ?
-      LIMIT 1
-    `).get(since);
-    return !!row;
+      LIMIT 200
+    `).all(...writeCommands, ...numParams, since);
+
+    // 精确判定：`status_code=8` 命中，`status_code=80`、`status_code=801` 不命中
+    return rows.some(r => codes.some(n => new RegExp(`status_code=${n}(?![0-9])`).test(r.error || '')));
   } catch (e) {
     logger.debug('[risk-control.hasRecentRiskBlock] failed: ' + e.message);
     return false;
   }
 }
 
-/**
- * 发布前预检（GUI 发布二次确认时调用）。
- * @param {object} o - { cid?, uid?, replyText? }
- * @returns {{ok:boolean, blockers:Array<{reason:string, action:'skip'|'rewrite'|'postpone'}>}}
- */
-function preflightPublish({ cid, uid, replyText } = {}) {
-  const blockers = [];
-  try {
-    if (cid) {
-      const comments = require('./memory/comments');
-      const c = comments.get(String(cid));
-      if (c) {
-        if (c.is_sticker) blockers.push({ reason: 'sticker_comment', action: 'skip' });
-        if (!uid && c.uid) uid = c.uid; // 从评论反查 uid（campaign_tasks 无 uid 列）
-      }
-    }
-    if (uid) {
-      const users = require('./memory/users');
-      const u = users.get(String(uid));
-      if (u && u.tier === 'blacklist') blockers.push({ reason: 'user_blacklist', action: 'skip' });
-    }
-    if (replyText) {
-      const corpus = require('./memory/corpus');
-      if (corpus.findByText(replyText)) blockers.push({ reason: 'dup_reply_hash', action: 'rewrite' });
-    }
-    if (hasRecentRiskBlock()) blockers.push({ reason: 'recent_status_block_5min', action: 'postpone' });
-  } catch (e) {
-    logger.debug('[risk-control.preflightPublish] failed: ' + e.message);
-  }
-  return { ok: blockers.length === 0, blockers };
-}
+// 这里原本有一个 preflightPublish()，做四类发布前检查（贴纸 / 黑名单 / 语料查重 /
+// 近期风控）。已删除，原因有二：
+//
+//   1. **它全仓没有任何调用方** —— 也就是说这四条护栏从来没生效过，
+//      同一句话可以重复发出去。改造计划 §3.1 却明确承诺过"发布前代码拦截"。
+//   2. 它里面读的是 `c.is_sticker`，而 comments.get() 返回的是驼峰 `isSticker`，
+//      所以即便接上调用方，贴纸那条判断也是恒假的。
+//
+// 前三条的判定已并入真正的发布闸门（core/policy 的 beforeWrite），
+// 那里是 post/like/delete-comment 实际经过的地方，CLI 裸调也跳不掉。
+// 第四条（近期风控）本来就已经在 policy 的熔断判定里。
+//
+// 留这段说明而不是留一份死代码：死代码会被后来的人当成"还在生效"，
+// 然后照着它去排查问题 —— 那比没有更糟。
+
 
 module.exports = {
   enforceDelay,
   preflight,
   msUntilNext,
   msUntilNextWrite,
+  msUntilNextWriteJittered,
+  jitteredWriteTargetSec,
   lastWriteTs,
   lastReadTs,
   lastOpTs,
@@ -300,5 +346,4 @@ module.exports = {
   READ_COMMANDS,
   // 风控信号与发布前预检
   hasRecentRiskBlock,
-  preflightPublish,
 };
