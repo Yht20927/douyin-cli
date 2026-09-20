@@ -525,7 +525,7 @@ describe('草稿箱保留附图', () => {
     expect(drafts.get(id).image_path).toBe(p);
 
     const views = require('../core/data/views');
-    const listed = views.listDrafts().find(d => d.id === id);
+    const listed = views.listDrafts().items.find(d => d.id === id);
     expect(listed.imagePath).toBe(p);
   }));
 

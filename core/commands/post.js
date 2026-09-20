@@ -4,6 +4,7 @@ const { escapeExpression, getFlag, throttleOpts } = require('./helpers');
 const users = require('../memory/users');
 const comments = require('../memory/comments');
 const videos = require('../memory/videos');
+const accounts = require('../memory/accounts');
 const corpus = require('../memory/corpus');
 const failures = require('../memory/failures');
 const riskControl = require('../risk-control');
@@ -104,6 +105,53 @@ async function cmdPost(ctx, args) {
     ? JSON.stringify(images.map(i => ({ uri: i.uri, width: i.width, height: i.height, format: i.format })))
     : 'null';
 
+  // ②.5 账号归属校验：确认"浏览器里登录的号"就是"这条视频的号"。
+  //
+  // 这里的失败模式是所有隔离措施里后果最重的：A 号的视频、B 号的浏览器
+  // ——发布照样成功，内容以 B 号的身份出现在 A 号的视频评论区，
+  // 且没有任何报错。所以必须在真正点"发布"前问一次页面（whoami 走页面
+  // cookie，返回的就是当前登录账号）。
+  //
+  // 判定基准分两种，**必须分开** —— 这里此前只看 author_uid，于是别人的视频
+  // 用的是"那个视频的作者"，而不是"我在用哪个号运营它"：
+  //   - 我自己的作品：author_uid 就是"这条视频的号"（`my` 落库时写死）
+  //   - 别人的视频：author_uid 是**视频作者**（`user` 命令抓来时写入），拿它
+  //     当基准会**误拦** —— 明明是以自己的号去评论别人的视频，却被判成
+  //     "这条视频属于账号 X，你登录的是 Y"。这条路径上真会踩到（库里已有 8 个
+  //     视频带 author_uid + isMine:false），所以改用 ops_uid（最近一次是谁在运营）。
+  //
+  // 两个都查不到（旧数据 / 视频不是本工具拉的）或拿不到当前账号（旧版脚本、
+  // 瞬时失败）时**放行**：拦不住的校验不能变成拦住正常发布的砖头，但要留痕。
+  const videoRow = videos.get(awemeId);
+  const ownerUid = videoRow
+    ? (videoRow.isMine && videoRow.authorUid
+      ? String(videoRow.authorUid)
+      : (videoRow.opsUid ? String(videoRow.opsUid) : null))
+    : null;
+  if (ownerUid) {
+    let who = null;
+    try {
+      who = await ctx.bridgeCall(
+        '(window.__bridge && window.__bridge.whoami) ? window.__bridge.whoami() : Promise.resolve(null)'
+      );
+    } catch (e) {
+      logger.warn(`[post] 账号校验请求失败（放行并留痕）: ${e.message}`);
+    }
+    if (who && who.uid) {
+      const currentUid = String(who.uid);
+      if (currentUid !== ownerUid) {
+        const nameOf = (uid) => (accounts.nicknameOf(uid) ? `${uid}（${accounts.nicknameOf(uid)}）` : uid);
+        throw new Error(
+          `账号不匹配，已阻止发布：这条视频是「${nameOf(ownerUid)}」在运营的，`
+          + `而浏览器当前登录的是 ${nameOf(currentUid)}。`
+          + '请在浏览器里切回对应的号，或到「连接」页确认当前账号。'
+        );
+      }
+    } else {
+      logger.warn('[post] 无法确认浏览器当前登录账号（旧版脚本或未登录），跳过账号归属校验');
+    }
+  }
+
   ctx.audit.startOperation('post', {
     aweme_id: awemeId, text, reply_to: replyTo,
     // uid 是「同一用户每轮最多回复 N 条」的数据来源：events.uid（core/audit.js:145）
@@ -186,7 +234,9 @@ async function cmdPost(ctx, args) {
         users.upsert({ uid: String(src.uid), replyDelta: 1 });
       }
     }
-    videos.markPost(String(awemeId));
+    // 记下"这个视频是哪个账号在运营"。用**实际发出去的那个 uid**（响应里的
+    // author uid），不是界面以为的那个 —— 归属永远以执行者为准
+    videos.markPost(String(awemeId), { accountUid: myUid ? String(myUid) : null });
 
     // 成功则把这条回复入语料库（reply_to 才算"回复语料"，对原帖的纯评论不入库）。
     // 纯图回复没有文本：空字符串的 reply_hash 每条都一样，入语料库会互相顶掉，

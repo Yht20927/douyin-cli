@@ -5,18 +5,14 @@
 // 用法：
 //   node cli.js validate-prompts               校验所有模板
 //   node cli.js validate-prompts <template>     校验单个模板（如 suggest.md）
+//
+// ⚠️ 校验逻辑在 `core/prompts.validateAll()` 里，这里只负责**打印**。
+// 此前这里自己实现了一份，而 prompts.js 另有一份"保存时该拦的最小检查" ——
+// 两份必然漂移，用户会看到"保存时说没问题、校验时说有问题"。
+// 界面上的「校验」按钮调的是同一份，所以三处口径永远一致。
 
-const fs = require('fs');
-const path = require('path');
-
-const paths = require('../paths');
+const prompts = require('../prompts');
 const logger = require('../runtime/logger');
-
-/** 提取模板中的所有占位符 */
-function extractPlaceholders(text) {
-  const matches = text.match(/\{\{(\w+)\}\}/g) || [];
-  return [...new Set(matches.map(m => m.replace(/^\{\{|\}\}$/g, '')))];
-}
 
 /** 校验单个模板文件 */
 function validateTemplate(filePath) {
@@ -65,44 +61,22 @@ function validateTemplate(filePath) {
 
 async function cmdValidatePrompts(ctx, args) {
   const targetFile = args[0] || null;
+  const { templates, hasError, count } = prompts.validateAll(targetFile);
 
-  // 用 listPromptFiles() 取两个目录的并集，而不是 readdir 某一个目录 ——
-  // 逐文件覆盖下，"用户目录里只有 1 个文件"是常态，直接 readdir 会漏掉其余模板。
-  const available = paths.listPromptFiles().filter(f => !f.partial);
-
-  let files;
-  if (targetFile) {
-    // available 是实际扫出来的，在里面就说明两个目录里至少有一个存在
-    if (!available.some(f => f.name === targetFile)) {
-      throw new Error(`模板文件不存在: ${targetFile}`);
-    }
-    files = [paths.resolvePrompt(targetFile).path];
-  } else {
-    files = available.map(f => paths.resolvePrompt(f.name).path);
-  }
-
-  if (files.length === 0) {
+  if (count === 0) {
     logger.info('没有找到模板文件');
-    return [];
+    return { templates: [], hasError: false };
   }
 
-  const allIssues = [];
-  for (const fp of files) {
-    const issues = validateTemplate(fp);
-    allIssues.push(...issues);
+  const MARK = { error: '✗', warn: '⚠', ok: '✓', info: 'ℹ' };
+  for (const issue of templates) {
+    const line = `${MARK[issue.severity] || '·'} [${issue.file}] ${issue.message}`;
+    // 保持既有输出约定：error 走 stderr，其余走 stdout
+    if (issue.severity === 'error') console.error(line);
+    else console.log(line);
   }
-
-  // 输出结果
-  let hasError = false;
-  for (const issue of allIssues) {
-    const prefix = issue.severity === 'error' ? '✗' : issue.severity === 'warn' ? '⚠' : issue.severity === 'ok' ? '✓' : 'ℹ';
-    const stream = issue.severity === 'error' ? 'error' : 'log';
-    console[stream](`${prefix} [${issue.file}] ${issue.message}`);
-    if (issue.severity === 'error') hasError = true;
-  }
-
-  logger.info(`\n共检查 ${new Set(allIssues.map(i => i.file)).size} 个模板`);
-  return { templates: allIssues, hasError };
+  logger.info(`\n共检查 ${count} 个模板`);
+  return { templates, hasError };
 }
 
 module.exports = cmdValidatePrompts;

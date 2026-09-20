@@ -224,9 +224,12 @@ function listByUid(uid, opts = {}) {
   if (!uid) return [];
   try {
     const db = getDb();
-    const limit = Math.max(1, Math.min(opts.limit || 200, 10000));
+    const limit = clampLimit(opts.limit);
+    // 与 listByVideo 共用 _mapShort，所以选同样的列 —— 少选一列不会报错，
+    // 只会让那个字段变成 undefined，于是"是不是贴纸"取决于这条行是从哪个查询来的。
     const rows = db.prepare(`
-      SELECT cid, aweme_id, text, digg, created_at, sentiment, priority, replied, reply_cid
+      SELECT cid, aweme_id, text, digg, created_at, is_sticker, parent_cid,
+             sentiment, priority, replied, reply_cid
       FROM comments WHERE platform = ? AND uid = ?
       ORDER BY COALESCE(created_at, 0) DESC LIMIT ${limit}
     `).all(PLATFORM, uid);
@@ -267,6 +270,23 @@ const ORDER_INFO = [
 ];
 
 /**
+ * listByVideo 的 limit 硬上限。
+ *
+ * 导出的理由：调用方（core/data/views.js）需要知道**实际生效**的上限是多少，
+ * 才能判断自己拿到的列表是不是被截断了。以前 views 拿自己写的 20000 去比
+ * `rows.length >= scanLimit`，而这里悄悄把 limit 夹到 10000 —— 那个条件
+ * 在结构上永远不可能成立，"扫描被截断、计数可能偏小"的提示因此永远不出现。
+ * 谁拥有 SQL 里的 LIMIT，谁就负责把这个数说清楚。
+ */
+const MAX_LIMIT = 10000;
+
+/** 把请求的 limit 夹到 [1, MAX_LIMIT]；缺省 200 */
+function clampLimit(n) {
+  const v = Number(n);
+  return Math.max(1, Math.min(Number.isFinite(v) && v > 0 ? v : 200, MAX_LIMIT));
+}
+
+/**
  * 列出某视频的评论。
  *
  * @param {string} awemeId
@@ -275,13 +295,13 @@ const ORDER_INFO = [
  * @param {string}  [opts.sentiment]
  * @param {string}  [opts.order]   - ORDERS 的键，未知值回退 priority
  * @param {string}  [opts.search]  - 关键词，匹配评论文本**或**用户昵称
- * @param {number}  [opts.limit]
+ * @param {number}  [opts.limit]   - 会被夹到 [1, MAX_LIMIT]
  */
 function listByVideo(awemeId, opts = {}) {
   if (!awemeId) return [];
   try {
     const db = getDb();
-    const limit = Math.max(1, Math.min(opts.limit || 200, 10000));
+    const limit = clampLimit(opts.limit);
     const where = ['c.platform = ?', 'c.aweme_id = ?'];
     const params = [PLATFORM, awemeId];
     if (opts.replied != null) { where.push('c.replied = ?'); params.push(opts.replied ? 1 : 0); }
@@ -301,6 +321,7 @@ function listByVideo(awemeId, opts = {}) {
     const order = ORDERS[opts.order] || ORDERS.priority;
     const rows = db.prepare(`
       SELECT c.cid, c.aweme_id, c.uid, c.text, c.digg, c.created_at,
+             c.is_sticker, c.parent_cid,
              c.sentiment, c.priority, c.replied, c.reply_cid
       FROM comments c WHERE ${where.join(' AND ')}
       ORDER BY ${order}
@@ -312,13 +333,31 @@ function listByVideo(awemeId, opts = {}) {
   }
 }
 
-/** 某视频的评论总数（不受 limit 影响）。界面用它显示「共 N 条」，而不是拿列表长度当总数 */
+/**
+ * 某视频的评论总数（不受 limit 影响）。界面用它显示「共 N 条」，而不是拿列表长度当总数。
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.replied] - 只看已回复/未回复
+ * @param {string} [opts.excludeUid] - 排掉这个 uid（我自己的）。
+ *   「待处理」列表会把我们发出去的回复滤掉，而这个总数若不跟着滤，
+ *   界面就会出现「共 99 条 · 当前显示 95 条」——同一屏两个口径，
+ *   与 statsForVideo 的 pending 也对不上（那里是排掉的）。
+ * @param {string} [opts.search]
+ */
 function countByVideo(awemeId, opts = {}) {
   if (!awemeId) return 0;
   try {
     const where = ['platform = ?', 'aweme_id = ?'];
     const params = [PLATFORM, awemeId];
     if (opts.replied != null) { where.push('replied = ?'); params.push(opts.replied ? 1 : 0); }
+    if (opts.excludeUid != null) { where.push('uid IS NOT ?'); params.push(String(opts.excludeUid)); }
+    if (opts.search) {
+      // 与 listByVideo 的搜索条件**逐字一致**。两处稍有差别，"共 N 条"与
+      // 列表里实际有几条就会对不上，而这类不一致在这个项目里已经返工过好几次。
+      const q = `%${String(opts.search).trim()}%`;
+      where.push('(text LIKE ? OR uid IN (SELECT uid FROM users WHERE platform = ? AND nickname LIKE ?))');
+      params.push(q, PLATFORM, q);
+    }
     return getDb().prepare(
       `SELECT count(*) AS n FROM comments WHERE ${where.join(' AND ')}`
     ).get(...params).n;
@@ -333,6 +372,10 @@ function _mapShort(r) {
     text: r.text,
     digg: r.digg,
     createdAt: r.created_at,
+    // 与 get() 用同一套驼峰字段名。filters.classify 判定贴纸就读这个，
+    // 之前这里没带出来、那边又写成读蛇形，两处各错一半 —— 合起来是永不生效。
+    isSticker: !!r.is_sticker,
+    parentCid: r.parent_cid,
     sentiment: r.sentiment,
     priority: r.priority,
     replied: !!r.replied,
@@ -393,6 +436,233 @@ function statsForVideo(awemeId, opts = {}) {
     };
   } catch (e) {
     return empty;
+  }
+}
+
+/**
+ * 一次算多个视频的评论统计。
+ *
+ * 为什么要有这个：运营对象列表要给几百个视频各算一次"待回复"，逐个调
+ * statsForVideo 就是几百次查询。但**口径必须与 statsForVideo 逐字一致**
+ * （同样的 mine 定义、同样的 pending 减项）—— 这个项目已经因为"同一份数据
+ * 三处显示三个数"返工过（见 statsForVideo 的注释），不能在这里再长一套。
+ *
+ * 返回的 Map 里**没有**某个 awemeId，表示那个视频一条评论都没有 ——
+ * 这与"查不到"是两回事，调用方自己拿 statsForVideo 的 empty 形状兜底。
+ *
+ * @param {string[]} awemeIds
+ * @param {object} [opts]
+ * @param {string} [opts.excludeUid] - 我自己的 uid（来自 videos.myUid）
+ * @returns {Map<string, {total:number, replied:number, pending:number, mine:number}>}
+ */
+function statsForVideos(awemeIds, opts = {}) {
+  const out = new Map();
+  const ids = [...new Set((awemeIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return out;
+  try {
+    const db = getDb();
+    const exclude = opts.excludeUid ? String(opts.excludeUid) : null;
+    // 分批：SQLite 的绑定参数个数有上限（旧构建是 999），一次几百个 id
+    // 加上 3 个固定参数就顶到边了。分批不改变结果，只是别去赌上限。
+    const CHUNK = 400;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const holes = chunk.map(() => '?').join(',');
+      const rows = db.prepare(`
+        SELECT aweme_id,
+          count(*) AS total,
+          sum(CASE WHEN replied = 1 THEN 1 ELSE 0 END) AS replied,
+          sum(CASE WHEN replied = 0 AND (? IS NOT NULL AND uid = ?) THEN 1 ELSE 0 END) AS mine
+        FROM comments
+        WHERE platform = ? AND aweme_id IN (${holes})
+        GROUP BY aweme_id
+      `).all(exclude, exclude, PLATFORM, ...chunk);
+
+      for (const r of rows) {
+        const total = r.total || 0;
+        const replied = r.replied || 0;
+        const mine = r.mine || 0;
+        out.set(String(r.aweme_id), {
+          total,
+          replied,
+          mine,
+          pending: Math.max(0, total - replied - mine),
+        });
+      }
+    }
+  } catch (e) {
+    logger.debug('[comments.statsForVideos] failed: ' + e.message);
+  }
+  return out;
+}
+
+/**
+ * 回复效果：我们回过的那些人，后来还来不来。
+ *
+ * 这是"互动引流"这个打法的核心问题 —— 回了 119 条之后到底有没有效果，
+ * 此前只能靠感觉。数据其实都在库里：
+ *   - 我们回过的评论：`replied = 1`，且 `reply_cid` 指向我们自己发的那条
+ *   - 我们自己发的那条：cid = reply_cid，带 created_at（抖音秒）
+ *   - 对方后来又来评论：同一视频下、同一个 uid、时间在我们回复**之后**
+ *
+ * 三处已知的诚实声明（都返回给调用方，界面必须跟着显示）：
+ *
+ * 1. **二次互动只在"我们的回复有时间戳"的那部分上算**。早期发出的回复
+ *    `created_at` 可能是 null，那时无法判断先后 —— 把它算作"没再来"是
+ *    凭空冤枉，算作"来了"是编数据。所以分子分母都只取有时间戳的那些，
+ *    并把 `withTime` 一起报出去。
+ * 2. **回复获赞要靠重新拉取才更新**。digg 是拉评论时抄下来的快照，
+ *    没拉过的回复一直是 null/0 —— 所以给 `withLikes`，别把 0 当成"没人赞"。
+ * 3. 对方"又来了"可能是回复了我们、也可能只是又留了一条 ——
+ *    这里只判"该用户在该视频下又出现了"，界面上的措辞必须与此一致，
+ *    不能写成"对方回复了你"。
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.since] - 毫秒时间戳，只算这次之后发出的回复
+ * @returns {{replied:number, withTime:number, second:number, secondRate:number|null,
+ *   withLikes:number, likes:number}}
+ */
+function replyEffectStats(opts = {}) {
+  const empty = { replied: 0, withTime: 0, second: 0, secondRate: null, withLikes: 0, likes: 0 };
+  try {
+    const db = getDb();
+    const params = [PLATFORM];
+    let sinceSql = '';
+    if (opts.since) {
+      // created_at 是抖音的**秒**，opts.since 是毫秒 —— 单位不同不能直接比。
+      // `IS NULL OR` 这一半是必须的：没有时间戳的行**不能**被范围过滤掉 ——
+      // 它们正是 withTime 要单独统计的那批，直接滤掉的话
+      // "已回复 N 条（其中 M 条能判定先后）"里的 N 会跟着范围一起缩水，
+      // 而读者无从知道少的那些是因为"太久以前"还是"没记时间"。
+      sinceSql = ' AND (r.created_at IS NULL OR r.created_at >= ?)';
+      params.push(Math.floor(opts.since / 1000));
+    }
+    const row = db.prepare(`
+      SELECT
+        count(*) AS replied,
+        sum(CASE WHEN r.created_at IS NOT NULL THEN 1 ELSE 0 END) AS with_time,
+        sum(CASE WHEN r.created_at IS NOT NULL AND EXISTS (
+          SELECT 1 FROM comments c3
+          WHERE c3.platform = c.platform
+            AND c3.aweme_id = c.aweme_id
+            AND c3.uid = c.uid
+            AND c3.created_at > r.created_at
+        ) THEN 1 ELSE 0 END) AS second,
+        sum(CASE WHEN r.digg IS NOT NULL AND r.digg > 0 THEN 1 ELSE 0 END) AS with_likes,
+        sum(COALESCE(r.digg, 0)) AS likes
+      FROM comments c
+      JOIN comments r ON r.cid = c.reply_cid AND r.platform = c.platform
+      WHERE c.platform = ? AND c.replied = 1${sinceSql}
+    `).get(...params);
+
+    const replied = row.replied || 0;
+    const withTime = row.with_time || 0;
+    const second = row.second || 0;
+    return {
+      replied,
+      withTime,
+      second,
+      // 分母是"能判定先后的那些"，不是全部 —— 见上面第 1 条
+      secondRate: withTime > 0 ? second / withTime : null,
+      withLikes: row.with_likes || 0,
+      likes: row.likes || 0,
+    };
+  } catch (e) {
+    logger.debug('[comments.replyEffectStats] failed: ' + e.message);
+    return empty;
+  }
+}
+
+/**
+ * 按本地日期统计"我每天发出了多少条回复"。
+ *
+ * 这是运营的**产出**曲线，与"每天进来多少条评论"配对看，才知道回复跟不跟得上。
+ * 之前没有任何地方能回答"我上周回了多少条" —— 只有总数（119）。
+ *
+ * 口径：`uid = 我` 且 `parent_cid` 非空。
+ * 后者是关键：我们自己发的**顶级评论**（评论引流里那种独立评论）不算"回复"，
+ * 把它算进来的话，产出曲线会突然拔高一段，而那段其实不是回复。
+ *
+ * 日期用 `date(created_at, 'unixepoch', 'localtime')` 换算 ——
+ * created_at 是抖音的**秒**，且要按**本机时区**归日，才能和界面上的
+ * `localDay()` 对上。少了 'localtime' 会按 UTC 归，晚上发的回复会落到第二天。
+ *
+ * @param {object} opts
+ * @param {number} opts.uid   - 我的 uid（拿不到就返回空 Map）
+ * @param {number} [opts.since] - 毫秒时间戳（含）
+ * @returns {Map<string, number>} 'YYYY-MM-DD' → 条数
+ */
+function dailyReplyCounts(opts = {}) {
+  const out = new Map();
+  if (!opts.uid) return out;
+  try {
+    const db = getDb();
+    const params = [PLATFORM, String(opts.uid)];
+    let sinceSql = '';
+    if (opts.since) {
+      // 秒与毫秒两种时间戳都存在过，两边都兜住（见 db.js 的时间戳约定）
+      sinceSql = ' AND created_at >= ?';
+      params.push(Math.floor(opts.since / 1000));
+    }
+    const rows = db.prepare(`
+      SELECT date(created_at, 'unixepoch', 'localtime') AS day, count(*) AS n
+      FROM comments
+      WHERE platform = ? AND uid = ? AND parent_cid IS NOT NULL AND created_at IS NOT NULL${sinceSql}
+      GROUP BY day
+    `).all(...params);
+    for (const r of rows) {
+      if (r.day) out.set(String(r.day), r.n || 0);
+    }
+  } catch (e) {
+    logger.debug('[comments.dailyReplyCounts] failed: ' + e.message);
+  }
+  return out;
+}
+
+/**
+ * 撤销"已回复"标记：把指着这条回复的父评论放回未回复状态。
+ *
+ * 用途：删除自己发出的那条回复之后，本地也得跟着回退 —— 不然界面继续显示
+ * 「已回复」、待回复数也不涨回来，而那条回复在抖音上已经不存在了。
+ * 按 `reply_cid` 反查，不需要调用方再传 awemeId（它本来就记在父行上）。
+ *
+ * @param {string} replyCid - 被删掉的那条回复的 cid
+ * @returns {number} 受影响的父评论条数（0 表示没有评论指着它）
+ */
+function unmarkReplied(replyCid) {
+  if (!replyCid) return 0;
+  try {
+    const info = getDb().prepare(`
+      UPDATE comments SET replied = 0, reply_cid = NULL
+      WHERE platform = ? AND reply_cid = ?
+    `).run(PLATFORM, String(replyCid));
+    return info.changes;
+  } catch (e) {
+    logger.debug('[comments.unmarkReplied] failed: ' + e.message);
+    return 0;
+  }
+}
+
+/**
+ * 删掉一条本地评论记录。
+ *
+ * 只在**抖音上那条评论真的被删掉之后**调用 —— 本地留着它会让"本地 N 条"
+ * 与抖音对不上，而库里没有墓碑位可放。要留痕的话语料库那边有
+ * （`corpus.setOutcome(id, 'deleted')`，delete-comment 命令已经在做）。
+ *
+ * @param {string} cid
+ * @returns {number} 删除的行数（0 = 本来就没有）
+ */
+function remove(cid) {
+  if (!cid) return 0;
+  try {
+    const info = getDb().prepare(
+      'DELETE FROM comments WHERE platform = ? AND cid = ?'
+    ).run(PLATFORM, String(cid));
+    return info.changes;
+  } catch (e) {
+    logger.debug('[comments.remove] failed: ' + e.message);
+    return 0;
   }
 }
 
@@ -458,6 +728,8 @@ module.exports = {
   upsert, upsertMany, get, getMany, markReplied, setAnalysis,
   listByUid, listByVideo,
   countByVideo,
+  MAX_LIMIT, clampLimit,
   ORDER_NAMES,
-  ORDER_INFO, listReplied, count, statsForVideo, cleanupBefore, hashText, normalizeText,
+  ORDER_INFO, listReplied, count, statsForVideo, statsForVideos, replyEffectStats,
+  dailyReplyCounts, unmarkReplied, remove, cleanupBefore, hashText, normalizeText,
 };

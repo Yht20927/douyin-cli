@@ -62,31 +62,43 @@ const READ_COMMANDS = new Set(['get', 'search', 'my', 'replies', 'user', 'analyz
 function lastOpTs(commands) {
   const list = Array.from(commands);
   if (list.length === 0) return 0;
+  const { getDb } = require('./memory/db');
+  const db = getDb();
+  const placeholders = list.map(() => '?').join(',');
+  const row = db.prepare(`
+    SELECT max(ts) AS ms FROM events
+    WHERE platform = 'douyin'
+      AND command IN (${placeholders})
+      AND status = 'success'
+  `).get(...list);
+  return (row && row.ms) || 0;
+}
+
+/**
+ * 把 lastOpTs 的读失败折成 null（"状态未知"）。
+ *
+ * 三态必须分开：**0 = 确实一条记录都没有**（可以立刻写），
+ * **null = 读不到**（不知道上次是什么时候写的）。
+ * 原先两者都是 0，于是数据库一坏，所有节奏守卫同时静默失效 —— 而这正是
+ * 这个工具唯一存在的理由。未知的那个方向必须等，等错了只是慢一点。
+ */
+function readOpTs(commands) {
   try {
-    const { getDb } = require('./memory/db');
-    const db = getDb();
-    const placeholders = list.map(() => '?').join(',');
-    const row = db.prepare(`
-      SELECT max(ts) AS ms FROM events
-      WHERE platform = 'douyin'
-        AND command IN (${placeholders})
-        AND status = 'success'
-    `).get(...list);
-    return (row && row.ms) || 0;
+    return lastOpTs(commands);
   } catch (e) {
-    logger.debug('[risk-control.lastOpTs] failed: ' + e.message);
-    return 0;
+    logger.warn('[risk-control] 读不到上次操作时间，按最坏情况等满间隔: ' + e.message);
+    return null;
   }
 }
 
-/** 最近一次写操作（post/like/unlike/delete_comment）的成功时间戳（ms） */
+/** 最近一次写操作（post/like/unlike/delete_comment）的成功时间戳（ms）；null = 未知 */
 function lastWriteTs() {
-  return lastOpTs(WRITE_COMMANDS);
+  return readOpTs(WRITE_COMMANDS);
 }
 
-/** 最近一次读操作的成功时间戳（ms） */
+/** 最近一次读操作的成功时间戳（ms）；null = 未知 */
 function lastReadTs() {
-  return lastOpTs(READ_COMMANDS);
+  return readOpTs(READ_COMMANDS);
 }
 
 /**
@@ -94,30 +106,46 @@ function lastReadTs() {
  * @param {'write'|'read'} type
  */
 function msUntilNext(type = 'write') {
-  const [minSec] = getIntervals()[type] || DEFAULT_INTERVALS.write;
+  const [minSec, maxSec] = getIntervals()[type] || DEFAULT_INTERVALS.write;
   const last = type === 'read' ? lastReadTs() : lastWriteTs();
+  // 状态未知 → 按这一类间隔的**上限**等：宁可慢，不要放行。
+  if (last === null) return maxSec * 1000;
   if (!last) return 0;
   return Math.max(0, minSec * 1000 - (Date.now() - last));
 }
 
 /** 距下次允许写还需等待的毫秒数（0 = 可立即执行） */
 /**
- * 本次写操作的目标总间隔（秒）—— 从 [min, max] 里随机取一个。
+ * 本次操作的"目标总间隔"（秒）—— 从该类的 [min, max] 里随机取一个。
  *
- * **同一个"上次写时刻"永远得到同一个值**（结果按 lastWriteTs 记忆）。
+ * **同一个"上次操作时刻"永远得到同一个值**（结果按时刻记忆）。
  * 这一点很重要：队列会反复调用 beforeWrite 来刷新倒计时，如果每次都重新随机，
  * 界面上的倒计时就会来回跳（42s → 51s → 44s），看起来像坏了。
- * 每次真正写完之后 lastWriteTs 变了，才会重新抽一个新的。
+ * 每次真正操作完之后那个时刻变了，才会重新抽一个新的。
+ *
+ * ⚠️ 读写**各自一份缓存**。此前只有一份、且键是 lastWriteTs：给读操作算目标时
+ * 会拿写间隔去抽（见 enforceDelay 第 2 步的注释），而且读写交替调用时两个 key
+ * 会互相顶掉，倒计时每次都重新随机 —— 两个毛病叠在一起。
  */
-let _targetCache = { key: null, value: 0 };
-function jitteredWriteTargetSec() {
-  const last = lastWriteTs();
-  const [min, max] = getIntervals().write || DEFAULT_INTERVALS.write;
-  if (_targetCache.key !== last || _targetCache.value < min || _targetCache.value > max) {
-    _targetCache = { key: last, value: randomInt(min, max) };
+const _targetCaches = { write: { key: null, value: 0 }, read: { key: null, value: 0 } };
+
+/**
+ * @param {'write'|'read'} type
+ * @returns {number} 目标总间隔（秒）
+ */
+function jitteredTargetSec(type) {
+  const last = type === 'read' ? lastReadTs() : lastWriteTs();
+  const [min, max] = getIntervals()[type] || DEFAULT_INTERVALS[type] || DEFAULT_INTERVALS.write;
+  const c = _targetCaches[type] || (_targetCaches[type] = { key: null, value: 0 });
+  if (c.key !== last || c.value < min || c.value > max) {
+    c.key = last;
+    c.value = randomInt(min, max);
   }
-  return _targetCache.value;
+  return c.value;
 }
+
+function jitteredWriteTargetSec() { return jitteredTargetSec('write'); }
+function jitteredReadTargetSec() { return jitteredTargetSec('read'); }
 
 /**
  * 距"可以写"还差多少毫秒 —— **含随机量**，与 enforceDelay 的口径一致。
@@ -129,8 +157,10 @@ function jitteredWriteTargetSec() {
  */
 function msUntilNextWriteJittered() {
   const last = lastWriteTs();
-  if (!last) return 0;
   const target = jitteredWriteTargetSec();
+  // 未知（null）与"确实没记录"（0）不是一回事：前者要等满一个随机目标间隔。
+  if (last === null) return target * 1000;
+  if (!last) return 0;
   return Math.max(0, target * 1000 - (Date.now() - last));
 }
 
@@ -198,11 +228,12 @@ async function enforceDelay(type = 'write', opts = {}) {
   // 1) 硬性下限：距上次同类操作至少 minSec 秒
   const need = msUntilNext(type);
   if (need > 0) {
-    const sinceLast = last ? Math.round((Date.now() - last) / 1000) : 0;
     reportWait(
       'min_interval',
       need,
-      `距上次${label}仅 ${sinceLast}s，强制等待 ${Math.ceil(need / 1000)}s（下限 ${intervals[0]}s）`
+      last === null
+        ? `读不到上次${label}操作的记录，按上限强制等待 ${Math.ceil(need / 1000)}s（间隔 ${intervals[0]}–${intervals[1]}s）`
+        : `距上次${label}仅 ${Math.round((Date.now() - last) / 1000)}s，强制等待 ${Math.ceil(need / 1000)}s（下限 ${intervals[0]}s）`
     );
     await sleepAbortable(need, signal);
   }
@@ -211,9 +242,15 @@ async function enforceDelay(type = 'write', opts = {}) {
   const lastAfterFloor = lastOf();
   const elapsedSec = lastAfterFloor ? (Date.now() - lastAfterFloor) / 1000 : intervals[1];
   if (elapsedSec < intervals[1]) {
-    // 用与 jitteredWriteTargetSec() 相同的目标：队列若已经按它等过了，
-    // 这里自然算出 0 秒额外等待（不会双重等待）；命令行下则由这里完成整段随机。
-    const targetTotal = jitteredWriteTargetSec();
+    // 按**本次操作的类型**取目标：写操作等写间隔、读操作等读间隔。
+    //
+    // ⚠️ 这里此前无论 type 都是 jitteredWriteTargetSec()：于是 `intervals.read`
+    // 被整个跳过 —— 用户把读间隔设成 [3,5]，实际等的是写间隔 [40,55]。
+    // 症状是"读操作怎么调都快不了"，而配置项看起来是生效的（第 1 步按读间隔等过了）。
+    //
+    // 队列若已经按同一个目标等过了，这里自然算出 0 秒额外等待（不会双重等待）；
+    // 命令行下则由这里完成整段随机。
+    const targetTotal = type === 'read' ? jitteredReadTargetSec() : jitteredWriteTargetSec();
     const extra = Math.max(0, Math.round(targetTotal - elapsedSec));
     if (extra > 0) {
       reportWait('jitter', extra * 1000, `叠加随机节奏，再等 ${extra}s（目标总间隔 ${targetTotal}s）`);
@@ -309,8 +346,10 @@ function hasRecentRiskBlock(windowMs = 300000) {
     // 精确判定：`status_code=8` 命中，`status_code=80`、`status_code=801` 不命中
     return rows.some(r => codes.some(n => new RegExp(`status_code=${n}(?![0-9])`).test(r.error || '')));
   } catch (e) {
-    logger.debug('[risk-control.hasRecentRiskBlock] failed: ' + e.message);
-    return false;
+    // 读不到就返回 false 等于"确定没被风控拦过" —— 那是最危险的降级方向。
+    // 抛给调用方（core/policy），由它按"状态未知 → 停止写入"处理。
+    logger.warn('[risk-control.hasRecentRiskBlock] 读不到风控记录: ' + e.message);
+    throw e;
   }
 }
 
@@ -337,6 +376,7 @@ module.exports = {
   msUntilNextWrite,
   msUntilNextWriteJittered,
   jitteredWriteTargetSec,
+  jitteredReadTargetSec,
   lastWriteTs,
   lastReadTs,
   lastOpTs,

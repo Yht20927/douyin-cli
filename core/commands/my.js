@@ -3,6 +3,7 @@
 const { getFlag, withAudit, throttleOpts } = require('./helpers');
 const riskControl = require('../risk-control');
 const videos = require('../memory/videos');
+const accounts = require('../memory/accounts');
 const logger = require('../runtime/logger');
 
 /**
@@ -11,11 +12,17 @@ const logger = require('../runtime/logger');
  * @param {string[]} args - [--count N]
  */
 async function cmdMy(ctx, args) {
-  const count = Math.min(getFlag(args, '--count', 20), 20);
+  // 上限从 20 放宽到 50：界面一次想拉 50 个，而 20 的旧上限让新用户
+  // 第一天只能进 20 个作品（工作台入口在作品列表行）。50 只是"请求里要
+  // 多少"——抖音侧对单页有自己的截断，实际返回多少存多少。
+  const count = Math.min(getFlag(args, '--count', 20), 50);
 
   // 读节奏守卫（CLI 下为 advisory no-op，见 get.js 注释）
   await riskControl.enforceDelay('read', throttleOpts(ctx, args));
 
+  // 这里**故意不拦**账号不一致。`myPosts` 返回的永远是"浏览器当前登录那个号"
+  // 的作品，数据本身没错；按 author.uid 归属（见下面的 opsUid）就自洽了。
+  // 拦下来只会让"我换了个号想看它的作品"这件事做不成 —— 而那正是主用例。
   return withAudit(ctx, 'my', { count }, async () => {
     const expr = `window.__bridge.myPosts(0, ${count})`;
     const data = await ctx.loggedCall('my', { count }, expr);
@@ -43,6 +50,10 @@ async function cmdMy(ctx, args) {
           // 改造前这个字段从没被写入过，于是无法把自己的评论（含自己发出的回复）
           // 从待回复列表里摘出去。
           authorUid: a.author?.uid ? String(a.author.uid) : null,
+          // 这个视频是**哪个账号的操作**带进来的。myPosts 返回的是"当前登录
+          // 那个号的作品"，所以 author.uid 就是执行者 —— 用它而不是界面选的
+          // 那个 uid：数据归属永远以实际执行者为准
+          opsUid: a.author?.uid ? String(a.author.uid) : null,
           // title 保持截断（列表页展示用），desc 存全文
           title: (a.desc || '').substring(0, 80) || null,
           desc: a.desc || null,
@@ -62,7 +73,16 @@ async function cmdMy(ctx, args) {
       logger.debug('[my.persist] failed: ' + e.message);
     }
 
-    return { summary: { count: items.length }, result: { result: items }, output: items };
+    // 把"这次实际拉到的是哪个号"报上去：界面显示的是 A 而浏览器登录的是 B 时，
+    // 用户至少能从这句里看出不对劲，而不是对着一个空列表猜
+    const fetchedUid = (data.aweme_list || [])
+      .map(a => (a.author && a.author.uid ? String(a.author.uid) : null))
+      .find(Boolean) || null;
+    return {
+      summary: { count: items.length, accountUid: fetchedUid },
+      result: { result: items, accountUid: fetchedUid },
+      output: items,
+    };
   });
 }
 

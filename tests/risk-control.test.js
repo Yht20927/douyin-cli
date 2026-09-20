@@ -292,3 +292,55 @@ describe('lastOpTs / msUntilNext', () => {
     expect(riskControl.msUntilNext('read')).toBe(0);
   }));
 });
+
+// ═══════════════════════════════════════════════════════════
+// 读操作必须按**读间隔**等，不是写间隔
+//
+// 回归背景：`enforceDelay` 第 2 步（叠加随机量）无条件用
+// `jitteredWriteTargetSec()`，于是 `intervals.read` 被整个跳过 ——
+// 用户把读间隔设成 [3,5]，实际等的是写间隔 [40,55]。
+//
+// 症状特别难查：配置项**看起来是生效的**（第 1 步确实按读间隔的下限等了），
+// 只是"怎么调都快不了"。而且日志里印的"目标总间隔 40s"是写间隔的值，
+// 用户没理由把它和读操作联系起来。
+// ═══════════════════════════════════════════════════════════
+describe('读写各用各的间隔', () => {
+  // 故意把两者拉开：[1,2] 与 [3,4]，一次读等待超过 2.5 秒就说明用错了间隔。
+  // 写间隔没有再往上调 —— vitest 默认单测超时是 5 秒，[4,5] 会正好撞上。
+  // 下面每个 it 仍显式给了 15 秒超时，防止机器慢时误报。
+  const CFG = { intervals: { read: [1, 2], write: [3, 4], readEnforce: true } };
+  const T = 15000;
+
+  it('读操作等的是读间隔（不是写间隔）', withTempEnv(CFG, async ({ riskControl, events }) => {
+    events.append({ ts: Date.now(), command: 'get', status: 'success' });
+    const t0 = Date.now();
+    await riskControl.enforceDelay('read', { onWait: () => {} });
+    const waited = (Date.now() - t0) / 1000;
+    // 读间隔上界 2s。留一点调度余量，但绝不能接近写间隔的下界 4s
+    expect(waited).toBeLessThan(2.5);
+  }), T);
+
+  it('写操作仍按写间隔等（别把修复做成了"全都按读间隔"）', withTempEnv(CFG, async ({ riskControl, events }) => {
+    events.append({ ts: Date.now(), command: 'post', status: 'success' });
+    const t0 = Date.now();
+    await riskControl.enforceDelay('write', { onWait: () => {} });
+    const waited = (Date.now() - t0) / 1000;
+    expect(waited).toBeGreaterThanOrEqual(2.5);
+  }), T);
+
+  it('目标值读写分开抽，且同一个"上次时刻"抽出来的值稳定', withTempEnv(CFG, async ({ riskControl, events }) => {
+    events.append({ ts: Date.now(), command: 'get', status: 'success' });
+    const r1 = riskControl.jitteredReadTargetSec();
+    const r2 = riskControl.jitteredReadTargetSec();
+    const w = riskControl.jitteredWriteTargetSec();
+    // 同一个"上次读时刻"下反复取，必须得到同一个值 ——
+    // 否则界面上的倒计时会来回跳（42s → 51s → 44s），看起来像坏了
+    expect(r2).toBe(r1);
+    expect(r1).toBeGreaterThanOrEqual(1);
+    expect(r1).toBeLessThanOrEqual(2);
+    expect(w).toBeGreaterThanOrEqual(3);
+    expect(w).toBeLessThanOrEqual(4);
+    // 读的目标不能落进写的区间 —— 那说明两份缓存又被合并了
+    expect(w).toBeGreaterThan(r1);
+  }), T);
+});

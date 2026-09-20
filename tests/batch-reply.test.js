@@ -97,7 +97,7 @@ describe('批量生成 / --cids 指定评论', () => {
     expect(r.generated.map(g => g.text)).toEqual(['回复甲', '回复乙']);
     expect(r.generated.every(g => g.source === 'fixed' && g.draftId > 0)).toBe(true);
 
-    const list = views.listDrafts();
+    const list = views.listDrafts().items;
     expect(list).toHaveLength(2);
     // 草稿要记住回的是哪条评论，否则发布时不知道发给谁
     expect(list.map(d => d.replyToCid).sort()).toEqual(['c1', 'c2']);
@@ -134,7 +134,7 @@ describe('批量生成 / --cids 指定评论', () => {
     expect(r.generated.map(g => g.cid)).toEqual(['c1']);
     expect(r.skipped).toEqual([{ cid: 'c2', reason: '已经回复过了' }]);
     // 关键：跳过的那条**不该**留下草稿 —— 它注定会被发布闸门拦下
-    expect(views.listDrafts()).toHaveLength(1);
+    expect(views.listDrafts().items).toHaveLength(1);
   }));
 
   it('本地没有的评论报失败，但不影响其余几条', withTempEnv(async ({ comments }) => {
@@ -174,7 +174,7 @@ describe('批量生成 / --cids 指定评论', () => {
       .rejects.toThrow(/固定回复列表里没有可用内容/);
 
     // 整体失败，且没有留下半份草稿
-    expect(views.listDrafts()).toHaveLength(0);
+    expect(views.listDrafts().items).toHaveLength(0);
     const end = made.events.find(e => e[0] === 'end');
     expect(end[1]).toBe('error');
   }));
@@ -192,7 +192,7 @@ describe('批量生成 / --batch', () => {
 
     expect(r.toDraft).toBe(false);
     expect(r.generated).toHaveLength(2);
-    expect(views.listDrafts()).toHaveLength(0);
+    expect(views.listDrafts().items).toHaveLength(0);
   }));
 
   it('排掉我自己发的评论（用 myUid，不再靠猜）', withTempEnv(async ({ comments, vids }) => {

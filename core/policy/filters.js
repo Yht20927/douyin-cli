@@ -127,7 +127,7 @@ function pickEmojiReply(text, filters) {
 /**
  * 判定一条评论该怎么处理。
  *
- * @param {object} comment - { cid, text, uid, is_sticker? }
+ * @param {object} comment - { cid, text, uid, isSticker? }
  * @param {object} [opts]
  * @param {object}   [opts.filters]    - 覆盖 config.filters（测试用）
  * @param {Function} [opts.isReplied]  - (cid) => boolean，缺省不做已回复判定
@@ -163,7 +163,11 @@ function classify(comment, opts = {}) {
   }
 
   // ── 2. 贴纸评论：平台标记最可靠，优先于文本判断 ──
-  if (f.skipSticker && comment && comment.is_sticker) {
+  // 字段名是 isSticker（驼峰）。comments.get() 与 listByVideo() 返回的都是驼峰，
+  // 这里以前读的是 is_sticker —— 永远 undefined，于是"跳过贴纸"这条规则
+  // 在所有路径上 100% 不生效，而且测试也是照着蛇形写的，所以一直全绿。
+  // 同一个坑在 policy/index.js 与 risk-control.js 里都改过，唯独漏了这里。
+  if (f.skipSticker && comment && comment.isSticker) {
     return { action: 'skip', reason: '贴纸评论', signals: [] };
   }
 

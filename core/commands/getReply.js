@@ -16,6 +16,7 @@
 const { getFlag } = require('./helpers');
 const logger = require('../runtime/logger');
 const replySource = require('../reply-source');
+const accounts = require('../memory/accounts');
 
 let memComments = null;
 function commentsModule() {
@@ -133,7 +134,7 @@ const BATCH_LIMIT = 20;
 const MAX_BATCH = 50;
 
 /** 从 SQLite 加载视频的未回复评论（过滤作者自己的评论和已回复的） */
-function loadUnrepliedComments(awemeId, limit = BATCH_LIMIT) {
+function loadUnrepliedComments(awemeId, limit = BATCH_LIMIT, accountUid = null) {
   const cm = commentsModule();
   if (!cm) return [];
   try {
@@ -144,10 +145,17 @@ function loadUnrepliedComments(awemeId, limit = BATCH_LIMIT) {
     // 改造前这里靠一个启发式猜作者 uid（"该视频下评论最多的 uid 且 ≥5 倍于第二名"），
     // 还把猜出来的结果**回写进 videos 表**。这个猜测在"某个粉丝很活跃"的视频上会猜错，
     // 一旦猜错就永久写进库，之后所有依赖 authorUid 的地方都跟着错。
-    // videos.myUid() 是从 `my` 命令拉回来的确定值，直接用它。
-    // 拿不到（还没跑过 my）时不猜 —— 宁可多列出几条自己发的，也不误删别人的评论。
-    let myUid = null;
-    try { myUid = require('../memory/videos').myUid(); } catch (_) {}
+    // 拿不到账号时不猜 —— 宁可多列出几条自己发的，也不误删别人的评论。
+    // 优先用**这条视频自己的归属账号**：我自己的作品里，author_uid 就是那个号。
+    // 别人的视频没有归属（author_uid 是视频作者的，不是我的），
+    // 这时用**当前执行的账号**（由 cmdGetReply 解析后传进来）——
+    // 全局 videos.myUid() 是"作品最多的号"的猜测，两个号时必然有一个是错的。
+    let myUid = accountUid || null;
+    try {
+      const videos = require('../memory/videos');
+      const v = videos.get(awemeId);
+      if (v && v.isMine && v.authorUid) myUid = String(v.authorUid);
+    } catch (_) {}
     const filtered = myUid ? all.filter(c => String(c.uid) !== String(myUid)) : all;
 
     return filtered.slice(0, limit);
@@ -250,6 +258,10 @@ async function cmdGetReply(ctx, args) {
   /** 批量结果是否落进草稿箱。不传则只生成、不落库（CLI 看结果用） */
   const toDraft = args.includes('--to-draft');
 
+  // 这次以哪个号的身份在生成。用**执行者** —— 归属判定（哪些评论是我自己发的）
+  // 必须跟着真正在执行的那个号走，而不是界面以为的那个
+  const accountUid = (await accounts.resolveExecutor(ctx)).uid || null;
+
   ctx.audit.startOperation('getReply', { aweme_id: awemeId, cid, count, persona, batch });
 
   const { ReplyEngine } = require('../reply-engine');
@@ -275,7 +287,7 @@ async function cmdGetReply(ctx, args) {
     // 和它的名字完全不符。
     const wanted = cidsFlag
       ? String(cidsFlag).split(',').map(s => s.trim()).filter(Boolean)
-      : loadUnrepliedComments(awemeId, args.includes('--count') ? count : BATCH_LIMIT).map(c => c.cid);
+      : loadUnrepliedComments(awemeId, args.includes('--count') ? count : BATCH_LIMIT, accountUid).map(c => c.cid);
 
     // 硬上限：逐条生成是一条一次 LLM 调用，误传几百个 cid 会变成几小时的队列任务，
     // 而且中途没法看进度（队列只显示一条任务）。截断并**明说**截断了，

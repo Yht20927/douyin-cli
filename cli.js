@@ -29,9 +29,13 @@ Douyin Comment CLI (Bridge Framework)
 
   node cli.js search <keyword>                搜索视频
   node cli.js get <aweme_id>                  获取评论 (--all --depth N --new --since <ts>)
+                                              --all 全量：逐页拉到底，跨页去重、页间按
+                                              intervals.commentPage(默认 1-3 秒)等待
   node cli.js replies <cid> <aweme_id>        获取回复列表
   node cli.js my                              我的作品
   node cli.js user <sec_user_id | 主页URL>     查看用户作品信息 (--count N --cursor <ts>)
+  node cli.js enrich [aweme_id]               补全视频信息（标题/封面/互动数据）
+                                              (--missing 默认，只补没标题的；--all 全部重抓；--limit N)
   node cli.js post <aweme_id> "内容"           发表评论
   node cli.js post <aweme_id> "回复" --reply-to <cid>
   node cli.js post <aweme_id> "@1179139456380456 内容" --reply-to <cid> --at <uid> <sec_uid>

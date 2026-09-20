@@ -20,14 +20,22 @@ async function cmdSearch(ctx, args) {
   return withAudit(ctx, 'search', { keyword: kw, offset, count }, async () => {
     const expr = `window.__bridge.search('${escapeExpression(kw)}', ${offset}, ${count})`;
     const data = await ctx.loggedCall('search', { keyword: kw, offset, count }, expr);
-    const items = (data.data || []).filter(d => d.aweme_info).map(d => ({
-      aweme_id: d.aweme_info.aweme_id,
-      desc: (d.aweme_info.desc || '').substring(0, 80),
-      author: d.aweme_info.author?.nickname || '',
-      uid: d.aweme_info.author?.uid || '',
-      time: d.aweme_info.create_time || 0,
-      plays: d.aweme_info.statistics?.play_count || 0,
-    }));
+    // 字段只增不减：CLI 的 JSON 契约不变，界面（找视频页）多拿封面与互动数 ——
+    // 没有封面的搜索结果是一列光秃秃的文字，认不出是哪个视频
+    const items = (data.data || []).filter(d => d.aweme_info).map(d => {
+      const a = d.aweme_info;
+      return {
+        aweme_id: a.aweme_id,
+        desc: (a.desc || '').substring(0, 80),
+        author: a.author?.nickname || '',
+        uid: a.author?.uid || '',
+        time: a.create_time || 0,
+        plays: a.statistics?.play_count || 0,
+        likes: a.statistics?.digg_count || 0,
+        comments: a.statistics?.comment_count || 0,
+        cover: a.video?.cover?.url_list?.[0] || a.video?.origin_cover?.url_list?.[0] || '',
+      };
+    });
     return { summary: { count: items.length }, result: { result: items }, output: items };
   });
 }

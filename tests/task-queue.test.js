@@ -321,6 +321,32 @@ describe('进度捕获', () => {
     });
   }));
 
+  // 只把进度写进 task.progress 是不够的：渲染层靠 queue:changed 推送才看得见。
+  // 曾经这里只赋值不 emit，于是**任何不经过 enforceDelay 的长循环**（全量拉取翻页就是）
+  // 界面上的进度条会整个冻住，直到任务结束才跳到 100% —— 而批量生成因为顺带搭了
+  // 每次"等间隔"时 waiting/resumed 事件的便车，看起来是正常的，把这个问题盖住了。
+  it('进度更新会推给订阅者（不只在任务边界推）', withTempEnv({}, async () => {
+    const queue = makeQueue();
+    const events = [];
+    queue.subscribe((p) => events.push(p));
+    await withStub('get', async (ctx) => {
+      ctx.logger.progress({ text: '第 1 页' });
+      await wait(20);
+      ctx.logger.progress({ text: '第 2 页' });
+      await wait(20);
+      return null;
+    }, async () => {
+      queue.enqueue({ command: 'get', argv: ['x'] });
+      await waitIdle(queue);
+    });
+
+    const texts = events.map(e => (e.tasks.find(t => t.command === 'get') || {}).progress)
+      .filter(Boolean).map(p => p.text);
+    // 两次进度都得被推出来，而且第 1 页要在第 2 页之前 —— 顺序反了说明是结束时才补推的
+    expect(texts).toContain('第 1 页');
+    expect(texts.indexOf('第 1 页')).toBeLessThan(texts.indexOf('第 2 页'));
+  }));
+
   it('任务结束后清掉进度（不残留过期信息）', withTempEnv({}, async () => {
     const queue = makeQueue();
     await withStub('get', async (ctx) => {
@@ -402,5 +428,63 @@ describe('停止与恢复', () => {
       await waitIdle(queue);
     });
     expect(ran).toEqual(['1']);
+  }));
+});
+
+// ═══════════════════════════════════════════════════════════
+// front 插队：批量生成要跑十几分钟，紧急发布不该排在它后面。
+// 风控上无额外代价（生成是读+LLM；写间隔闸门在执行时照常生效）。
+// ═══════════════════════════════════════════════════════════
+describe('task-queue: front 插队', withTempEnv({}, () => it('front 任务插到所有 pending 之前执行', async () => {
+  const queue = makeQueue();
+  const ran = [];
+  await withStub('get', async (ctx, argv) => {
+    // 第一个任务故意跑得慢，制造"有任务正在 running"的场景
+    if (argv[0] === 'slow') await wait(300);
+    ran.push(argv[0]);
+  }, async () => {
+    queue.enqueue({ command: 'get', argv: ['slow'] });
+    queue.enqueue({ command: 'get', argv: ['normal-1'] });
+    queue.enqueue({ command: 'get', argv: ['normal-2'] });
+    // 等 slow 真正进入 running —— 插队不允许越过正在跑的任务
+    await wait(60);
+    queue.enqueue({ command: 'get', argv: ['urgent'], front: true });
+    await waitIdle(queue);
+  });
+  expect(ran).toEqual(['slow', 'urgent', 'normal-1', 'normal-2']);
+})));
+
+// ═══════════════════════════════════════════════════════════
+// 写操作的识别
+//
+// 回归背景：命令注册表里叫 `delete-comment`（连字符），而 events 表与
+// policy 的写操作族用的是 `delete_comment`（下划线）。队列此前用
+// `WRITE_COMMANDS.includes(task.command)` 判定，对删除**恒为 false** ——
+// 于是删除不走轮次闸门、也不补 --no-throttle，它的等待跑到了命令内部，
+// 与其他写操作不再协调（两个写操作可能几乎同时发出去）。
+//
+// 这里断言的是**行为**（argv 里有没有那个参数），而不是直接测辅助函数 ——
+// 后者只证明函数对，证明不了队列真的用了它。
+// ═══════════════════════════════════════════════════════════
+describe('写操作的识别', () => {
+  it('delete-comment 被当成写操作（补 --no-throttle）', withTempEnv({}, async () => {
+    let seen = null;
+    await withStub('delete-comment', async (ctx, argv) => { seen = argv.slice(); }, async () => {
+      const queue = makeQueue();
+      queue.enqueue({ command: 'delete-comment', argv: ['cid1'] });
+      await waitIdle(queue);
+    });
+    // 只有认成写操作时队列才会补这个参数（节奏由队列统一安排，命令内不必再等）
+    expect(seen).toEqual(['cid1', '--no-throttle']);
+  }));
+
+  it('读操作不补 --no-throttle（别把判定放宽成"全都算写"）', withTempEnv({}, async () => {
+    let seen = null;
+    await withStub('get', async (ctx, argv) => { seen = argv.slice(); }, async () => {
+      const queue = makeQueue();
+      queue.enqueue({ command: 'get', argv: ['v1'] });
+      await waitIdle(queue);
+    });
+    expect(seen).toEqual(['v1']);
   }));
 });

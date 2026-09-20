@@ -1,7 +1,9 @@
 // lib/commands/dm.js — 抖音私信收发
 
-const { escapeExpression, getFlag } = require('./helpers');
+const { escapeExpression, getFlag, throttleOpts } = require('./helpers');
 const { safeSerialize } = require('../shared/serialize');
+const riskControl = require('../risk-control');
+const policy = require('../policy').getPolicy();
 const logger = require('../runtime/logger');
 
 /**
@@ -31,6 +33,18 @@ async function cmdDM(ctx, args) {
 
     if (!userId) throw new Error('用法: node cli.js dm send <user_id> <text>');
     if (!text) throw new Error('消息内容不能为空');
+
+    // 发私信是**写操作**，走与 post / like / delete-comment 同一套闸门。
+    //
+    // 此前这里什么闸门都没有：dm 不在 policy 的 WRITE_COMMANDS 里，
+    // 命令内部也没调 assertWritable / enforceDelay —— 也就是说私信可以
+    // 以任意速度连发，而这是这个工具唯一一件"用它就是为了不触发风控"的事。
+    // 接进界面之前必须先补上：界面上点一下就发，比命令行更容易连点。
+    await policy.assertWritable({}, {
+      signal: ctx.signal,
+      onWait: ({ waitMs, reason }) => logger.info(`[dm.send] ${reason}，等待 ${Math.ceil(waitMs / 1000)}s…`),
+    });
+    await riskControl.enforceDelay('write', throttleOpts(ctx, args));
 
     ctx.audit.startOperation('dm.send', { user_id: userId, text });
 

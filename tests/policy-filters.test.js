@@ -38,9 +38,17 @@ describe('决策树：表情与贴纸', () => {
   });
 
   it('贴纸评论跳过（平台标记优先于文本判断）', () => {
-    const r = f.classify({ cid: 'c', uid: 'u', text: '好', is_sticker: true });
+    // 字段名是驼峰 isSticker —— 与 comments.get() / listByVideo() 返回的一致。
+    // 这条断言以前写的是 is_sticker，于是"规则永不生效"和"测试全绿"同时成立：
+    // 测试喂的是实现读的那个键，而真实调用方喂的是另一个。
+    const r = f.classify({ cid: 'c', uid: 'u', text: '这个怎么做的', isSticker: true });
     expect(r.action).toBe('skip');
     expect(r.reason).toContain('贴纸');
+  });
+
+  it('蛇形 is_sticker 不算贴纸（钉住字段名，两侧都不能再写错）', () => {
+    const r = f.classify({ cid: 'c', uid: 'u', text: '这个怎么做的', is_sticker: true });
+    expect(r.reason).not.toContain('贴纸');
   });
 
   it('关闭表情回复后，纯表情转为跳过', () => {

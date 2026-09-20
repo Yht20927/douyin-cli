@@ -121,8 +121,8 @@ describe('P2: users repo', () => {
 describe('P2: videos repo', () => {
   it('markGet 累加 totalCommentsSeen + 维护 last_get_ts', withTempProject(async () => {
     const videos = require('../core/memory/videos');
-    videos.markGet('v1', 5, 1000);
-    videos.markGet('v1', 3, 2000);
+    videos.markGet('v1', { commentsSeenDelta: 5, ts: 1000 });
+    videos.markGet('v1', { commentsSeenDelta: 3, ts: 2000 });
     const v = videos.get('v1');
     expect(v.totalCommentsSeen).toBe(8);
     expect(v.lastGetTs).toBe(2000);
@@ -131,7 +131,7 @@ describe('P2: videos repo', () => {
   it('markPost 维护 last_post_ts，is_mine 一旦 true 不回退', withTempProject(async () => {
     const videos = require('../core/memory/videos');
     videos.upsert({ awemeId: 'v1', isMine: true, title: 'My Video' });
-    videos.markPost('v1', 5000);
+    videos.markPost('v1', { ts: 5000 });
     videos.upsert({ awemeId: 'v1', isMine: false }); // 不应回退
     const v = videos.get('v1');
     expect(v.isMine).toBe(true);

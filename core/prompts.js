@@ -257,12 +257,95 @@ function invalidateCache() {
   }
 }
 
+/** 提取模板中的所有占位符 */
+function extractPlaceholders(text) {
+  const matches = String(text).match(/\{\{(\w+)\}\}/g) || [];
+  return [...new Set(matches.map(m => m.replace(/^\{\{|\}\}$/g, '')))];
+}
+
+/**
+ * 完整的模板格式校验（**不是**上面那个保存时的最小检查）。
+ *
+ * 从 `commands/validatePrompts.js` 搬过来的：那边原来自己实现了一份，
+ * 而这里已经有一份"保存时该拦的最小检查"。两份迟早会漂 —— 用户会看到
+ * "保存时说没问题、校验时说有问题"。现在只有一份实现，命令与界面都调它。
+ *
+ * @param {string} [only] - 只校验这一个模板名；不传则全部
+ * @returns {{templates:Array<{file:string,severity:'error'|'warn'|'info'|'ok',message:string}>,
+ *   hasError:boolean, count:number}}
+ */
+function validateAll(only) {
+  const available = paths.listPromptFiles().filter(f => !f.partial);
+  let files;
+  if (only) {
+    assertSafeName(only);
+    // available 是实际扫出来的，在里面就说明两个目录里至少有一个存在
+    if (!available.some(f => f.name === only)) throw new Error(`模板文件不存在: ${only}`);
+    files = [paths.resolvePrompt(only).path];
+  } else {
+    files = available.map(f => paths.resolvePrompt(f.name).path);
+  }
+
+  const templates = [];
+  for (const fp of files) templates.push(...validateTemplate(fp));
+  return {
+    templates,
+    hasError: templates.some(t => t.severity === 'error'),
+    count: new Set(templates.map(t => t.file)).size,
+  };
+}
+
+/** 校验单个模板文件（validateAll 的内部实现，也单独导出供测试） */
+function validateTemplate(filePath) {
+  const name = path.basename(filePath);
+  const issues = [];
+
+  let raw;
+  try { raw = fs.readFileSync(filePath, 'utf8'); }
+  catch (e) { return [{ file: name, severity: 'error', message: `无法读取: ${e.message}` }]; }
+
+  const hasSystem = raw.includes('=== SYSTEM ===');
+  const hasUser = raw.includes('=== USER ===');
+
+  if (!hasSystem && !hasUser) {
+    // 无分隔符的模板：整体作为 user prompt
+    if (raw.trim().length === 0) issues.push({ file: name, severity: 'error', message: '模板为空' });
+  } else if (!hasSystem) {
+    issues.push({ file: name, severity: 'warn', message: '缺少 === SYSTEM === 分隔符（将整体作为 user prompt）' });
+  } else if (!hasUser) {
+    issues.push({ file: name, severity: 'warn', message: '缺少 === USER === 分隔符' });
+  }
+
+  const placeholders = extractPlaceholders(raw);
+  if (placeholders.length === 0) {
+    issues.push({ file: name, severity: 'info', message: '模板无占位符（可能是静态模板）' });
+  }
+
+  const knownPlaceholders = [
+    'PERSONA_PROMPT', 'VIDEO_BLOCK', 'NOTE_BLOCK', 'IMAGE_HINT',
+    'SCOPED_BLOCK', 'COMMENT_LIST_JSON', 'COMMENT_TEXT', 'COMMENT_TAGS',
+    'USER_PROFILE', 'THREAD_CONTEXT', 'PERSONA_HINT', 'PERSONA_EXAMPLES',
+    'PERSONA_NAME', 'COUNT_HINT', 'COUNT', 'STRATEGY', 'BATCH_COUNT',
+    'STRATEGY_BLOCK',
+  ];
+  const unknown = placeholders.filter(p => !knownPlaceholders.includes(p));
+  // 这个是 info 不是 error：占位符可能是新的、由代码再填的，
+  // 拦下来会让"加了个新占位符"变成一件必须改这里才能做的事
+  if (unknown.length > 0) {
+    issues.push({ file: name, severity: 'info', message: `非标准占位符: ${unknown.join(', ')}` });
+  }
+
+  return issues.length > 0 ? issues : [{ file: name, severity: 'ok', message: '格式正确' }];
+}
+
 module.exports = {
   list,
   read,
   save,
   resetToDefault,
   validate,
+  validateAll,
+  validateTemplate,
   listBackups,
   restoreBackup,
   invalidateCache,

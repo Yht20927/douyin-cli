@@ -35,6 +35,26 @@ function corpusModule() { return require('../memory/corpus'); }
 
 /** 写操作命令族（与 risk-control 的 WRITE_COMMANDS 保持一致） */
 const WRITE_COMMANDS = ['post', 'like', 'unlike', 'delete_comment'];
+
+/**
+ * "这个命令算不算写操作"。
+ *
+ * ⚠️ 存在的理由：命令注册表里叫 `delete-comment`（连字符，命令行风格），
+ * 而 events 表里记的是 `delete_comment`（下划线，与 core/audit.js 的约定一致）。
+ * 两套拼写并存，于是 `WRITE_COMMANDS.includes(task.command)` 对删除**恒为 false**
+ * —— 队列不会给删除排轮次、也不会补 --no-throttle，删除的等待跑到命令内部去了，
+ * 与其他写操作**不再协调**（两个写操作可能几乎同时发出去）。
+ * 这类"名字差一个字符、判定恒为假"的毛病在这个项目里出现过好几次，
+ * 所以这里统一成一处归一化，而不是在各调用点各写一遍 `includes(a) || includes(b)`。
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isWriteCommand(name) {
+  if (!name) return false;
+  const normalized = String(name).replace(/-/g, '_');
+  return WRITE_COMMANDS.includes(normalized);
+}
 /** 真正算作"回复"的写命令。maxPerVideoPerRound / maxPerUidPerRound 只数这些 */
 const REPLY_COMMANDS = ['post'];
 
@@ -89,6 +109,12 @@ function createPolicyEngine(opts = {}) {
 
   /**
    * 读写操作时间线。
+   *
+   * ⚠️ 读不到时**抛出**，不返回 []。
+   * 原先这里 catch 成 []，于是"数据库坏了"与"今天一条都没发"得出同一个结果 ——
+   * beforeWrite 据此判定配额全空、enforceDelay 判定距上次写 0 秒，整套限流静默失效。
+   * 降级成 [] 在这个模块里是**危险方向**，所以留给调用方显式决定（见 queryWritesSafe）。
+   *
    * @param {object} [o]
    * @param {number} [o.since]  - 起始时间戳
    * @param {'success'|'error'} [o.status]
@@ -97,17 +123,24 @@ function createPolicyEngine(opts = {}) {
    * @returns {Array<{ts:number}>}
    */
   function queryWrites(o = {}) {
+    const f = { commands: o.commands || WRITE_COMMANDS, platform: 'douyin' };
+    if (o.since !== undefined) f.since = o.since;
+    if (o.status) f.status = o.status;
+    if (o.uid) f.uid = String(o.uid);
+    if (o.awemeId) f.awemeId = String(o.awemeId);
+    return eventsModule().queryStrict(f, { limit: MAX_ROWS, order: 'asc' });
+  }
+
+  /**
+   * queryWrites 的安全版：把"读不到"如实报成 failed=true，交调用方决定拦还是放。
+   * rows 恒为数组，failed 时**不得**拿它的长度当配额依据。
+   */
+  function queryWritesSafe(o = {}) {
     try {
-      const f = { commands: o.commands || WRITE_COMMANDS, platform: 'douyin' };
-      if (o.since !== undefined) f.since = o.since;
-      if (o.status) f.status = o.status;
-      if (o.uid) f.uid = String(o.uid);
-      if (o.awemeId) f.awemeId = String(o.awemeId);
-      return eventsModule().query(f, { limit: MAX_ROWS, order: 'asc' });
+      return { rows: queryWrites(o), failed: false };
     } catch (e) {
-      // events 读不到不该让整个应用不能用 —— 降级为"没有记录"
-      logger.debug('[policy] 读取写操作记录失败: ' + e.message);
-      return [];
+      logger.warn('[policy] 读不到写操作记录: ' + e.message);
+      return { rows: [], failed: true };
     }
   }
 
@@ -125,19 +158,33 @@ function createPolicyEngine(opts = {}) {
     const t0 = todayStart();
     const ts = now();
 
-    const todayWrites = queryWrites({ since: t0, status: 'success' });
+    // 三处计数都来自 events 表。任何一处读不到，就把原因记进 readError：
+    // 下面的数字会变成"0 条 / 没熔断 / 没风控"，那是假的绿灯 ——
+    // 真正的判定在 beforeWrite 里，见到 readError 就直接拒绝写入。
+    let readError = null;
+
+    const todayRead = queryWritesSafe({ since: t0, status: 'success' });
+    if (todayRead.failed) readError = readError || '今日写操作记录';
+    const todayWrites = todayRead.rows;
     const timeline = todayWrites.map(r => r.ts);
     const rounds = summarizeRounds(timeline, cfg.roundCooldownSec * 1000);
 
     // 熔断：窗口内失败的写操作次数
     const cb = cfg.circuitBreaker || {};
     const windowMs = cb.windowMs || 600000;
-    const recentFails = queryWrites({ since: ts - windowMs, status: 'error' });
+    const failRead = queryWritesSafe({ since: ts - windowMs, status: 'error' });
+    if (failRead.failed) readError = readError || '近期失败记录';
+    const recentFails = failRead.rows;
     const circuitOpen = recentFails.length >= (cb.failThreshold || 3);
 
     // 风控熔断：窗口内是否出现过风控码
     const riskWindowMs = (cfg.riskCooldownMin || 30) * 60 * 1000;
-    const riskBlocked = riskControl.hasRecentRiskBlock(riskWindowMs);
+    let riskBlocked = false;
+    try {
+      riskBlocked = riskControl.hasRecentRiskBlock(riskWindowMs);
+    } catch (e) {
+      readError = readError || '风控拦截记录';
+    }
 
     // 单轮触顶后的冷却剩余时间
     const cooldownMs = cfg.roundCooldownSec * 1000;
@@ -154,13 +201,20 @@ function createPolicyEngine(opts = {}) {
     const startingNewRound = roundFull || rounds.count === 0;
 
     let warning = null;
-    if (roundsUsed > (cfg.riskEscalateAfterRounds || 2)) {
+    if (readError) {
+      warning = `策略数据不可读（${readError}），已停止写操作`;
+    } else if (roundsUsed > (cfg.riskEscalateAfterRounds || 2)) {
       warning = `本日已进行 ${roundsUsed} 轮，风控概率显著上升，建议今天不再写`;
     } else if (roundFull && roundsUsed >= (cfg.dailyRounds || 3)) {
       warning = `本日轮次已用尽（${roundsUsed}/${cfg.dailyRounds}）`;
     }
 
     return {
+      /**
+       * 计数读不到时的原因（null = 正常）。
+       * 非空时下面那些数字**不可信**（都是 0），且 beforeWrite 会拒绝一切写操作。
+       */
+      readError,
       // 每日总量
       dailyWriteQuota: cfg.dailyWriteQuota,
       writesToday: todayWrites.length,
@@ -216,6 +270,19 @@ function createPolicyEngine(opts = {}) {
     let cooldownWaitMs = 0;   // 轮次冷却（assertWritable 负责等）
     let cadenceWaitMs = 0;    // 写操作最小间隔（risk-control.enforceDelay 负责等）
     let waitMs = 0;           // 两者取大，保持对既有调用方的兼容
+
+    // ── 计数读不到：状态未知本身就是最硬的下线理由 ──
+    //
+    // 放在最前面，且下面两处"单轮内细分配额"在状态未知时不再尝试统计 ——
+    // 读不到记录时那些数必然全是 0，继续判下去等于自己给自己发通行证。
+    // 宁可让用户看见一句"读不到运营记录"去修数据库，也不要他在不自知的情况下超限连发。
+    const stateUnknown = !!s.readError;
+    if (stateUnknown) {
+      blockers.push({
+        reason: `读不到运营记录（${s.readError}），无法确认今日配额与轮次 —— 为避免超限发布，已停止写操作。请检查 storage/douyin.db 能否正常读写`,
+        action: 'stop',
+      });
+    }
 
     // ── 风控熔断：优先级最高，命中就是全局停写 ──
     if (s.risk.blocked) {
@@ -277,29 +344,33 @@ function createPolicyEngine(opts = {}) {
     waitMs = Math.max(cooldownWaitMs, cadenceWaitMs);
 
     // ── 单轮内细分的配额 ──
-    if (meta.uid) {
-      const used = queryWrites({ since: s.roundsToday ? currentRoundStart() : todayStart(), status: 'success', uid: meta.uid }).length;
-      if (used >= cfg.maxPerUidPerRound) {
+    if (!stateUnknown && meta.uid) {
+      const r = queryWritesSafe({ since: s.roundsToday ? currentRoundStart() : todayStart(), status: 'success', uid: meta.uid });
+      if (r.failed) {
+        blockers.push({ reason: '无法确认该用户本轮已被回复几次，已拒绝本次写入', action: 'stop' });
+      } else if (r.rows.length >= cfg.maxPerUidPerRound) {
         blockers.push({
-          reason: `本轮已回复过该用户 ${used} 次（上限 ${cfg.maxPerUidPerRound}）`,
+          reason: `本轮已回复过该用户 ${r.rows.length} 次（上限 ${cfg.maxPerUidPerRound}）`,
           action: 'stop',
         });
       }
     }
-    if (meta.awemeId) {
+    if (!stateUnknown && meta.awemeId) {
       // 只数**回复类**写操作。改造前把整个写命令族（含 like/unlike/delete-comment）
       // 都算进来，而 like 也带 aweme_id —— 于是在同一个视频上反复点赞 30 次之后，
       // 发任何一条回复都会被拦下，提示"本轮在该视频下已回复 30 条"，
       // 而实际上一条回复都没发过。
-      const used = queryWrites({
+      const r = queryWritesSafe({
         since: s.roundsToday ? currentRoundStart() : todayStart(),
         status: 'success',
         awemeId: meta.awemeId,
         commands: REPLY_COMMANDS,
-      }).length;
-      if (used >= cfg.maxPerVideoPerRound) {
+      });
+      if (r.failed) {
+        blockers.push({ reason: '无法确认该视频本轮已被回复几条，已拒绝本次写入', action: 'stop' });
+      } else if (r.rows.length >= cfg.maxPerVideoPerRound) {
         blockers.push({
-          reason: `本轮在该视频下已回复 ${used} 条（上限 ${cfg.maxPerVideoPerRound}）`,
+          reason: `本轮在该视频下已回复 ${r.rows.length} 条（上限 ${cfg.maxPerVideoPerRound}）`,
           action: 'stop',
         });
       }
@@ -387,8 +458,11 @@ function createPolicyEngine(opts = {}) {
   /** 当前轮次的起始时间（无轮次时退化为今日零点） */
   function currentRoundStart() {
     const cfg = p();
-    const timeline = queryWrites({ since: todayStart(), status: 'success' }).map(r => r.ts);
-    const rounds = summarizeRounds(timeline, cfg.roundCooldownSec * 1000);
+    // 读不到就退化成今日零点：窗口**变宽** → 数出来的条数只多不少 → 拦得更严。
+    // 反过来（退化成"刚才"、窗口近乎为空）会把配额判成 0，那是危险的方向。
+    const { rows, failed } = queryWritesSafe({ since: todayStart(), status: 'success' });
+    if (failed) return todayStart();
+    const rounds = summarizeRounds(rows.map(r => r.ts), cfg.roundCooldownSec * 1000);
     return rounds.currentStartedAt || todayStart();
   }
 
@@ -481,11 +555,16 @@ function createPolicyEngine(opts = {}) {
 
   /**
    * 判定一条评论该怎么处理（已自动接上"是否已回复过"、用户分级、"是不是我自己发的"）。
-   * @param {object} comment - { cid, text, uid, is_sticker? }
+   * @param {object} comment - { cid, text, uid, isSticker? }（字段名与 comments.get() 的返回一致）
    */
-  function classify(comment) {
-    let myUid = null;
-    try { myUid = require('../memory/videos').myUid(); } catch (e) { /* 拿不到就跳过该判断 */ }
+  function classify(comment, opts = {}) {
+    // 「我」的判定基准，优先级：调用方给的（命令层能拿到执行账号）→
+    // 最近一次解析出的执行账号 → 旧的全局猜测。
+    // 这里没法 await（判定树是同步的），所以用 accounts 记的那一份缓存 ——
+    // 全局猜测（"作品数最多的号"）在两个账号时必然有一个是错的。
+    let myUid = opts.myUid || null;
+    if (!myUid) { try { myUid = require('../memory/accounts').lastExecutorUid(); } catch (e) { /* 忽略 */ } }
+    if (!myUid) { try { myUid = require('../memory/videos').myUid(); } catch (e) { /* 拿不到就跳过该判断 */ } }
     return filters.classify(comment, { isReplied, userTier, myUid });
   }
 
@@ -565,4 +644,5 @@ module.exports = {
   getPolicy,
   resetPolicy,
   WRITE_COMMANDS,
+  isWriteCommand,
 };

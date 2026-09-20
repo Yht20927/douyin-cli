@@ -6,6 +6,8 @@ module.exports = {
   replies: require('./replies'),
   my: require('./my'),
   user: require('./user'),
+  // 补全视频信息（标题/封面/互动数据）——「运营对象」列表靠它才有标题
+  enrich: require('./enrich'),
   post: require('./post'),
   'upload-image': require('./upload-image'),
   like: require('./like'),

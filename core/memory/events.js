@@ -51,57 +51,78 @@ function append(evt) {
     });
     return info.lastInsertRowid;
   } catch (e) {
-    // SQLite 出问题不应阻塞 CLI，audit.json 仍是真实之源
-    logger.debug('[events.append] failed: ' + e.message);
+    // SQLite 出问题不应阻塞 CLI，audit.json 仍是真实之源。
+    // 但必须 warn：policy 的每日配额/轮次/单用户计数全从这里派生，
+    // 一条没记上 = 那几个数偏小 = 闸门比配置的更宽松。debug 级默认是被丢弃的。
+    logger.warn('[events.append] 写入事件失败，今日计数会偏小（风控闸门随之放宽）: ' + e.message);
     return null;
   }
 }
 
 /**
- * 通用查询。filters 任一字段为 null/undefined 即跳过该条件。
+ * 通用查询的实现。读失败时抛出 —— 由下面的 query / queryStrict 决定吞还是传。
+ */
+function _query(filters = {}, opts = {}) {
+  const db = getDb();
+  const where = [];
+  const params = {};
+  if (filters.command)   { where.push('command = @command');     params.command = filters.command; }
+  // 命令集合过滤：PolicyEngine 要按"写操作族"统计（post/like/unlike/delete_comment），
+  // 用单个 command 过滤拿不到，逐个查又要跑好几趟
+  if (Array.isArray(filters.commands) && filters.commands.length) {
+    const keys = filters.commands.map((c, i) => {
+      params[`cmd${i}`] = c;
+      return `@cmd${i}`;
+    });
+    where.push(`command IN (${keys.join(',')})`);
+  }
+  if (filters.awemeId)   { where.push('aweme_id = @awemeId');    params.awemeId = filters.awemeId; }
+  if (filters.uid)       { where.push('uid = @uid');             params.uid = filters.uid; }
+  if (filters.status)    { where.push('status = @status');       params.status = filters.status; }
+  if (filters.sessionId) { where.push('session_id = @sessionId');params.sessionId = filters.sessionId; }
+  if (filters.since)     { where.push('ts >= @since');           params.since = filters.since; }
+  if (filters.until)     { where.push('ts <= @until');           params.until = filters.until; }
+  if (filters.platform)  { where.push('platform = @platform');   params.platform = filters.platform; }
+
+  const order = opts.order === 'asc' ? 'ASC' : 'DESC';
+  const limit = Math.max(1, Math.min(opts.limit || 100, 100000));
+  const sql = `
+    SELECT id, ts, session_id, command, status, duration_ms,
+           aweme_id, uid, cid, args_json, summary_json, error, result_path, platform
+    FROM events
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY ts ${order}, id ${order}
+    LIMIT ${limit}
+  `;
+  const rows = db.prepare(sql).all(params);
+  return rows.map(rowToEvent);
+}
+
+/**
+ * 通用查询。读不到时降级为 []。
+ *
+ * 只给"少显示几条也无所谓"的读者用（界面、诊断页）。**风控计数不要用这个** ——
+ * 那里把"读不到"当成"今天还没发过"，等于把限流器关掉。
+ *
  * @param {object} filters - { command, awemeId, uid, status, since, until, sessionId }
  * @param {object} opts    - { limit=100, order='asc'|'desc' (默认 desc) }
  * @returns {Array<object>} 反序列化后的事件数组（args/summary 为对象）
  */
 function query(filters = {}, opts = {}) {
   try {
-    const db = getDb();
-    const where = [];
-    const params = {};
-    if (filters.command)   { where.push('command = @command');     params.command = filters.command; }
-    // 命令集合过滤：PolicyEngine 要按"写操作族"统计（post/like/unlike/delete_comment），
-    // 用单个 command 过滤拿不到，逐个查又要跑好几趟
-    if (Array.isArray(filters.commands) && filters.commands.length) {
-      const keys = filters.commands.map((c, i) => {
-        params[`cmd${i}`] = c;
-        return `@cmd${i}`;
-      });
-      where.push(`command IN (${keys.join(',')})`);
-    }
-    if (filters.awemeId)   { where.push('aweme_id = @awemeId');    params.awemeId = filters.awemeId; }
-    if (filters.uid)       { where.push('uid = @uid');             params.uid = filters.uid; }
-    if (filters.status)    { where.push('status = @status');       params.status = filters.status; }
-    if (filters.sessionId) { where.push('session_id = @sessionId');params.sessionId = filters.sessionId; }
-    if (filters.since)     { where.push('ts >= @since');           params.since = filters.since; }
-    if (filters.until)     { where.push('ts <= @until');           params.until = filters.until; }
-    if (filters.platform)  { where.push('platform = @platform');   params.platform = filters.platform; }
-
-    const order = opts.order === 'asc' ? 'ASC' : 'DESC';
-    const limit = Math.max(1, Math.min(opts.limit || 100, 100000));
-    const sql = `
-      SELECT id, ts, session_id, command, status, duration_ms,
-             aweme_id, uid, cid, args_json, summary_json, error, result_path, platform
-      FROM events
-      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY ts ${order}, id ${order}
-      LIMIT ${limit}
-    `;
-    const rows = db.prepare(sql).all(params);
-    return rows.map(rowToEvent);
+    return _query(filters, opts);
   } catch (e) {
     logger.debug('[events.query] failed: ' + e.message);
     return [];
   }
+}
+
+/**
+ * 与 query 完全相同的查询，但读失败时**抛出**。
+ * 供 core/policy 与 core/risk-control 的闸门使用：它们必须能区分"没有记录"和"读不到"。
+ */
+function queryStrict(filters = {}, opts = {}) {
+  return _query(filters, opts);
 }
 
 /**
@@ -120,6 +141,59 @@ function findLastFetchTime(awemeId) {
   } catch (e) {
     logger.debug('[events.findLastFetchTime] failed: ' + e.message);
     return null;
+  }
+}
+
+/**
+ * 按命令聚合：跑了多少次、失败多少次、平均耗时多少。
+ *
+ * 为什么不让调用方用 query() 拿全部行再自己数：events 表是我们唯一一张
+ * **只增不减**的表（cleanup 只按 TTL 清），一天几十上百行，拉全量到渲染层
+ * 再聚合纯属浪费 —— 而且 query() 的 limit 上限是 10 万行，
+ * 拿它当"统计"用迟早会静默截断（截断了还照样得出一个看起来精确的百分比）。
+ *
+ * 只统计 status='success' 与 'error'。`running` 是开始执行时写的那一行，
+ * 它还没有结果，算进分母会把成功率压低 —— 一个跑了一半的任务不该被算作失败。
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.since] - 毫秒时间戳（含）
+ * @returns {Array<{command:string,total:number,errors:number,ok:number,
+ *   successRate:number|null,avgMs:number|null}>}
+ *   按次数降序。successRate / avgMs 在样本为 0 时为 null —— 界面据此显示「—」
+ *   而不是显示 0%（"一次都没跑过"和"跑了全都失败"是两回事）。
+ */
+function commandStats(opts = {}) {
+  try {
+    const db = getDb();
+    const params = { };
+    let where = "status IN ('success', 'error')";
+    if (opts.since) { where += ' AND ts >= @since'; params.since = opts.since; }
+    const rows = db.prepare(`
+      SELECT command,
+             count(*) AS total,
+             sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
+             avg(CASE WHEN duration_ms IS NOT NULL THEN duration_ms END) AS avg_ms
+      FROM events
+      WHERE ${where}
+      GROUP BY command
+      ORDER BY total DESC
+    `).all(params);
+
+    return rows.map((r) => {
+      const total = r.total || 0;
+      const errors = r.errors || 0;
+      return {
+        command: r.command,
+        total,
+        errors,
+        ok: total - errors,
+        successRate: total > 0 ? (total - errors) / total : null,
+        avgMs: r.avg_ms != null ? Math.round(r.avg_ms) : null,
+      };
+    });
+  } catch (e) {
+    logger.debug('[events.commandStats] failed: ' + e.message);
+    return [];
   }
 }
 
@@ -188,4 +262,4 @@ function safeParse(s) {
   try { return JSON.parse(s); } catch (e) { return null; }
 }
 
-module.exports = { append, query, findLastFetchTime, count, cleanupBefore };
+module.exports = { append, query, queryStrict, findLastFetchTime, count, commandStats, cleanupBefore };

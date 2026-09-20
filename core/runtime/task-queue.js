@@ -25,7 +25,7 @@ const { randomUUID } = require('crypto');
 const loggerModule = require('./logger');
 const { sleepAbortable, isAbortError } = require('./abort');
 const { runCommand, describeError } = require('./run-command');
-const { getPolicy, WRITE_COMMANDS } = require('../policy');
+const { getPolicy, isWriteCommand } = require('../policy');
 
 /** 任务记录保留上限（避免长时间运行后内存无限增长） */
 const MAX_HISTORY = 200;
@@ -141,6 +141,11 @@ function createTaskQueue(opts = {}) {
    * @param {string[]} [spec.argv] - 参数（不含命令名）
    * @param {string} [spec.label]  - 界面上显示的名字，缺省用命令名
    * @param {object} [spec.meta]   - 传给 PolicyEngine 的上下文（uid / awemeId / cid / text）
+   * @param {boolean} [spec.front] - 插到所有待执行任务**之前**。
+   *   用途：批量生成几十条要跑十几分钟，用户此刻想发一条回复不该排在它后面。
+   *   风控上没有额外代价 —— 批量生成是读+LLM，不发写请求；写与写之间本来
+   *   就有间隔闸门（policy.beforeWrite）在执行时兜底，插队不会提高请求密度。
+   *   正在跑/在等待中的任务仍然在它前面，插队只影响还没开始的。
    * @returns {string} taskId
    */
   function enqueue(spec = {}) {
@@ -164,12 +169,20 @@ function createTaskQueue(opts = {}) {
       _abort: null,
     };
 
-    tasks.push(task);
+    // front 插队：放到第一个 pending 之前；没有 pending（队列只剩历史或全在跑）
+    // 时等价于追加。正在跑的不在插队范围内 —— 那是打断，不是插队。
+    if (spec.front) {
+      const idx = tasks.findIndex(t => t.status === 'pending');
+      if (idx === -1) tasks.push(task);
+      else tasks.splice(idx, 0, task);
+    } else {
+      tasks.push(task);
+    }
     byId.set(task.id, task);
     // 历史裁剪：只保留最近 MAX_HISTORY 条**已结束**的任务
     pruneHistory();
 
-    rootLogger.info(`[queue] 入队 ${task.label}（${task.command}）`);
+    rootLogger.info(`[queue] 入队 ${task.label}（${task.command}）${spec.front ? ' [插队]' : ''}`);
     emit('enqueued');
     drain();
     return task.id;
@@ -256,7 +269,9 @@ function createTaskQueue(opts = {}) {
     task.status = 'running';
     emit('started');
 
-    const isWrite = WRITE_COMMANDS.includes(task.command);
+    // 用归一化判定，不用 WRITE_COMMANDS.includes —— 后者对 `delete-comment`
+    // 恒为 false（注册表是连字符、events 里是下划线），见 policy.isWriteCommand
+    const isWrite = isWriteCommand(task.command);
 
     // ── ① 策略判定与节奏等待（只有写操作需要）──
     if (isWrite) {
@@ -271,13 +286,22 @@ function createTaskQueue(opts = {}) {
     if (isWrite && !argv.includes('--no-throttle')) argv.push('--no-throttle');
 
     // 进度捕获：给这个任务挂一个临时 sink，命令里的 logger.progress 会落到 task.progress
+    // 进度一落盘就推一次。
+    //
+    // ⚠️ 这一行是补的：此前 write() 只改 `task.progress` 而不 emit，于是渲染层
+    // 根本收不到进度 —— `queue:changed` 只在入队/开始/等待/恢复/结束这些**边界**上发。
+    // 批量生成之所以看起来进度在动，是搭了每次"等间隔"时 waiting/resumed 事件的便车；
+    // 任何不经过 enforceDelay 的长循环（比如全量拉取的翻页）进度条会整个冻住，
+    // 直到任务结束才跳到 100%。
     const progressSink = {
       name: 'task-progress',
       write(rec) {
         if (rec.kind === 'progress') {
           task.progress = { text: rec.msg, ...(rec.meta || {}) };
+          emit('progress');
         } else if (rec.kind === 'phase') {
           task.progress = { text: rec.msg, phase: true };
+          emit('progress');
         }
       },
     };
