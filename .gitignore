@@ -17,10 +17,13 @@ downloads/
 # 运行时产物
 *.log
 *.bak
+.tray-hint-shown
 
 # 抓包样本（含真实用户数据，不入库）
 请求.txt
 响应.txt
+# .har 里带真实 cookie 与 authorization 头，同样绝不入库
+*.har
 
 # 崩溃堆栈转储
 *.stackdump

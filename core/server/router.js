@@ -1,11 +1,17 @@
 // lib/server/router.js — HTTP API 路由（/call, /status, /health）
 //
+// 通道只有一条：**HTTP 长轮询**。原先还有一条 WebSocket 通道（core/server/ws-hub.js），
+// 已连同协议一起删除 —— 油猴脚本从来只用长轮询（它内部的 WebSocket 是连抖音原生 IM 的），
+// 而那条 WS 通道既无鉴权（hello 不校验 token）、又无来源校验，任何网页里的 JS
+// 都能把自己注册成"douyin.com 的连接"，从而收到发布表达式的原文并回一份假结果。
+// 一扇没有正当用户、却向任意来源开着的门，留着就只有风险。
+//
 // 认证：/api/call, /api/connect, /api/poll, /api/result 需要 token
 //       /api/health, /api/status 公开（只读监控）
 // CORS：仅允许 localhost 来源
 
 const { randomUUID } = require('crypto');
-const { validateCallRequest } = require('../shared/protocol');
+const { validateCallRequest, normalizeAccount } = require('../shared/protocol');
 const { safeSerialize } = require('../shared/serialize');
 const logger = require('../runtime/logger');
 
@@ -21,13 +27,11 @@ class Router {
   /**
    * @param {object} options
    * @param {import('./registry').ConnectionRegistry} options.registry
-   * @param {import('./ws-hub').WebSocketHub} options.wsHub
    * @param {number} options.requestTimeout
    * @param {string} options.token - 访问令牌
    */
   constructor(options) {
     this.registry = options.registry;
-    this.wsHub = options.wsHub;
     this.requestTimeout = options.requestTimeout || 30000;
     this.token = options.token || '';
     // HTTP 请求体上限（字节）。抖音搜索结果等大响应可能远超 1MB，
@@ -41,21 +45,6 @@ class Router {
     this._pollQueue = new Map();
     // HTTP 轮询等待者：site → [{ res, timer }]
     this._pollWaiters = new Map();
-
-    // 监听 ws-hub 的 result 事件
-    this.wsHub.on('result', (msg) => {
-      const pending = this._pending.get(msg.id);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this._pending.delete(msg.id);
-
-        if (msg.error) {
-          pending.reject(new Error(msg.error));
-        } else {
-          pending.resolve(msg.value);
-        }
-      }
-    });
   }
 
   /**
@@ -72,31 +61,42 @@ class Router {
    * @param {import('http').ServerResponse} res
    */
   async handle(req, res) {
-    // WebSocket 升级请求交给 ws-hub，router 不介入
-    if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
-      return;
-    }
-
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const path = url.pathname;
-    const method = req.method.toUpperCase();
-
-    // CORS：仅允许已知来源（localhost + douyin.com）
-    const origin = req.headers.origin || '';
-    if (ALLOWED_ORIGINS.some(o => origin.startsWith(o)) || !origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin || '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      res.setHeader('Access-Control-Allow-Private-Network', 'true');
-    }
-
-    if (method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
     try {
+      // WebSocket 升级请求：明确拒绝，不能静默返回。
+      // 改造前这里是 `return`（交给已删除的 ws-hub 处理）—— 现在没有任何东西接管
+      // 这个 socket，客户端只会看到连上之后永远没响应。返回 426 让旧客户端
+      // 立刻知道该走 HTTP 长轮询。
+      if (req.headers.upgrade && String(req.headers.upgrade).toLowerCase() === 'websocket') {
+        res.writeHead(426, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'WebSocket 通道已移除 —— 请使用 HTTP 长轮询（POST /api/connect + GET /api/poll）',
+        }));
+        return;
+      }
+
+      // URL 解析必须在 try 内：`GET //` 这类畸形请求目标会让 new URL 抛
+      // TypeError: Invalid URL，而调用方（create-server）没有 handle() 的
+      // .catch() —— 抛出去就是未处理拒绝，整个应用崩掉。
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      const path = url.pathname;
+      const method = req.method.toUpperCase();
+
+      // CORS：仅允许已知来源（localhost + douyin.com）
+      const origin = req.headers.origin || '';
+      if (ALLOWED_ORIGINS.some(o => origin.startsWith(o)) || !origin) {
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        res.setHeader('Access-Control-Allow-Private-Network', 'true');
+      }
+
+      if (method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
       // 公开端点：无需认证
       if (method === 'GET' && path === '/api/health') {
         return this._health(res);
@@ -188,40 +188,11 @@ class Router {
       return;
     }
 
-    const { site, expression, awaitPromise, connIndex, timeout } = result.data;
+    const { site, expression, awaitPromise, timeout } = result.data;
     const msgId = randomUUID();
     const effectiveTimeout = timeout || this.requestTimeout;
 
-    // 方式1：WebSocket 路径
-    const conn = this.registry.get(site, connIndex);
-    if (conn && conn.ws) {
-      const pendingPromise = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          this._pending.delete(msgId);
-          reject(new Error(`Request timeout after ${effectiveTimeout}ms`));
-        }, effectiveTimeout);
-        this._pending.set(msgId, { resolve, reject, timer });
-      });
-
-      try {
-        this.wsHub.sendEval(conn, msgId, expression, awaitPromise);
-      } catch (e) {
-        const p = this._pending.get(msgId);
-        if (p) { clearTimeout(p.timer); this._pending.delete(msgId); }
-      }
-
-      if (this._pending.has(msgId)) {
-        try {
-          const value = await pendingPromise;
-          this._sendJson(res, 200, { ok: true, value, connection: conn.id });
-          return;
-        } catch (e) {
-          // WS 超时，fallthrough 到 HTTP 轮询
-        }
-      }
-    }
-
-    // 方式2：HTTP 轮询 — 有等待中的 poll 请求
+    // 方式1：HTTP 轮询 — 有等待中的 poll 请求 → 立刻把命令塞进它的响应里
     const waiters = this._pollWaiters.get(site);
     if (waiters && waiters.length > 0) {
       const waiter = waiters.shift();
@@ -249,7 +220,7 @@ class Router {
       }
     }
 
-    // 方式3：无等待者 → 放入队列，等 poll 来取
+    // 方式2：无等待者 → 放入队列，等 poll 来取
     if (!this._pollQueue.has(site)) this._pollQueue.set(site, []);
     this._pollQueue.get(site).push({ msgId, expression, awaitPromise });
 
@@ -287,8 +258,29 @@ class Router {
     // 清理僵尸连接：HTTP 轮询无 close 事件，页面刷新后旧连接无法自动清理
     // 每次新 connect 时删除同 site 的 ws===null 旧条目，防止累积重复
     this.registry.removeStalePolling(site);
-    const meta = { url: body.url || '', title: body.title || '', userAgent: body.userAgent || '' };
-    const conn = this.registry.register(site, null, meta);
+    // 账号信息是外部输入，只在这里消毒一次：注册表与 accounts 名册用同一份，
+    // 否则界面上看到的昵称与库里存的那份会有出入（长度、头像协议各管一段）。
+    const account = normalizeAccount(body.account);
+    const meta = {
+      url: body.url || '',
+      title: body.title || '',
+      userAgent: body.userAgent || '',
+      account,
+      // clientVersion 由 registry.register 内部归一化（非数字归 null）
+      clientVersion: body.clientVersion,
+    };
+    // 账号名册：把"这个 uid 是哪个昵称/头像"落库 —— 作品列表的账号标注、
+    // 发布链路的归属比对都靠它。上报里没有 uid（未登录/旧脚本）就跳过。
+    if (account && account.uid) {
+      // upsert 自己会记录写入失败；这里的 catch 只兜"模块都没打进来"这一种情况，
+      // 名册是辅助数据，不能因为它把连接本身弄成 500。
+      try {
+        require('../memory/accounts').upsert(account);
+      } catch (e) {
+        logger.warn(`[router] 登记连接账号失败: ${e.message}`);
+      }
+    }
+    const conn = this.registry.register(site, meta);
     logger.info(`[router] poll client: ${site} (${conn.id.slice(0, 8)})`);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, id: conn.id }));

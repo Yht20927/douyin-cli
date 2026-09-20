@@ -17,7 +17,7 @@
 // 不依赖 before-quit 里做异步清理 —— 那里只能 preventDefault + 手动退出，
 // 很容易写成递归或半退出状态。
 
-const { app, dialog } = require('electron');
+const { app, dialog, Notification } = require('electron');
 
 // ── 单实例锁 ──
 // 两个实例会争同一个桥接端口，第二个必然起不来；不如把已有窗口叫到前面。
@@ -75,6 +75,25 @@ function bootstrap() {
 
   // 所有命令都经这条队列执行，保证串行（运营规则说明.md §1「严禁并发」）。
   // 队列不自己拼 ctx —— 由这里注入，与 CLI 共用同一套组装逻辑。
+  /**
+   * 当前账号（同步）。`bridge.getStatus()` 返回的是轮询缓存，不必再发请求。
+   *
+   * 解析规则与 core/memory/accounts.resolveCurrent 一致，只是这里是同步场景 ——
+   * 所以复用那边导出的 aliveUids / currentUid，避免两处各写一套规则。
+   */
+  const accountsModule = require('../../core/memory/accounts');
+  function currentAccountUid() {
+    try {
+      const online = accountsModule.aliveUids(bridge.getStatus());
+      const stored = accountsModule.currentUid();
+      if (online.length === 1) return online[0];
+      if (online.length > 1) return (stored && online.includes(stored)) ? stored : online[0];
+      return stored || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   const queue = createTaskQueue({
     policy: getPolicy(),
     createContext: (task, o = {}) => {
@@ -83,6 +102,11 @@ function bootstrap() {
         taskId: task.id,
         signal: o.signal,
         extraSinks: o.extraSinks || [],
+        // 界面当前在看哪个账号。命令据此做两件事：
+        //   1. 写操作前与"浏览器实际登录的号"比对，不一致就拦下
+        //      （否则界面显示 A 的作品，实际以 B 的身份发出去）
+        //   2. 数据归属按**执行者**记，而不是这个值（见 accounts.resolveExecutor）
+        accountUid: currentAccountUid(),
       });
       bindCommands(ctx);
       return ctx;
@@ -145,6 +169,24 @@ function bootstrap() {
       e.preventDefault();
       win.hide();
       if (tray) tray.update(bridge.getStatus());
+      // 首次最小化提示一次：否则用户以为关掉了，而定时任务其实还在后台跑。
+      // 这对用户是"好事发生了但没人告诉"，用标志文件保证一辈子只提示一次。
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const flag = path.join(dataDirInfo.dir, '.tray-hint-shown');
+        if (!fs.existsSync(flag)) {
+          fs.writeFileSync(flag, new Date().toISOString());
+          if (Notification.isSupported()) {
+            const n = new Notification({
+              title: '已最小化到托盘',
+              body: '应用仍在后台运行（定时拉取照常工作）；要退出请用侧栏的「退出应用」。',
+            });
+            n.on('click', showMainWindow);
+            n.show();
+          }
+        }
+      } catch (err) { /* 提示失败不影响最小化 */ }
     });
 
     win.on('closed', () => {
@@ -172,7 +214,22 @@ function bootstrap() {
 
     // ── 进程级：只注册一次 ──
     registerIpc({ bridge, queue, dataDirInfo, configWarnings });
-    bridge.subscribe((status) => { if (tray) tray.update(status); });
+    // 断线的边沿检测：用户把窗口最小化到托盘去忙别的，连接断了没人看得到 ——
+    // 系统通知是唯一够得着用户的通道。只在 online → offline 的瞬间弹一次，
+    // 轮询里反复出现的 offline 不重复打扰。
+    let wasOnline = false;
+    bridge.subscribe((status) => {
+      if (tray) tray.update(status);
+      if (wasOnline && status && !status.online && status.listening && Notification.isSupported()) {
+        const n = new Notification({
+          title: '抖音连接已断开',
+          body: '浏览器里的抖音页面可能被关掉了 —— 点这里检查。',
+        });
+        n.on('click', showMainWindow);
+        n.show();
+      }
+      if (status) wasOnline = !!status.online;
+    });
     // 队列里在等待/执行时，托盘提示也要跟着变 —— 否则最小化后完全看不出在忙
     queue.subscribe(() => { if (tray) tray.update(bridge.getStatus()); });
     ensureTray();

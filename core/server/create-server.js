@@ -15,7 +15,6 @@ const configModule = require('../config');
 const loggerModule = require('../runtime/logger');
 const { renderUserscript, sourceExists } = require('../userscript');
 const { ConnectionRegistry } = require('./registry');
-const { WebSocketHub } = require('./ws-hub');
 const { Router } = require('./router');
 
 /** 一键安装油猴脚本的端点路径 */
@@ -29,7 +28,7 @@ const USERSCRIPT_PATH = '/install.user.js';
  * @param {number} [opts.port]   - 监听端口，缺省取配置；传 0 由系统分配
  * @param {string} [opts.token]  - 访问令牌，缺省取配置
  * @param {object} [opts.logger] - 覆盖 logger（测试用）
- * @returns {object} { start, stop, url, port, host, token, registry, wsHub, router }
+ * @returns {object} { start, stop, url, port, host, token, registry, router }
  */
 function createBridgeServer(opts = {}) {
   const config = opts.config || configModule.get();
@@ -44,18 +43,8 @@ function createBridgeServer(opts = {}) {
   const log = opts.logger || loggerModule.getLogger();
 
   const registry = new ConnectionRegistry();
-  const wsHub = new WebSocketHub({
-    registry,
-    port,
-    host,
-    heartbeatInterval: bridge.heartbeatInterval,
-    heartbeatTimeout: bridge.heartbeatTimeout,
-    heartbeatMaxFailures: bridge.heartbeatMaxFailures,
-    maxPayload: bridge.maxBodySize,
-  });
   const router = new Router({
     registry,
-    wsHub,
     requestTimeout: bridge.requestTimeout || 30000,
     token,
     maxBodySize: bridge.maxBodySize,
@@ -67,11 +56,19 @@ function createBridgeServer(opts = {}) {
       handleUserscript(req, res, token, log);
       return;
     }
-    router.handle(req, res);
+    // .catch 是必需的：handle 是 async，回调里没有东西 await 它。
+    // 一旦漏出 rejection，Node 默认按未处理拒绝抛掉整个进程 ——
+    // 用户看到的是应用无故退出。
+    router.handle(req, res).catch((e) => {
+      log.error(`[server] 请求处理异常: ${e.message}`);
+      if (!res.headersSent) {
+        try {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        } catch (_) { /* 连接已断，没什么可补救的 */ }
+      }
+    });
   });
-
-  // WebSocket 与 HTTP 共用端口
-  wsHub.attach(httpServer);
 
   /** 实际监听端口（传 0 时由系统分配，启动后才知道） */
   let actualPort = port;
@@ -87,7 +84,6 @@ function createBridgeServer(opts = {}) {
     get userscriptUrl() { return `http://${host}:${actualPort}${USERSCRIPT_PATH}`; },
     token,
     registry,
-    wsHub,
     router,
 
     /**
@@ -130,7 +126,6 @@ function createBridgeServer(opts = {}) {
       if (!listening) return;
       listening = false;
       await new Promise((resolve) => httpServer.close(() => resolve()));
-      try { await wsHub.stop(); } catch (e) { /* 已停则忽略 */ }
       log.info('[server] 已停止');
     },
   };

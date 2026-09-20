@@ -52,8 +52,30 @@
   }
 
   // ── HTTP 连接管理（通过 GM_xmlhttpRequest 绕过 PNA）──
+
+  // 注册前抓一次登录账号信息（whoami 跑在页面上下文，带页面 cookie）。
+  // 最多等 5 秒：拿不到（未登录 / 接口变了 / 脚本刚注入 API 还没就绪）
+  // 就按"没有账号"注册 —— 连接本身永远比账号显示优先。
+  // 重新注册（poll 连续失败后的重连）会再抓一次，因此换号后重新登录
+  // 不需要重装脚本，重连即可更新。
+  async function fetchAccount() {
+    try {
+      var p = (0, unsafeWindow.eval)(
+        '(window.__bridge && window.__bridge.whoami) ? window.__bridge.whoami() : Promise.resolve(null)'
+      );
+      var account = await Promise.race([
+        Promise.resolve(p),
+        new Promise(function (res) { setTimeout(function () { res(null); }, 5000); }),
+      ]);
+      return (account && account.nickname) ? account : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function connect() {
     if (!registered) {
+      var account = await fetchAccount();
       try {
         console.log('[Bridge] Registering via GM_xmlhttpRequest...');
         var r = await gmFetch(CONFIG.server + '/api/connect', {
@@ -64,6 +86,11 @@
             url: location.href,
             title: document.title,
             userAgent: navigator.userAgent,
+            // 脚本能力版本：2 = 注册时会带登录账号信息。
+            // 服务端据此区分"旧脚本不会上报"（提示重装）与"新脚本但识别失败"
+            // （提示登录/刷新），两种情况给用户的指引完全不同。
+            clientVersion: 2,
+            account: account || undefined,
           }),
         });
         if (r.status === 200) {
@@ -1227,6 +1254,47 @@ window.__bridge = {
     var pr=commit.body&&commit.body.Result&&commit.body.Result.PluginResult&&commit.body.Result.PluginResult[0];
     if(!pr)throw new Error('图片提交失败: '+JSON.stringify(commit.body).slice(0,200));
     return {uri:pr.ImageUri,width:pr.ImageWidth,height:pr.ImageHeight,format:pr.ImageFormat,size:pr.ImageSize};
+  },
+  // 当前登录账号信息（昵称/头像/uid）。注册连接时上报给 Bridge Server，
+  // 界面的连接页靠它显示"连的是哪个号"—— 用户关心的是账号，不是页面 URL。
+  //
+  // 端点选择（按 账号信息.har 实测）：
+  //   首选 /user/profile/self/ —— 页面自己取个人资料用的就是它，
+  //   返回 { status_code, user: { nickname, uid, short_id, sec_uid, avatar_thumb:{url_list[]} } }
+  //   备选 /query/user/ —— myPosts 同款，作为 profile/self 失效时的退路。
+  //   两个都拿不到 user 才返回 null，且每个失败都在控制台留痕，方便排查。
+  whoami: async function(){
+    var endpoints = [
+      '/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383&channel=channel_pc_web',
+      '/aweme/v1/web/query/user/?device_platform=webapp&aid=6383&channel=channel_pc_web',
+    ];
+    for (var i = 0; i < endpoints.length; i++) {
+      try {
+        var info = await bridgeFetchJson('whoami', endpoints[i], { credentials: 'include' }, true);
+        var u = (info && info.user) || null;
+        if (u && (u.nickname || u.sec_uid)) {
+          var av = '';
+          try { av = ((u.avatar_thumb && u.avatar_thumb.url_list) || [])[0] || ''; } catch (e) {}
+          var num = function (v) { var n = Number(v); return isFinite(n) && n >= 0 ? Math.floor(n) : null; };
+          return {
+            nickname: String(u.nickname || ''),
+            avatar: av,
+            secUid: String(u.sec_uid || ''),
+            uid: String(u.uid || u.short_id || ''),
+            // 账号体量（运营者关心粉丝/获赞的量级）。
+            // 注意映射（用户主页实测确认）：获赞 = total_favorited（作品收到的赞），
+            // favoriting_count 是"你赞过别人的数"，两者极易搞反，不能混用。
+            followerCount: num(u.follower_count),
+            followingCount: num(u.following_count),
+            likesReceived: num(u.total_favorited),
+          };
+        }
+        console.warn('[Bridge] whoami: 第', i + 1, '个接口没有返回 user —', JSON.stringify(info).slice(0, 150));
+      } catch (e) {
+        console.warn('[Bridge] whoami: 第', i + 1, '个接口失败 —', e && e.message);
+      }
+    }
+    return null;
   },
   getDetail: async function(awemeId){
     var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:awemeId}));

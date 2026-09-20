@@ -1,7 +1,7 @@
 {
   "name": "douyin-comment-cli",
   "version": "2.0.0",
-  "description": "抖音评论运营 CLI — Bridge Framework（油猴 + WebSocket），含 AI 人格化回复、节奏守卫、SQLite 记忆层、推广引擎",
+  "description": "抖音评论运营 CLI — Bridge Framework（油猴 + HTTP 长轮询），含 AI 人格化回复、节奏守卫、SQLite 记忆层、推广引擎",
   "license": "MIT",
   "author": "Yht20927",
   "homepage": "https://github.com/Yht20927/douyin-cli#readme",
@@ -50,8 +50,7 @@
   },
   "dependencies": {
     "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "ws": "^8.18.0"
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.1",

@@ -5,7 +5,10 @@
 // 2. WAL 模式 + busy_timeout，支持多进程并发读写（CLI + 调度器同时跑）。
 // 3. PRAGMA user_version 管理 schema 版本；每个 migration 幂等。
 // 4. 自愈：删除 storage/douyin.db 后下次调用自动重建（仅丢失 SQLite 数据，audit.json 仍在）。
-// 5. 失败不抛：上层用 try/catch 包住，SQLite 异常降级为日志，不影响主流程。
+// 5. 打开/迁移失败一律抛出：宁可让调用方看见错误，也不要带着一个半迁移的库继续跑。
+//    各 memory 模块把**读**异常降级成 []/null 是可以的（界面少显示一点东西而已），
+//    但喂给风控计数的读（core/memory/events.js 的 queryStrict、risk-control 的
+//    lastOpTs）必须抛出 —— 那里"读不到"被当成"今天还没发过"就等于限流失效。
 //
 // 驱动：node:sqlite（经 core/memory/sqlite-driver.js 适配成 better-sqlite3 的调用形状）。
 // 不再使用 better-sqlite3 原生模块 —— 它的 ABI 与 Electron 不匹配，会导致
@@ -31,7 +34,7 @@ const paths = require('../paths');
 const { Database: SqliteDatabase } = require('./sqlite-driver');
 
 // 当前 schema 版本（每次新增 migration → 自增）
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 13;
 
 let _db = null;
 
@@ -46,12 +49,25 @@ function ensureStorageDir() {
 function getDb() {
   if (_db) return _db;
   ensureStorageDir();
-  _db = new SqliteDatabase(paths.dbFile());
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('synchronous = NORMAL');
-  _db.pragma('busy_timeout = 5000');
-  _db.pragma('foreign_keys = ON');
-  migrate(_db);
+  const db = new SqliteDatabase(paths.dbFile());
+  // 迁移成功之前**绝不能**把连接交出去。
+  //
+  // 原先这里直接写 `_db = new SqliteDatabase(...)` 再 `migrate(_db)`，于是迁移一抛错，
+  // 一个半迁移的连接就被缓存在 `_db` 上，之后每次 getDb() 都在第一行短路返回它 ——
+  // 而 memory 层各模块把 SQL 错误统统 catch 成 []/null/0。表现是：界面安静地变空、
+  // 日志一个字都没有，policy 那边则把"读不到记录"当成"今天还没发过"，限流直接失效。
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 5000');
+    db.pragma('foreign_keys = ON');
+    migrate(db);
+  } catch (e) {
+    // 关掉半成品，但不要把原始错误盖掉：迁移失败必须能一路抛到启动层并被看见。
+    try { db.close(); } catch (_) { /* 忽略：原始错误更重要 */ }
+    throw e;
+  }
+  _db = db;
   return _db;
 }
 
@@ -291,6 +307,106 @@ function migrate(db) {
       const cols = db.prepare(`PRAGMA table_info(drafts)`).all().map(c => c.name);
       if (!cols.includes('image_path')) {
         db.exec(`ALTER TABLE drafts ADD COLUMN image_path TEXT`);
+      }
+    },
+    // v10 → v11：连接过的账号登记表（账号级数据隔离的基础）
+    //
+    // 油猴脚本注册连接时会上报登录账号（clientVersion ≥ 2）。把"哪个 uid 是
+    // 哪个昵称"落库，界面才能在作品列表上标注"这条内容是哪个号发的"，
+    // 发布链路才能把"视频归属账号"与"浏览器当前登录账号"做比对。
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS accounts (
+          platform TEXT NOT NULL DEFAULT 'douyin',
+          uid TEXT NOT NULL,
+          nickname TEXT,
+          avatar TEXT,
+          sec_uid TEXT,
+          first_seen INTEGER,
+          last_seen INTEGER,
+          PRIMARY KEY (platform, uid)
+        );
+      `);
+    },
+    // v11 → v12：视频互动数据的历史快照
+    //
+    // 为什么必须单独一张表：videos 表的 play_count / digg_count 等是**单值列**，
+    // 每次「刷新列表」被 `ON CONFLICT DO UPDATE` 覆盖。于是"这条视频这周涨了
+    // 多少播放"永远答不出来 —— 而这是运营判断"哪条在持续涨"的唯一依据。
+    //
+    // 两个设计取舍：
+    //
+    // 1. **主键带 day**（本地日期 `YYYY-MM-DD`），于是"每个视频每天最多一行"
+    //    是表结构保证的，不靠调用方自觉。同一天多次刷新走 UPSERT 覆盖成
+    //    当天最后一次读数 —— 那正是"今天的播放数"该有的值。
+    // 2. **只给 `ts` 一个毫秒时间戳 + `day` 一个本地日期**，不存时区。
+    //    这张表的用途是按天看增长，跨时区没有意义（这是单人本机工具）。
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS video_stats_history (
+          platform      TEXT NOT NULL DEFAULT 'douyin',
+          aweme_id      TEXT NOT NULL,
+          day           TEXT NOT NULL,
+          ts            INTEGER NOT NULL,
+          play_count    INTEGER,
+          digg_count    INTEGER,
+          comment_count INTEGER,
+          share_count   INTEGER,
+          PRIMARY KEY (platform, aweme_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vsh_video ON video_stats_history(platform, aweme_id, day DESC);
+        CREATE INDEX IF NOT EXISTS idx_vsh_day   ON video_stats_history(platform, day);
+      `);
+    },
+    // v12 → v13：账号级数据隔离
+    //
+    // 背景：`is_mine=1` 只表示"这是本机某个登录账号的作品"，**不区分是哪个号**。
+    // 于是换号之后「我的作品」把两个号的作品混在一张列表里，而所有"我发的评论"
+    // 的判断都落到 videos.myUid()（"is_mine 里 author_uid 出现最多的那个"）——
+    // 一个全局猜测，两个号时静默挑一个，另一个号的评论被判成路人。
+    //
+    // 两列：
+    //   videos.ops_uid   —— 这一行是**哪个账号的操作**带进来的（拉评论/发回复/补全）。
+    //                       别人的视频没有归属账号，只能靠它区分"是谁在运营"。
+    //                       旧数据无据可查 → NULL，界面归为「未归属」。
+    //   accounts.is_current —— 多账号时用户选定的那个。只有多开时才需要，
+    //                       唯一连接时以页面登录的账号为准（自动跟随）。
+    () => {
+      const vcols = db.prepare(`PRAGMA table_info(videos)`).all().map(c => c.name);
+      if (!vcols.includes('ops_uid')) db.exec(`ALTER TABLE videos ADD COLUMN ops_uid TEXT`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_videos_ops_uid ON videos(platform, ops_uid);`);
+
+      const acols = db.prepare(`PRAGMA table_info(accounts)`).all().map(c => c.name);
+      if (!acols.includes('is_current')) db.exec(`ALTER TABLE accounts ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0`);
+
+      // drafts 也要认账号：一条草稿是"以某个号的身份回某条评论"，
+      // 换号之后它必须从列表里消失 —— 否则 B 号会把 A 号准备的回复发出去
+      // （而且是以 B 的登录状态发），这是最危险的一种串号。
+      const dcols = db.prepare(`PRAGMA table_info(drafts)`).all().map(c => c.name);
+      if (!dcols.includes('account_uid')) db.exec(`ALTER TABLE drafts ADD COLUMN account_uid TEXT`);
+      // ⚠️ drafts **没有 platform 列**（它只有一张表、不分平台）。
+      // 照抄 videos 的写法加了 platform 会让这条 CREATE INDEX 抛
+      // "no such column: platform" → 整个 getDb() 失败 → 被 memory 层的
+      // catch 吞成"没有数据"。症状是升级后所有列表都空，而日志里什么都没有。
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_drafts_account ON drafts(account_uid, posted);`);
+
+      // ── 旧数据回填 ──
+      //
+      // 不加这一步，升级后按账号过滤的列表会**全部变空** —— 旧行的 ops_uid
+      // 是 NULL，而 NULL 不属于任何账号。用户看到的是"我的作品 0 个"，
+      // 而数据明明还在库里，这比原来的"混在一起"更难排查。
+      //
+      // 只在**有且仅有一个**可能的归属时才回填：is_mine 视频的 author_uid
+      // 去重后只有一个 → 本机只运营过这一个号，那些没有归属的行只能是它的。
+      // 有两个及以上时**不回填**（无法判断，宁可留 NULL 让界面显示"未归属"，
+      // 也不要猜一个然后永远错下去）。
+      const owners = db.prepare(
+        `SELECT DISTINCT author_uid FROM videos WHERE platform = ? AND is_mine = 1 AND author_uid IS NOT NULL`
+      ).all('douyin').map(r => r.author_uid);
+      if (owners.length === 1) {
+        const uid = owners[0];
+        db.prepare(`UPDATE videos SET ops_uid = ? WHERE platform = ? AND ops_uid IS NULL`).run(uid, 'douyin');
+        db.prepare(`UPDATE drafts SET account_uid = ? WHERE account_uid IS NULL`).run(uid);
       }
     },
   ];

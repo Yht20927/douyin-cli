@@ -72,6 +72,12 @@ function createBridgeManager(opts = {}) {
           id: c.id,
           url: c.url,
           title: c.title,
+          // 登录账号信息（新版脚本注册时上报）。旧版脚本没有这个字段，
+          // 保持 null —— 界面按"未识别账号"显示，而不是报错
+          account: c.account || null,
+          // 脚本能力版本（≥2 才上报账号）。null = 旧脚本，界面的
+          // "未识别"提示要引导重装；有版本号则引导登录/刷新
+          clientVersion: typeof c.clientVersion === 'number' ? c.clientVersion : null,
           alive: c.alive !== false,
           lastActivity: c.lastActivity,
         });

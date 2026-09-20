@@ -21,16 +21,14 @@ class BridgeClient {
    * @param {string} params.site - 站点标识
    * @param {string} params.expression - JS 表达式
    * @param {boolean} [params.awaitPromise=true]
-   * @param {number} [params.connIndex=0]
    * @param {number} [params.timeout]
    * @returns {Promise<{ok: boolean, value?: any, error?: string, connection?: string}>}
    */
-  async call({ site, expression, awaitPromise = true, connIndex = 0, timeout }) {
+  async call({ site, expression, awaitPromise = true, timeout }) {
     return this._post('/api/call', {
       site,
       expression,
       awaitPromise,
-      connIndex,
       timeout,
     });
   }
