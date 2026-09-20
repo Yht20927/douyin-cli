@@ -7,6 +7,25 @@ const policy = require('../policy').getPolicy();
 const logger = require('../runtime/logger');
 
 /**
+ * 判断 sendDM 的响应到底成没成。
+ *
+ * IM 接口不是 HTTP 那套 JSON：回的是 protobuf（proto/dm.proto 的 Response），
+ * 失败信息只有 `error_desc`（字段 3，成功时是空串），**没有 status_code**。
+ * 所以必须专门判一次 —— 不然一次被风控挡下的发送在界面上长得和成功一样。
+ *
+ * @returns {string|null} null = 判不出失败；字符串 = 给用户看的失败原因
+ */
+function describeSendResponse(data) {
+  if (!data || typeof data !== 'object') return '抖音没有返回响应内容';
+  const code = data.status_code != null ? data.status_code : data.code;
+  if (code != null && Number(code) !== 0) {
+    return `status_code=${code}${data.error_desc ? `（${data.error_desc}）` : ''}`;
+  }
+  if (data.error_desc) return String(data.error_desc);
+  return null;
+}
+
+/**
  * 私信命令
  * @param {object} ctx - { bridge, audit, loggedCall, bridgeCall }
  * @param {string[]} args
@@ -67,8 +86,13 @@ async function cmdDM(ctx, args) {
       { conversation_id: conv.conversation_id, text },
       sendExpr);
 
-    if (data.status_code !== undefined && data.status_code !== 0) {
-      const err = new Error(`发送失败: status_code=${data.status_code}`);
+    // ⚠️ IM 接口回的是 protobuf（proto/dm.proto 的 Response），**没有 status_code**：
+    // 失败信息只出现在 error_desc（字段 3），成功时是空串。
+    // 这里曾经沿用其它命令那句 `data.status_code !== 0` —— 那个键在解码结果里
+    // 根本不存在，条件恒为假，于是每一次发送失败都被报成"已发出"。
+    const sendError = describeSendResponse(data);
+    if (sendError) {
+      const err = new Error(`私信没发出去：${sendError}`);
       ctx.audit.endOperation('error', { conversation_id: conv.conversation_id }, null, err.message);
       throw err;
     }
