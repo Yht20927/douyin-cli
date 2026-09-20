@@ -15,11 +15,19 @@
 //
 // 风险面
 // ------
-// 每个视频一次读请求。走队列串行 + risk-control 的读间隔（intervals.read /
-// readEnforce），与 get/search 同一套闸门；不是写操作，不进写配额。
+// 每个视频一次读请求，所以有**两层**节奏，各管一件事：
+//   - 批次之间：命令入口那次 `riskControl.enforceDelay('read')`。
+//     它读的是 events 表里上一条读操作的时间，`enrich` 已登记进 READ_COMMANDS。
+//   - 批内逐条：`pace(intervals.commentPage)`，与全量拉取的翻页等待同一段代码。
+//
+// 原来只有第一层，而它对批内**完全无效**：events 那一行是 endOperation 时才写的，
+// 一次跑 200 条的补全从头到尾不会多出任何一行 —— 于是循环里每次算出来的
+// "距上次读"都是同一个旧值（通常是"查无记录 → 0 秒"），200 个请求实际是连发的。
+// 这也正是 开发进度.md 里那条"命令与命令之间有人管、命令内部没人管"的通用陷阱。
 
-const { escapeExpression, getFlag, throttleOpts } = require('./helpers');
+const { escapeExpression, getFlag, pace, throttleOpts } = require('./helpers');
 const riskControl = require('../risk-control');
+const config = require('../config');
 const videos = require('../memory/videos');
 const accounts = require('../memory/accounts');
 const failures = require('../memory/failures');
@@ -97,6 +105,15 @@ async function cmdEnrich(ctx, args) {
 
   ctx.audit.startOperation('enrich', { count: targets.length, all: args.includes('--all') });
 
+  // 批次之间：距上一条读操作还不够间隔就先等一次。
+  // 放在"有没有要补的"判断之后 —— 没活干不该让人白等 30 秒。
+  await riskControl.enforceDelay('read', throttleOpts(ctx, args));
+
+  // 批内逐条。`--no-throttle` 时连这一层也跳过（与全量拉取的翻页同一套口径）。
+  const itemRange = args.includes('--no-throttle')
+    ? [0, 0]
+    : (config.get('intervals.commentPage') || [0, 0]);
+
   const updated = [];
   const failed = [];
   let skipped = 0;
@@ -110,8 +127,10 @@ async function cmdEnrich(ctx, args) {
       total: targets.length,
     });
 
-    // 读间隔 + 可取消等待都在这里面（ctx.signal 一 abort 就抛 AbortError）
-    await riskControl.enforceDelay('read', throttleOpts(ctx, args));
+    // 逐条之间的等待（第一条不等，上面那次 enforceDelay 已经覆盖"开始干之前"）。
+    // 放在进度之后：等待期间界面上停着的是"第 N 条 · 正在取视频信息"，
+    // 而不是上一条的残留。ctx.signal 一 abort 就抛 AbortError，任务能立刻取消。
+    if (i > 0) await pace(itemRange, { signal: ctx.signal });
 
     let detail;
     try {

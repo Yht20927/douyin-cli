@@ -322,7 +322,38 @@ function list(opts = {}) {
 }
 
 /**
- * 信息不全的视频（标题为空）—— 补全命令的候选集。
+ * 「还没补全」的判定条件 —— `listMissingInfo` 与 `countMissingInfo` **共用这一份**。
+ *
+ * 两处各写一遍是这个函数存在的唯一理由：界面的「补全视频信息（N 个）」用的是
+ * count，点下去实际补的是 list。两边条件一旦漂移，用户看到的就是
+ * "按钮说还有 40 个、点完只补了 3 个、数字还是 40"。
+ *
+ * 为什么条件不是"只看标题"：抖音作品的 desc 允许为空（很多作品就是不写文案），
+ * 而 `upsert` 里是 `title: fields.title || null` —— 补全成功也只会留下 NULL。
+ * 只看标题的那一版后果实测过：这类视频**永远**待在待补全里，按钮上的数字不降，
+ * 每点一次都把同一批 200 条重抓一遍（白付 200 次请求的风控暴露）。
+ * 封面没有这个坑：详情接口一定会给一张封面。
+ *
+ * @param {object} [opts] - { all, accountUid }
+ * @returns {{where: string[], params: any[]}}
+ */
+function missingInfoWhere(opts = {}) {
+  const where = ['platform = ?'];
+  const params = [PLATFORM];
+  where.push(opts.all ? '1 = 1'
+    : "(title IS NULL OR title = '') AND (cover_url IS NULL OR cover_url = '')");
+  // 账号隔离：只补"这个账号自己的作品"与"它运营过的视频"。
+  // 不隔离的话，B 号点一次「补全视频信息」会去补 A 号运营的视频 ——
+  // 那是拿 B 的登录状态去做 A 的活，风控上也不该发生。
+  if (opts.accountUid) {
+    where.push('((is_mine = 1 AND author_uid = ?) OR ops_uid = ?)');
+    params.push(String(opts.accountUid), String(opts.accountUid));
+  }
+  return { where, params };
+}
+
+/**
+ * 信息不全的视频 —— 补全命令的候选集。
  *
  * 为什么会有这种行：`get`（拉评论）与 `post`（发回复）只能 upsert 一行
  * 只有 aweme_id + 时间戳的记录 —— 抖音的评论接口根本不返回视频信息。
@@ -335,55 +366,46 @@ function list(opts = {}) {
  * @param {object} [opts]
  * @param {number} [opts.limit=100]
  * @param {boolean} [opts.all=false] - true 时连已有标题的也返回（重抓互动数据）
+ * @param {string} [opts.accountUid] - 限定账号
  */
 function listMissingInfo(opts = {}) {
-  try {
-    const db = getDb();
-    const limit = Math.max(1, Math.min(opts.limit || 100, 10000));
-    const where = ['platform = ?'];
-    const params = [PLATFORM];
-    // `all` 用 1=1 而不是 ls 去掉条件 —— 保持 SQL 形状一致，少一处分支
-    where.push(opts.all ? '1 = 1' : "(title IS NULL OR title = '')");
-    // 账号隔离：只补"这个账号自己的作品"与"它运营过的视频"。
-    // 不隔离的话，B 号点一次「补全视频信息」会去补 A 号运营的视频 ——
-    // 那是拿 B 的登录状态去做 A 的活，风控上也不该发生。
-    if (opts.accountUid) {
-      where.push('((is_mine = 1 AND author_uid = ?) OR ops_uid = ?)');
-      params.push(String(opts.accountUid), String(opts.accountUid));
-    }
-    const rows = db.prepare(`
-      SELECT aweme_id, title, cover_url, author_uid, ops_uid, is_mine,
-             last_get_ts, last_post_ts
-      FROM videos WHERE ${where.join(' AND ')}
-      ORDER BY COALESCE(last_get_ts, last_post_ts, 0) DESC
-      LIMIT ${limit}
-    `).all(...params);
-    return rows.map(r => ({
-      awemeId: r.aweme_id,
-      title: r.title,
-      coverUrl: r.cover_url,
-      authorUid: r.author_uid,
-      opsUid: r.ops_uid || null,
-      isMine: !!r.is_mine,
-      lastGetTs: r.last_get_ts,
-      lastPostTs: r.last_post_ts,
-    }));
-  } catch (e) { return []; }
+  const limit = Math.max(1, Math.min(opts.limit || 100, 10000));
+  const { where, params } = missingInfoWhere(opts);
+  // 这里**不吞异常**（与下面 countMissingInfo 相反）：它只有一个调用方 ——
+  // 补全命令。查询失败却返回空数组，命令就会对用户说"没有需要补全的视频"，
+  // 而真相是"一条都没查出来"。让异常冒到队列，任务上写着失败原因。
+  const rows = getDb().prepare(`
+    SELECT aweme_id, title, cover_url, author_uid, ops_uid, is_mine,
+           last_get_ts, last_post_ts
+    FROM videos WHERE ${where.join(' AND ')}
+    ORDER BY COALESCE(last_get_ts, last_post_ts, 0) DESC
+    LIMIT ${limit}
+  `).all(...params);
+  return rows.map(r => ({
+    awemeId: r.aweme_id,
+    title: r.title,
+    coverUrl: r.cover_url,
+    authorUid: r.author_uid,
+    opsUid: r.ops_uid || null,
+    isMine: !!r.is_mine,
+    lastGetTs: r.last_get_ts,
+    lastPostTs: r.last_post_ts,
+  }));
 }
 
-/** 还有多少条视频没有标题（界面用它决定要不要显示"补全"入口） */
+/** 还有多少条视频没补过（界面用它决定要不要显示"补全"入口、按钮上写几） */
 function countMissingInfo(opts = {}) {
   try {
-    const where = ["platform = ?", "(title IS NULL OR title = '')"];
-    const params = [PLATFORM];
-    if (opts.accountUid) {
-      where.push('((is_mine = 1 AND author_uid = ?) OR ops_uid = ?)');
-      params.push(String(opts.accountUid), String(opts.accountUid));
-    }
+    const { where, params } = missingInfoWhere(opts);
     return getDb().prepare(
       `SELECT count(*) AS n FROM videos WHERE ${where.join(' AND ')}`
     ).get(...params).n;
-  } catch (e) { return 0; }
+  } catch (e) {
+    // 计数只影响一个角标，不值得让整页报错 —— 但不能无声变成 0：
+    // 表现会是"补全按钮整个消失了"，没人知道为什么。
+    logger.warn('[videos.countMissingInfo] 计数失败（界面会当成 0）: ' + e.message);
+    return 0;
+  }
 }
 
 /**

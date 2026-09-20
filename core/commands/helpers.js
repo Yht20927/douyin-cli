@@ -1,5 +1,7 @@
 // lib/commands/helpers.js — 命令共享的辅助函数和上下文
 
+const { sleepAbortable } = require('../runtime/abort');
+
 const SITE = 'douyin.com';
 
 /**
@@ -146,6 +148,27 @@ function throttleOpts(ctx, args) {
   };
 }
 
+/**
+ * 一条命令**内部**重复请求之间的等待（区间单位是秒，取自 config.intervals）。
+ *
+ * 为什么需要它、而不是直接用 riskControl.enforceDelay：
+ * enforceDelay 读的是 events 表里"上一条命令"的成功时间，而那一行是在
+ * `endOperation` 时才写的 —— 于是一条跑 200 次请求的命令（逐条补全、全量翻页）
+ * 在循环里每次算出的"距上次读"都是同一个旧值，**内部零间隔**。
+ * 换句话说：命令与命令之间的节奏有人管，命令内部的没人管 —— 而"内部"才是量大的一面。
+ * 每个调用点都该显式等一次，这就是 get.js 的翻页等待与 enrich.js 的逐条等待共用的那段。
+ *
+ * @param {number[]} range - [minSec, maxSec]；传空数组或 [0,0] 表示不等
+ * @param {object} [opts] - { signal } 取消信号
+ */
+async function pace(range, opts = {}) {
+  const [a, b] = Array.isArray(range) && range.length === 2 ? range : [0, 0];
+  const lo = Math.round(Math.min(a, b) * 1000);
+  const hi = Math.round(Math.max(a, b) * 1000);
+  const ms = hi > lo ? randomInt(lo, hi) : lo;
+  if (ms > 0) await sleepAbortable(ms, opts.signal);
+}
+
 module.exports = {
   SITE,
   escapeExpression,
@@ -156,4 +179,5 @@ module.exports = {
   weightedRandom,
   withAudit,
   throttleOpts,
+  pace,
 };

@@ -14,7 +14,14 @@ const os = require('os');
 
 const config = require('../core/config');
 
-function withTempEnv(fn) {
+/**
+ * 在临时数据目录 + 临时配置上跑一个用例。
+ * @param {object|Function} userCfg - 写进临时 config.json 的用户配置；
+ *   直接传函数 = 用 `{}`（旧写法，下面大部分用例都是这种）
+ * @param {Function} [fn]
+ */
+function withTempEnv(userCfg, fn) {
+  if (typeof userCfg === 'function') { fn = userCfg; userCfg = {}; }
   return async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-enrich-'));
     const saved = {
@@ -23,7 +30,7 @@ function withTempEnv(fn) {
       log: process.env.DOUYIN_LOG_DIR,
     };
     process.env.DOUYIN_CONFIG = path.join(tmp, 'config.json');
-    fs.writeFileSync(process.env.DOUYIN_CONFIG, JSON.stringify({}));
+    fs.writeFileSync(process.env.DOUYIN_CONFIG, JSON.stringify(userCfg || {}));
     process.env.DOUYIN_STORAGE_DIR = path.join(tmp, 'storage');
     process.env.DOUYIN_LOG_DIR = path.join(tmp, 'logs');
 
@@ -43,7 +50,8 @@ function withTempEnv(fn) {
       const videos = require('../core/memory/videos');
       const failures = require('../core/memory/failures');
       const cmdEnrich = require('../core/commands/enrich');
-      await fn({ tmp, videos, failures, cmdEnrich });
+      const { getDb } = require('../core/memory/db');
+      await fn({ tmp, videos, failures, cmdEnrich, getDb });
     } finally {
       try { require('../core/memory/db').closeDb(); } catch (_) { /* */ }
       purge();
@@ -227,5 +235,59 @@ describe('补全视频信息', () => {
     const r = await cmdEnrich(ctx, ['--limit', '9999', '--no-throttle']);
     expect(r.requested).toBeLessThanOrEqual(200);
     expect(calls.length).toBe(r.requested);
+  }));
+
+  // ── 以下是第十五轮补的三条：都是"跑过成功路径才看得见"的问题 ──
+
+  it('不写文案的作品：补一次就算补完，不会每点一次都重抓', withTempEnv(async ({ videos, cmdEnrich }) => {
+    // 抖音上大量作品 desc 就是空串，而 upsert 里 `title: fields.title || null`
+    // —— 只看标题的旧判定会让这类视频永远留在"待补全"里：
+    // 按钮上的数字不降，每点一次都把同一批重抓一遍。
+    videos.upsert({ awemeId: 'no-desc' });
+
+    const { ctx, calls } = makeCtx({ 'no-desc': detail('') });   // desc 为空，但有封面
+    await cmdEnrich(ctx, ['--no-throttle']);
+
+    expect(videos.get('no-desc').coverUrl).toBe('https://cdn/cover.jpg');
+    expect(videos.countMissingInfo()).toBe(0);        // 界面上的数字必须掉下来
+
+    await cmdEnrich(ctx, ['--no-throttle']);
+    expect(calls.length).toBe(1);                     // 第二次点它不该再发请求
+  }));
+
+  it('批内逐条之间有间隔（enforceDelay 只管批次之间）', withTempEnv({
+    intervals: { commentPage: [0.05, 0.06] },
+  }, async ({ videos, cmdEnrich }) => {
+    // 一次跑三条：条与条之间必须有两次页间隔。
+    // 旧写法是在循环里调 enforceDelay —— 而 events 一行要到 endOperation 才写，
+    // 于是整批算出来的"距上次读"都是同一个值，三条是连发出去的。
+    for (const id of ['a', 'b', 'c']) videos.upsert({ awemeId: id });
+    const { ctx } = makeCtx({ a: detail('甲'), b: detail('乙'), c: detail('丙') });
+
+    const t0 = Date.now();
+    await cmdEnrich(ctx, []);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(90);
+
+    // --no-throttle 时这一层也要跳过（否则"跳过等待"是个半生效的开关）
+    videos.upsert({ awemeId: 'd' });
+    const { ctx: ctx2 } = makeCtx({ d: detail('丁') });
+    const t1 = Date.now();
+    await cmdEnrich(ctx2, ['--no-throttle']);
+    expect(Date.now() - t1).toBeLessThan(90);
+  }), 20000);
+
+  it('候选集读不出来时命令失败，而不是报"没有需要补全的视频"', withTempEnv(async ({ videos, cmdEnrich, getDb }) => {
+    videos.upsert({ awemeId: 'a' });
+    // 模拟库出问题：把表挪走。旧写法是 catch 掉返回空数组，
+    // 于是命令对用户说"没有需要补全的视频"，界面显示成功 —— 一句假话。
+    getDb().exec('ALTER TABLE videos RENAME TO videos_gone');
+    try {
+      expect(() => videos.listMissingInfo()).toThrow();
+      await expect(cmdEnrich(makeCtx({}).ctx, ['--no-throttle'])).rejects.toThrow();
+      // 而角标用的那个计数只降级、不炸整页
+      expect(videos.countMissingInfo()).toBe(0);
+    } finally {
+      getDb().exec('ALTER TABLE videos_gone RENAME TO videos');
+    }
   }));
 });

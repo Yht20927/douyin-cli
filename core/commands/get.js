@@ -1,9 +1,9 @@
 // lib/commands/get.js — 获取视频评论（支持嵌套回复、增量拉取）
 
-const { escapeExpression, getFlag, formatComment, randomInt, throttleOpts } = require('./helpers');
+const { escapeExpression, getFlag, formatComment, pace, throttleOpts } = require('./helpers');
 const riskControl = require('../risk-control');
 const config = require('../config');
-const { sleepAbortable, throwIfAborted } = require('../runtime/abort');
+const { throwIfAborted } = require('../runtime/abort');
 const users = require('../memory/users');
 const comments = require('../memory/comments');
 const videos = require('../memory/videos');
@@ -155,18 +155,6 @@ async function promiseAllLimit(tasks, limit) {
 }
 
 /**
- * 翻页之间的等待。range 是秒数区间（config: intervals.commentPage）。
- * 第一页不调用它 —— 命令入口那次 enforceDelay('read') 已经覆盖了"开始拉之前"的等待。
- */
-async function pageDelay(range, signal) {
-  const [a, b] = Array.isArray(range) && range.length === 2 ? range : [0, 0];
-  const lo = Math.round(Math.min(a, b) * 1000);
-  const hi = Math.round(Math.max(a, b) * 1000);
-  const ms = hi > lo ? randomInt(lo, hi) : lo;
-  if (ms > 0) await sleepAbortable(ms, signal);
-}
-
-/**
  * 把一个视频的评论从头翻到尾（`--all` 的实现主体）。
  *
  * 比"循环到 has_more 为假"复杂的那几件事，全都有实测依据：
@@ -210,7 +198,7 @@ async function fetchAllPages(ctx, awemeId, opts = {}) {
   while (true) {
     if (pages >= maxPages) { stoppedBy = 'maxPages'; break; }
     throwIfAborted(signal);
-    if (pages > 0) await pageDelay(opts.delayRange, signal);
+    if (pages > 0) await pace(opts.delayRange, { signal });
 
     const expr = `window.__bridge.getComments('${escapeExpression(String(awemeId))}', ${cursor}, ${perPage})`;
     const data = await ctx.loggedCall('get', { aweme_id: awemeId, cursor, count: perPage }, expr);
@@ -386,7 +374,9 @@ async function cmdGet(ctx, args) {
     // 记下"这个视频是哪个账号在运营" —— 运营对象的账号隔离全靠它
     videos.markGet(awemeId, { commentsSeenDelta: allComments.length, accountUid });
   } catch (e) {
-    logger.debug('[cmdGet.persist] failed: ' + e.message);
+    // 旁路写：失败不该让整次拉取失败，但不能只用 debug 记 —— 那样"评论没落库、
+    // 这个视频在运营对象页里根本不出现"会变成一件无迹可查的事
+    logger.warn(`[get] 实体落库失败（评论未写入、归属账号未记上）: ${e.message}`);
   }
 
   // 清理 _rawChildren，确保 formatComment 输出干净
