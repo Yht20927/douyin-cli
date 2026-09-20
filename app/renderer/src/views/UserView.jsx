@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import EmptyState from '../components/EmptyState.jsx';
 import LoadingState from '../components/LoadingState.jsx';
+import Notice from '../components/Notice.jsx';
 import Spinner from '../components/Spinner.jsx';
 import { ago } from '../format.js';
 
@@ -116,7 +117,20 @@ export default function UserView({ uid, actions, onBack }) {
       const t = (payload.tasks || []).find(x => x.id === id);
       if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
         un();
-        setNotice(t.status === 'done' ? '私信已发出' : `私信未发出：${t.error || '未知原因'}`);
+        if (t.status === 'done') {
+          // 「已发出」能说到哪一步：core 判的是 IM 响应里 error_desc 为空，
+          // 也就是**抖音服务器收下了这条消息**。不证明对方已读，
+          // 抖音那边也没有可查的送达回执 —— 措辞必须停在这一步。
+          window.dy.queue.result(id).then((r) => {
+            const cid = r && r.result && r.result.conversation_id
+              ? String(r.result.conversation_id) : '';
+            setNotice(cid
+              ? `抖音已接收这条私信（会话 ····${cid.slice(-6)}）—— 对方看没看到，只能在抖音的聊天里确认`
+              : '抖音已接收这条私信 —— 会话号没取回来，请到抖音的聊天里确认');
+          });
+        } else {
+          setNotice({ text: `私信未发出：${t.error || '未知原因'}`, warn: true });
+        }
       }
     });
   }
@@ -191,7 +205,7 @@ export default function UserView({ uid, actions, onBack }) {
         </>
       )}
 
-      {notice && <div className="notice"><div>{notice}</div></div>}
+      <Notice data={notice} />
 
       {!data.found && (
         <div className="notice notice-warn">

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import EmptyState from '../components/EmptyState.jsx';
 import LoadingState from '../components/LoadingState.jsx';
+import Notice from '../components/Notice.jsx';
 import Spinner from '../components/Spinner.jsx';
 import { ago } from '../format.js';
 import useAutoRefresh from '../useAutoRefresh.js';
@@ -25,6 +26,31 @@ import useAutoRefresh from '../useAutoRefresh.js';
 /** 一页取多少条。真实总数由 core 返回，页面显示「共 N 个」 */
 const PAGE_SIZE = 200;
 
+/**
+ * 补全结果 → 一句话。
+ *
+ * 明细取不回来时（200 条的 updated 数组可能超过队列 64KB 的结果上限）
+ * 要说"跑完了、明细没取回来"，不能把 undefined 当成 0 条 ——
+ * 那一趟真的发了请求也写了库，报"补全 0 条"会让人以为没生效而再点一次，白跑一遍。
+ */
+function describeEnrich(res) {
+  if (!res || typeof res !== 'object') {
+    return { text: '补全跑完了，但结果明细太大没能取回来 —— 看列表里的标题是否补上即可确认', warn: false };
+  }
+  const requested = Number(res.requested) || 0;
+  const done = Number(res.updatedCount) || 0;
+  const failed = Number(res.failedCount) || 0;
+  if (!requested) return { text: '没有需要补全的视频 —— 本地这些作品的标题与封面已经齐了', warn: false };
+  if (failed) {
+    const first = Array.isArray(res.failed) && res.failed[0] ? res.failed[0].error : '';
+    return {
+      text: `补全 ${done}/${requested} 条，${failed} 条没取到${first ? `（例如：${first}）` : ''}`,
+      warn: done === 0,
+    };
+  }
+  return { text: `补全完成：${done}/${requested} 条已写入标题与封面`, warn: false };
+}
+
 export default function TargetsView({ actions }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -33,6 +59,8 @@ export default function TargetsView({ actions }) {
   /** 已加载的条数上限 —— 点「加载更多」放大 */
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [enriching, setEnriching] = useState(null);
+  /** 上一次补全的账面结果 `{ text, warn }`，null = 还没跑过 */
+  const [enrichResult, setEnrichResult] = useState(null);
 
   const reload = useCallback(async (nextLimit) => {
     setLoading(true);
@@ -51,6 +79,7 @@ export default function TargetsView({ actions }) {
   useAutoRefresh('targets', () => reload());
 
   async function enrich() {
+    setEnrichResult(null);
     const r = await window.dy.queue.enqueue({
       command: 'enrich',
       argv: ['--missing', '--limit', '200'],
@@ -67,7 +96,16 @@ export default function TargetsView({ actions }) {
     const un = window.dy.queue.onChanged((payload) => {
       const t = (payload.tasks || []).find(x => x.id === enriching);
       if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
+        const id = enriching;
         setEnriching(null);
+        if (t.status === 'done') {
+          // 数量只在完整结果里（resultSummary 对对象只有键名清单）。
+          // 200 条的 updated 数组有可能超过队列 64KB 的结果上限 ——
+          // 那时取回 null，**不能**报成"补全 0 条"，那是在说一件没发生的事。
+          window.dy.queue.result(id).then((r) => setEnrichResult(describeEnrich(r && r.result)));
+        } else {
+          setEnrichResult({ text: `补全未完成：${t.error || '未知原因'}`, warn: true });
+        }
         reload();
       }
     });
@@ -143,6 +181,8 @@ export default function TargetsView({ actions }) {
           </div>
         </div>
       )}
+
+      <Notice data={enrichResult} style={{ margin: '0 0 12px' }} />
 
       {items.length === 0
         ? (

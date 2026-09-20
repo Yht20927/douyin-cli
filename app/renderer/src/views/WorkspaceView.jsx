@@ -5,6 +5,7 @@ import EmptyState from '../components/EmptyState.jsx';
 import LoadingState from '../components/LoadingState.jsx';
 import Spinner from '../components/Spinner.jsx';
 import ProgressBar from '../components/ProgressBar.jsx';
+import Notice from '../components/Notice.jsx';
 import { ago, fileNameOf } from '../format.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
@@ -128,10 +129,11 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   /**
    * 正在等待结果的队列任务。
    *
-   * { id, kind: 'fetch' | 'publish', text?, cid? } —— 带 kind 是有原因的：
+   * { id, kind: 'fetch' | 'publish' | 'analyze' | 'delete', text?, cid? } —— 带 kind 是有原因的：
    * 此前这里只存一个 id，于是**发布**失败时也报"拉取未完成"，
    * 而且用户手写的那段话已经因为"入队成功"被清空了，再也找不回来。
-   * 现在按 kind 分别处理，发布的失败会把内容还给编辑框。
+   * 现在按 kind 分别处理，发布的失败会把内容还给编辑框；
+   * 删除连成功也要单独处理 —— 它得去读结果里的本地回退明细。
    */
   const pendingRefresh = useRef(null);
 
@@ -225,6 +227,14 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
       if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
         pendingRefresh.current = null;
         if (t.status === 'done') {
+          if (p.kind === 'delete') {
+            // 删除的"成功"有两半：抖音那边没了 + 本地账目跟着回退。
+            // 回退可能只做了一半（移除那行成功、把父评论放回未回复失败），
+            // 而 core 早就把 localRemoved/localUnmarked/localError 返回了 ——
+            // 之前界面只看任务状态，一律报"已删除"，用户于是对着一条
+            // 抖音上根本不存在、本地仍显示「已回复」的评论纳闷。
+            window.dy.queue.result(t.id).then((r) => setNotice(describeDelete(r && r.result)));
+          }
           reload();
         } else if (p.kind === 'publish') {
           // 发布没成（失败/被策略拦下/取消），把内容还给编辑框 ——
@@ -643,11 +653,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
         </div>
       </div>
 
-      {notice && (
-        <div className="notice" style={{ margin: '0 0 12px' }}>
-          <div>{notice}</div>
-        </div>
-      )}
+      <Notice data={notice} style={{ margin: '0 0 12px' }} />
 
       {/* 全量拉取：进度和结果都留在这一页。
           翻页要几分钟，用户多半就停在这里看着；只把进度丢进队列页等于逼他去别处找。
@@ -1211,6 +1217,33 @@ function summarizeBulk(res) {
     skipped,
     failed,
   };
+}
+
+/**
+ * 删除结果的说明。
+ *
+ * 抖音侧删掉之后，本地还要回退：移除我们那行回复、把被回复的父评论放回未回复。
+ * 三种情况分开说，因为用户下一步该做的事完全不同：
+ *   - 回退没干净：**不能**说"刷新一下就好了"。实测下一次「拉取评论」只会
+ *     upsert 已有行，`replied` 标记不会被纠正回来，那条仍显示「已回复」。
+ *   - 本地没有这一行（命令行删的、或从没拉过）：列表本来就不变，别报成失败。
+ */
+function describeDelete(res) {
+  if (!res || typeof res !== 'object') {
+    return { text: '抖音那边已删除；本地回退明细没取回来，看这条评论是否已从「已回复」里消失即可确认。', warn: false };
+  }
+  if (res.localError) {
+    return { text: `抖音那边已删除，但本地没回退干净：${res.localError} —— 列表里那条可能仍显示「已回复」，重新拉取也不会自动纠正`, warn: true };
+  }
+  const removed = Number(res.localRemoved) || 0;
+  const unmarked = Number(res.localUnmarked) || 0;
+  if (!removed && !unmarked) {
+    return { text: '已删除。本地没有这条的记录，所以列表不变（常见于命令行删过的评论）', warn: false };
+  }
+  const parts = [];
+  if (removed) parts.push(`移除 ${removed} 条`);
+  if (unmarked) parts.push(`${unmarked} 条回到待回复`);
+  return { text: `已删除，本地已同步：${parts.join('、')}`, warn: false };
 }
 
 /**

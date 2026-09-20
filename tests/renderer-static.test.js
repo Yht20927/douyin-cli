@@ -283,3 +283,55 @@ describe('拼出来的类名也必须有样式', () => {
     expect(stale).toEqual([]);
   });
 });
+
+describe('core 返回的明细必须在界面里被读出来（写链路的结果接线）', () => {
+  // 背景：补全 / 删除回复 / 私信这三条链路各自都往返回值里塞了明细
+  // （failedCount、localRemoved/localUnmarked、conversation_id），而三个视图以前
+  // 只判"任务成没成"。core 算出来了 ≠ 用户看得见 —— 与 className 写了没样式
+  // 是同一类债，运行时没有任何症状，只能在静态这一步钉住。
+  const CHAIN_VIEWS = [
+    { view: 'TargetsView.jsx', field: 'failedCount', helper: 'describeEnrich' },
+    { view: 'WorkspaceView.jsx', field: 'localRemoved', helper: 'describeDelete' },
+    { view: 'UserView.jsx', field: 'conversation_id', helper: null },
+  ];
+
+  /**
+   * 去掉注释之后的源码。
+   *
+   * 必须先剥注释再匹配：这些字段名在**注释**里出现得比在代码里还勤
+   * （"core 早就把 localRemoved 返回了"这种话），拿原始文本做正则的话
+   * 护栏会被自己的注释喂饱 —— 视图删掉读取逻辑它照样绿。
+   * 行注释的粗剥会把 URL 字符串的后半截一起削掉，这里只匹配标识符与调用，
+   * 那种损失不影响判定。
+   */
+  function codeOfView(name) {
+    return fs.readFileSync(path.join(RENDERER_SRC, 'views', name), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+  }
+
+  it('三个视图都渲染 Notice，并在任务完成后把结果取回来', () => {
+    for (const { view } of CHAIN_VIEWS) {
+      const code = codeOfView(view);
+      expect(code, `${view} 应引入 Notice`).toMatch(/import\s+Notice\s+from/);
+      expect(code, `${view} 应渲染 <Notice`).toMatch(/<Notice\s/);
+      // 只看"取回结果"这一次调用：任务状态本身不含明细
+      expect(code, `${view} 应在任务完成后读 queue.result()`).toMatch(/queue\.result\(/);
+    }
+  });
+
+  it('每个视图都读到自己那条链路的明细字段', () => {
+    for (const { view, field } of CHAIN_VIEWS) {
+      expect(codeOfView(view), `${view} 没读 ${field}`).toContain(field);
+    }
+  });
+
+  it('翻译结果的 helper 真的被调用（不是写了没用）', () => {
+    for (const { view, helper } of CHAIN_VIEWS) {
+      if (!helper) continue;
+      const calls = (codeOfView(view).match(new RegExp(`\\b${helper}\\s*\\(`, 'g')) || []).length;
+      // 1 = 只有那句 function 定义
+      expect(calls, `${view} 里的 ${helper} 只有定义、没人调用`).toBeGreaterThanOrEqual(2);
+    }
+  });
+});
