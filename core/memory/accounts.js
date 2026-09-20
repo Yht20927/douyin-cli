@@ -10,6 +10,7 @@
 
 const { getDb } = require('./db');
 const logger = require('../runtime/logger');
+const { flattenConnections } = require('../shared/protocol');
 const PLATFORM = 'douyin';
 
 /**
@@ -149,12 +150,17 @@ function setCurrent(uid) {
  * 只取 `alive` 的连接：断开的页面还留着最后上报的账号，那是历史而不是现状，
  * 拿它当"当前账号"会让界面显示一个已经关掉的页面所属的账号。
  *
- * @param {object} status - bridge.getStatus() 的返回
+ * 形状不假设：`status.connections` 可能是服务端 `/api/status` 原样的"按 site 分组
+ * 的对象"，也可能是主进程快照里的数组 —— 交给 `flattenConnections` 一处判定。
+ * 这里曾经直接 `for…of` 遍历，遇到对象抛 TypeError，被调用方的 catch 吞掉，
+ * 结果"自动跟随在线账号"在 CLI 侧永远不成立（界面却一切正常，因为主进程摊平过）。
+ *
+ * @param {object} status - bridge.getStatus() 或 BridgeClient.status() 的返回
  * @returns {string[]} 去重后的 uid，按连接顺序
  */
 function aliveUids(status) {
   const out = [];
-  for (const c of (status && status.connections) || []) {
+  for (const c of flattenConnections(status)) {
     if (!c || c.alive === false) continue;
     const uid = c.account && c.account.uid != null ? String(c.account.uid) : null;
     if (uid && !out.includes(uid)) out.push(uid);
@@ -181,13 +187,18 @@ async function resolveCurrent(ctx, opts = {}) {
 
   let online = [];
   if (ctx && ctx.bridge && typeof ctx.bridge.status === 'function') {
+    let status = null;
     try {
-      online = aliveUids(await ctx.bridge.status());
+      status = await ctx.bridge.status();
     } catch (e) {
       // 桥接不可用（服务没起/网络问题）不是错误 —— 退回持久化的选择，
-      // 让"看本地数据"这类只读操作照常可用
-      online = [];
+      // 让"看本地数据"这类只读操作照常可用。但要说一声：以前这里连
+      // `aliveUids` 抛出的 TypeError 一起吞了，于是"跟随在线账号"永远不生效
+      // 而没有任何痕迹（见 aliveUids 的注释）。
+      logger.warn(`[accounts] 取桥接状态失败，退回持久化选择: ${e.message}`);
     }
+    // 形状解析刻意放在 try 外面：它出错是代码 bug，不是"桥接没起"
+    if (status) online = aliveUids(status);
   }
 
   if (explicit) return { uid: explicit, source: 'explicit', candidates: online };

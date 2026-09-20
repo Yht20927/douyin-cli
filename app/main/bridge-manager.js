@@ -11,6 +11,7 @@
 
 const { BridgeClient } = require('../../core/client/bridge-client');
 const { createBridgeServer } = require('../../core/server/create-server');
+const { flattenConnections } = require('../../core/shared/protocol');
 const configModule = require('../../core/config');
 const loggerModule = require('../../core/runtime/logger');
 
@@ -61,29 +62,25 @@ function createBridgeManager(opts = {}) {
     }
   }
 
-  /** 从 /api/status 的响应里取出活跃连接 */
+  /**
+   * 从 /api/status 的响应里取出活跃连接并整成界面的形状。
+   * 摊平（按 site 分组 → 数组）交给 `flattenConnections` 那一处，这里只做字段整形。
+   */
   function extractConnections(status) {
-    if (!status || !status.connections) return [];
-    const out = [];
-    for (const [site, conns] of Object.entries(status.connections)) {
-      for (const c of (conns || [])) {
-        out.push({
-          site,
-          id: c.id,
-          url: c.url,
-          title: c.title,
-          // 登录账号信息（新版脚本注册时上报）。旧版脚本没有这个字段，
-          // 保持 null —— 界面按"未识别账号"显示，而不是报错
-          account: c.account || null,
-          // 脚本能力版本（≥2 才上报账号）。null = 旧脚本，界面的
-          // "未识别"提示要引导重装；有版本号则引导登录/刷新
-          clientVersion: typeof c.clientVersion === 'number' ? c.clientVersion : null,
-          alive: c.alive !== false,
-          lastActivity: c.lastActivity,
-        });
-      }
-    }
-    return out;
+    return flattenConnections(status).map(c => ({
+      site: c.site,
+      id: c.id,
+      url: c.url,
+      title: c.title,
+      // 登录账号信息（新版脚本注册时上报）。旧版脚本没有这个字段，
+      // 保持 null —— 界面按"未识别账号"显示，而不是报错
+      account: c.account || null,
+      // 脚本能力版本（≥2 才上报账号）。null = 旧脚本，界面的
+      // "未识别"提示要引导重装；有版本号则引导登录/刷新
+      clientVersion: typeof c.clientVersion === 'number' ? c.clientVersion : null,
+      alive: c.alive !== false,
+      lastActivity: c.lastActivity,
+    }));
   }
 
   async function poll() {

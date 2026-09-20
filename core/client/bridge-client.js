@@ -1,6 +1,7 @@
 // lib/client/bridge-client.js — HTTP 客户端封装（CLI / Agent SDK 共用）
 
 const http = require('http');
+const { flattenConnections } = require('../shared/protocol');
 
 class BridgeClient {
   /**
@@ -35,10 +36,16 @@ class BridgeClient {
 
   /**
    * 获取连接状态
-   * @returns {Promise<object>}
+   *
+   * ⚠️ `connections` 在这里被摊平成数组（服务端线格式是按 site 分组的对象），
+   * 所以下游一律可以 `for…of status.connections`。理由见 protocol.js 的
+   * `flattenConnections`。
+   *
+   * @returns {Promise<object>} 原样响应，仅 `connections` 换成数组
    */
   async status() {
-    return this._get('/api/status');
+    const data = await this._get('/api/status');
+    return { ...data, connections: flattenConnections(data) };
   }
 
   /**
@@ -111,4 +118,4 @@ class BridgeClient {
   }
 }
 
-module.exports = { BridgeClient };
+module.exports = { BridgeClient, flattenConnections };

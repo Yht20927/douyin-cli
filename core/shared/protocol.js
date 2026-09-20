@@ -72,8 +72,33 @@ function validateCallRequest(body) {
   };
 }
 
+/**
+ * 把 `/api/status` 的 connections 摊平成"连接列表"。
+ *
+ * 服务端返回的是**按 site 分组的对象**（`{'douyin.com': [conn, …]}`）—— 那是线格式，
+ * 便于人直接看；而消费方要的是一个数组。以前各处各自假设形状：
+ * `accounts.aliveUids` 用 `for…of` 遍历 `status.connections`，对象不可迭代抛
+ * TypeError，异常又被 `resolveCurrent` 的 catch 当成"桥接不可用"吞掉 —— 于是
+ * "自动跟随唯一在线账号"对所有走 BridgeClient 的调用方（CLI、Agent SDK）永远不成立。
+ * 这里是唯一一份适配器。
+ *
+ * @param {object} status - 服务端原样响应，或主进程已摊平的快照（数组）
+ * @returns {Array<object>} 每项带 `site`；空/缺失返回 []
+ */
+function flattenConnections(status) {
+  const grouped = status && status.connections;
+  if (!grouped) return [];
+  if (Array.isArray(grouped)) return grouped;
+  const out = [];
+  for (const [site, conns] of Object.entries(grouped)) {
+    for (const c of conns || []) out.push({ ...c, site });
+  }
+  return out;
+}
+
 module.exports = {
   HTTP_API,
   normalizeAccount,
   validateCallRequest,
+  flattenConnections,
 };
