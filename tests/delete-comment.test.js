@@ -154,6 +154,47 @@ describe('删除评论', () => {
     const r = await cmdDelete(ctx, ['unknown-cid', '--no-throttle']);
     expect(calls).toHaveLength(1);
     expect(r).toMatchObject({ localRemoved: 0, localUnmarked: 0 });
+    expect(r.localError).toBe(null);
+  }));
+
+  it('本地回退某一步失败：后面的步骤照做，失败项写进 localError', withTempEnv(async ({ comments, corpus, cmdDelete }) => {
+    // 旧写法三步共用一个 try：`remove` 一抛，"父评论回到未回复"就整个跳过了，
+    // 报出来的却是删除成功 —— 半回退被当成全回退。
+    seedReplied(comments, corpus);
+    const orig = comments.remove;
+    comments.remove = () => { throw new Error('数据库被锁'); };
+    try {
+      const { ctx } = makeCtx();
+      const r = await cmdDelete(ctx, ['r1', '--no-throttle']);
+
+      // 命令仍然算成功：评论在抖音上已经删了，报错只会让人再删一次
+      expect(r.status).toBe('deleted');
+      // 但失败必须说得出名字，而不是安静地显示成"已回复消失了"
+      expect(r.localRemoved).toBe(0);
+      expect(r.localError).toContain('数据库被锁');
+      // 关键：remove 失败没有连带把第二步跳掉
+      expect(r.localUnmarked).toBe(1);
+      expect(comments.get('q1').replied).toBe(false);
+      // 那行回复确实还在库里（没删掉）—— 界面要靠 localError 说明这件事
+      expect(comments.get('r1')).not.toBeNull();
+    } finally {
+      comments.remove = orig;
+    }
+  }));
+
+  it('语料库留痕只返回 false 时，也要报出来而不是当成成功', withTempEnv(async ({ comments, corpus, cmdDelete }) => {
+    seedReplied(comments, corpus);
+    const orig = corpus.setOutcome;
+    corpus.setOutcome = () => false;
+    try {
+      const { ctx } = makeCtx();
+      const r = await cmdDelete(ctx, ['r1', '--no-throttle']);
+      expect(r.localError).toContain('语料库');
+      // 其余两步照常成功
+      expect(r).toMatchObject({ localRemoved: 1, localUnmarked: 1 });
+    } finally {
+      corpus.setOutcome = orig;
+    }
   }));
 });
 

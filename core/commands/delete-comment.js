@@ -66,21 +66,41 @@ async function cmdDeleteComment(ctx, args) {
   }
 
   // ── 本地账目回退（抖音那边已经删掉了，这里失败只影响本地显示）──
+  //
+  // 三步**各自独立判定**，不共用一个 try：共用时第一步一抛，后面两步就整个跳过了，
+  // 报出来的却是"回退完成"—— 半回退被当成全回退，比不回退更难查。
+  // 仍然不往外抛：评论在抖音上已经没了，报错只会让用户以为没删掉而再删一次。
+  const localErrors = [];
   let removed = 0;
   let unmarked = 0;
+
   try {
     // 先记语料库的 outcome，再删行 —— 反过来的话 findByReplyCid 就查不到东西了
     const row = corpus.findByReplyCid(String(cid));
-    if (row) corpus.setOutcome(row.id, 'deleted');
-
-    removed = comments.remove(String(cid));
-    unmarked = comments.unmarkReplied(String(cid));
-    if (removed || unmarked) {
-      logger.info(`[delete-comment] 本地同步：移除 ${removed} 行，${unmarked} 条父评论回到未回复`);
+    // setOutcome 失败不抛，只返回 false（core/memory/corpus.js）
+    if (row && !corpus.setOutcome(row.id, 'deleted')) {
+      localErrors.push('语料库没能记下"这条已删除"');
     }
   } catch (e) {
-    // 不抛：评论在抖音上已经删了，这里报错只会让用户以为没删掉而再删一次
-    logger.warn(`[delete-comment] 本地账目回退失败（抖音侧已删除）: ${e.message}`);
+    localErrors.push(`语料库留痕失败（${e.message}）`);
+  }
+
+  try {
+    removed = comments.remove(String(cid));
+  } catch (e) {
+    localErrors.push(`本地那行没能移除（${e.message}）`);
+  }
+
+  try {
+    unmarked = comments.unmarkReplied(String(cid));
+  } catch (e) {
+    localErrors.push(`被回复的评论没能回到未回复（${e.message}）`);
+  }
+
+  if (localErrors.length) {
+    logger.warn(`[delete-comment] 本地回退有失败项（抖音侧已删除）: ${localErrors.join('；')}`);
+  } else if (removed || unmarked) {
+    logger.info(`[delete-comment] 本地同步：移除 ${removed} 行，${unmarked} 条父评论回到未回复`);
   }
 
   const result = {
@@ -90,6 +110,8 @@ async function cmdDeleteComment(ctx, args) {
     // 界面据此说明"本地也清理了什么"，而不是只说一句"已删除"
     localRemoved: removed,
     localUnmarked: unmarked,
+    // 只有本地确实没回退干净时才有这一项；界面原样转达，别自己编原因
+    localError: localErrors.length ? localErrors.join('；') : null,
   };
   ctx.audit.endOperation('success', { cid }, { result });
   return result;

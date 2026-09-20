@@ -628,19 +628,17 @@ function dailyReplyCounts(opts = {}) {
  *
  * @param {string} replyCid - 被删掉的那条回复的 cid
  * @returns {number} 受影响的父评论条数（0 表示没有评论指着它）
+ * @throws 读不到库时抛出。**不返回 0** —— 0 的正当含义是"确实没有父评论指着它"，
+ *   与"查不出来"必须分开：这里返回 0 的表现是删除之后界面仍显示「已回复」，
+ *   而没人会去翻 debug 日志（同 cleanupBefore 当年那个坑）。
  */
 function unmarkReplied(replyCid) {
   if (!replyCid) return 0;
-  try {
-    const info = getDb().prepare(`
-      UPDATE comments SET replied = 0, reply_cid = NULL
-      WHERE platform = ? AND reply_cid = ?
-    `).run(PLATFORM, String(replyCid));
-    return info.changes;
-  } catch (e) {
-    logger.debug('[comments.unmarkReplied] failed: ' + e.message);
-    return 0;
-  }
+  const info = getDb().prepare(`
+    UPDATE comments SET replied = 0, reply_cid = NULL
+    WHERE platform = ? AND reply_cid = ?
+  `).run(PLATFORM, String(replyCid));
+  return info.changes;
 }
 
 /**
@@ -651,19 +649,15 @@ function unmarkReplied(replyCid) {
  * （`corpus.setOutcome(id, 'deleted')`，delete-comment 命令已经在做）。
  *
  * @param {string} cid
- * @returns {number} 删除的行数（0 = 本来就没有）
+ * @returns {number} 删除的行数（0 = 本来就没有这一行）
+ * @throws 读不到库时抛出，理由同 unmarkReplied
  */
 function remove(cid) {
   if (!cid) return 0;
-  try {
-    const info = getDb().prepare(
-      'DELETE FROM comments WHERE platform = ? AND cid = ?'
-    ).run(PLATFORM, String(cid));
-    return info.changes;
-  } catch (e) {
-    logger.debug('[comments.remove] failed: ' + e.message);
-    return 0;
-  }
+  const info = getDb().prepare(
+    'DELETE FROM comments WHERE platform = ? AND cid = ?'
+  ).run(PLATFORM, String(cid));
+  return info.changes;
 }
 
 /**
