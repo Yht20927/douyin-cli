@@ -44,7 +44,7 @@
 | 🎭 **7 种人格** | 参数（权重/温度/长度/emoji 概率/禁用词/示例语料）全部可在界面改，可加自定义人格 |
 | 🔀 **回复来源可切** | AI / 固定内容 / 混合三种模式；固定内容支持**顺序 / 随机 / 洗牌不重复 / 加权**四种循环 |
 | 🛡️ **PolicyEngine** | 运营规则代码化：每日配额、轮次、单轮上限、去重、熔断、发布前内容校验 |
-| ⏱️ **随机器节奏** | 写操作 40–55s / 读操作 30–50s 随机，写间隔硬强制 |
+| ⏱️ **随机器节奏** | 写操作 40–55s / 读操作 30–50s 随机（两个间隔分别生效），写间隔硬强制 |
 | 💾 持久化记忆 | SQLite schema v10（评论/用户/视频/语料/失败模式/草稿/用量） |
 | 📝 草稿箱 | 生成→审核→发布全流程；草稿可带附图 |
 | 🧩 **配置全部可改** | 9 个分组、60+ 项，改完立即生效；未生效的项目在界面上会被明确标出 |
@@ -116,7 +116,8 @@ npm run app:start
 node server.js                 # 启动 Bridge Server（桌面应用已内嵌，CLI 下需单独起）
 node cli.js my                 # 验证连接
 node cli.js search "关键词"
-node cli.js get <aweme_id> --new --depth 1
+node cli.js get <aweme_id> --new --depth 1        # 只拉最新一页
+node cli.js get <aweme_id> --all                  # 全量：翻到底，页间等 1-3 秒
 node cli.js getReply <aweme_id> <cid>      # 按配置的 reply.mode 生成
 node cli.js post <aweme_id> "内容" --reply-to <cid>
 ```
@@ -210,7 +211,7 @@ node cli.js getReply <aweme_id> <cid>
 ## 📋 命令清单
 
 > 桌面应用里这些能力都在界面上；命令行适合脚本化与调试。
-> 完整的 27 个命令见 [`SKILL.md`](./SKILL.md)。
+> 完整的 28 个命令见 [`SKILL.md`](./SKILL.md)。
 
 ### 读
 
@@ -219,7 +220,7 @@ node cli.js getReply <aweme_id> <cid>
 | `my` | 我的作品列表 |
 | `user <sec_user_id\|主页URL>` | 用户主页作品 |
 | `search "关键词"` | 搜索视频 |
-| `get <aweme_id>` | 拉取评论（`--new` 增量 / `--all` 全量 / `--depth` 嵌套） |
+| `get <aweme_id>` | 拉取评论（`--new` 增量 / `--all` 全量 / `--depth` 嵌套）。`--all` 逐页拉到底，跨页按 cid 去重、页间等 `intervals.commentPage`（默认 1-3 秒） |
 | `replies <aweme_id> <cid>` | 单条评论的回复列表 |
 | `dm` | 私信会话与消息 |
 
@@ -329,7 +330,7 @@ Node 侧除了本地文件读写之外不直接访问抖音。
 
 | 维度 | 对策 |
 |------|------|
-| **固定时间间隔** | 写操作 40–55s 硬强制；桌面端读操作同样强制 |
+| **固定时间间隔** | 写操作 40–55s 硬强制；桌面端读操作同样强制（读用自己的 30–50s，不占写间隔） |
 | **AI 内容特征** | 7 种人格轮换 + AI 特征词黑名单 + 发布前硬校验 |
 | **重复内容** | 语料库 UNIQUE 去重 + 固定内容支持「洗牌不重复」 |
 | **回复质量** | 长度硬校验（3–55 字）、行数上限、结构化模式正则 |
@@ -353,7 +354,7 @@ douyinToolApp/
 │   ├── reply-source/         # 回复来源分发（ai/fixed/hybrid）+ 四种循环方式 + 图片附加
 │   ├── reply-engine/         # ReplyEngine（人格绑定 + 三层上下文 + 5 种 prompt 组装）
 │   ├── memory/               # SQLite（经 sqlite-driver 适配 node:sqlite，schema v10）
-│   ├── commands/             # 27 个命令
+│   ├── commands/             # 28 个命令
 │   ├── server/               # 内嵌 Bridge Server（可 start/stop）
 │   ├── shared/               # 序列化 / 解析 / 协议 / 清洗
 │   ├── personas.js           # 人格：内置定义 + 配置叠加 → 生效列表
@@ -382,8 +383,7 @@ douyinToolApp/
 ## 📦 依赖
 
 - Node.js 18+
-- `ws` — WebSocket
-- `better-sqlite3` — SQLite
+- `node:sqlite`（Node 内置，无原生模块）— SQLite
 - Chrome + Tampermonkey + 油猴脚本
 - LLM API key（OpenAI 兼容或 Anthropic 原生）
 

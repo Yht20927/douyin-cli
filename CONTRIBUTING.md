@@ -11,7 +11,7 @@
 ```bash
 git clone https://github.com/Yht20927/douyin-cli.git
 cd douyin-cli
-npm install            # better-sqlite3 原生模块，需预编译
+npm install            # 无原生模块（SQLite 走 Node 内置的 node:sqlite）
 cp config.example.json config.json   # 填 bridge.token + llm.api_key
 
 # Bridge Server（常驻，跨 session 复用）

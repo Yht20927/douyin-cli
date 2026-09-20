@@ -21,7 +21,7 @@ CLI / 桌面应用 ──HTTP──▶ 内嵌 Bridge Server ──长轮询─�
 改造前后最大的区别：**运营规则从 markdown 变成了代码强制**。以前 15 条红线全靠
 操作者自觉，现在由 `core/policy` 拦截，裸调命令行也跳不掉。
 
-## 命令清单（27 个）
+## 命令清单（28 个）
 
 ### 读
 
@@ -30,8 +30,9 @@ CLI / 桌面应用 ──HTTP──▶ 内嵌 Bridge Server ──长轮询─�
 | `my` | 我的作品列表 |
 | `user <sec_uid>` | 用户主页作品 |
 | `search <关键词>` | 搜索视频 |
-| `get <aweme_id>` | 拉取某视频的评论（`--new` 增量 / `--all` 全量 / `--depth` 嵌套回复） |
+| `get <aweme_id>` | 拉取某视频的评论（`--new` 增量 / `--all` 全量 / `--depth` 嵌套回复）。`--all` 逐页拉到底，跨页按 cid 去重、页间等 `intervals.commentPage`（默认 1-3 秒） |
 | `replies <aweme_id> <cid>` | 单条评论的回复列表 |
+| `enrich [aweme_id]` | 补全视频信息（标题/封面/播放点赞）。`--missing` 只补没标题的（默认）、`--all` 全部重抓 |
 | `dm` | 私信会话与消息 |
 
 ### 写（受策略闸门 + 节奏强制约束）
@@ -117,7 +118,7 @@ core/           业务逻辑（Electron 主进程直接 require，无原生依�
   reply-source/ 回复来源分发（ai / fixed / hybrid）+ 四种循环方式 + 图片附加
   reply-engine/ AI 回复（三层上下文 + 人格绑定 + prompt 组装）
   memory/       SQLite（经 sqlite-driver 适配 node:sqlite）
-  commands/     27 个命令
+  commands/     28 个命令
   personas.js   人格（内置定义 + 配置叠加 → 生效列表）
   prompts.js    提示词模板的读写 / 备份 / 恢复默认
 app/            Electron 应用（main / preload / renderer）

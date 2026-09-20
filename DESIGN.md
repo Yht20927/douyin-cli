@@ -1,41 +1,45 @@
 ---
-version: alpha
+version: 2
 name: douyin-tool-design
-description: "A warm-charcoal desktop tool for a single operator babysitting a publishing cadence. The canvas is warm near-black (#2b2622) rather than the category's usual cold gray; text is warm off-white (#f7f5f0) in a four-step ladder. Saturation is reserved entirely for status: the screen's only chromatic element is the can-send / waiting / blocked triad plus its tints. Buttons, selection and focus rings are all neutral. Type is the system CJK stack at 13px, with tabular-numerals monospace for anything numeric — countdowns, IDs, quota counters — because in this UI the numbers ARE the information."
+description: "A refined warm-graphite desktop tool for a single operator babysitting a publishing cadence. The canvas is a deep warm graphite (#211d1a) rather than the category's usual cold gray; text is warm off-white (#f5f2ea) in a four-step ladder. Separation relies on alpha hairlines (warm white at 7-20% opacity) instead of solid brownish grays — alpha lines never introduce a third color between surfaces, which is the #1 cause of muddy dark UIs. Saturation is reserved entirely for status: the only chromatic elements are the can-send / waiting / blocked triad plus tints and glows. Buttons, selection and focus rings are all neutral. Type is the system CJK stack at 13px, with tabular-numerals monospace for anything numeric. Depth comes from glow (status dots with halos, gradient status cards, blurred modal backdrops) rather than heavier borders."
 colors:
-  canvas: "#2b2622"
-  surface-1: "#252120"
-  surface-2: "#383330"
-  surface-3: "#423c37"
-  surface-4: "#4d4642"
-  hairline: "#3f3a36"
-  hairline-strong: "#55504a"
-  ink: "#f7f5f0"
-  ink-2: "#c9c0ad"
-  ink-3: "#aea69c"
-  ink-4: "#7d766d"
-  status-ok: "#5cbe8b"
-  status-wait: "#d9a33f"
-  status-bad: "#de6a5e"
-  status-info: "#7ba7d4"
-  on-primary: "#2b2622"
+  canvas: "#211d1a"
+  surface-1: "#1a1715"
+  surface-2: "#2a2521"
+  surface-3: "#352f29"
+  surface-4: "#413a33"
+  hairline: "rgba(255,240,222,.07)"
+  hairline-strong: "rgba(255,240,222,.13)"
+  hairline-solid: "rgba(255,240,222,.20)"
+  ink: "#f5f2ea"
+  ink-2: "#c9c2b4"
+  ink-3: "#a69d8f"
+  ink-4: "#7a7266"
+  status-ok: "#4cc38a"
+  status-wait: "#e3a93e"
+  status-bad: "#e8655a"
+  status-info: "#74a9e8"
+  on-primary: "#26211c"
+  sunken: "rgba(0,0,0,.22)"
+  chart-lo: "#5c5348"
+  chart-mid: "#6b6156"
+  chart-hi: "#8a7d6a"
 typography:
   page-title:
-    fontFamily: system CJK stack
-    fontSize: 20px
-    fontWeight: 600
+    fontSize: 21px
+    fontWeight: 650
+    letterSpacing: "-.015em"
   band-word:
-    fontFamily: system CJK stack
     fontSize: 17px
-    fontWeight: 600
+    fontWeight: 650
   countdown:
     fontFamily: ui-monospace / SF Mono / Consolas
-    fontSize: 30px
-    fontWeight: 600
+    fontSize: 32px
+    fontWeight: 650
+    textShadow: "0 0 24px status-wait-glow"
   body:
-    fontFamily: system CJK stack
     fontSize: 13px
-    lineHeight: 1.55
+    lineHeight: 1.6
   caption:
     fontSize: 12px
   micro:
@@ -45,10 +49,11 @@ typography:
     fontSize: 12px
     fontVariantNumeric: tabular-nums
 rounded:
-  xs: 3px
-  sm: 4px
-  md: 6px
-  lg: 10px
+  xs: 4px
+  sm: 6px
+  md: 8px
+  lg: 12px
+  xl: 16px
   pill: 9999px
 spacing:
   s1: 4px
@@ -61,57 +66,71 @@ spacing:
   s8: 64px
 components:
   button-primary:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.canvas}"
-    rounded: "{rounded.sm}"
-    padding: 6px 13px
-  button-primary-hover:
-    backgroundColor: "#fffdf8"
+    background: "linear-gradient(180deg,#fbf8f0,#ece6d8)"
+    textColor: "{colors.on-primary}"
+    rounded: "7px"
+    fontWeight: 600
   button-secondary:
     backgroundColor: "{colors.surface-3}"
-    textColor: "{colors.ink}"
-    border: "1px solid {colors.hairline-strong}"
-    rounded: "{rounded.sm}"
+    border: "1px solid {colors.hairline-solid}"
+    rounded: "7px"
   button-quiet:
     backgroundColor: transparent
     textColor: "{colors.ink-2}"
   text-input:
-    backgroundColor: "{colors.surface-2}"
-    textColor: "{colors.ink}"
+    backgroundColor: "{colors.sunken}（凹进去，比卡片暗）"
     border: "1px solid {colors.hairline-strong}"
-    rounded: "{rounded.sm}"
-  list-row:
-    backgroundColor: "{colors.surface-2}"
-    textColor: "{colors.ink}"
-    borderTop: "1px solid {colors.hairline}"
-  band:
+    focusBorder: "rgba(255,240,222,.35)"
+    rounded: "7px"
+  list-card:
     backgroundColor: "{colors.surface-2}"
     border: "1px solid {colors.hairline}"
-    rounded: "{rounded.md}"
-    accentBar: "3px, status color"
-  progress-track:
-    backgroundColor: "{colors.surface-3}"
-    height: 4px
-    rounded: "{rounded.pill}"
-  progress-fill:
-    backgroundColor: "{colors.ink-3}"
-    transition: "width .3s ease-out"
-  toast:
-    backgroundColor: "{colors.surface-3}"
-    border: "1px solid {colors.hairline-strong}"
-    rounded: "{rounded.md}"
-    shadow: "{shadow.2}"
-  modal:
-    backgroundColor: "{colors.surface-2}"
-    border: "1px solid {colors.hairline-strong}"
     rounded: "{rounded.lg}"
+    topInsetHighlight: "{shadow.3}"
+  band:
+    background: "status color @5-6% gradient over surface-2"
+    border: "status color @18-20%"
+    leftBar: "3px status color"
+    dot: "8px + halo (currentColor @18% ring)"
+    rounded: "{rounded.lg}"
+  quota-cell:
+    backgroundColor: "{colors.surface-2}"
+    border: "1px solid {colors.hairline}"
+    rounded: "{rounded.lg}"
+    valueFontSize: 17px
+  toast:
+    background: "surface-3 @88% + backdrop-blur(10px)"
+    rounded: "{rounded.lg}"
+    leftBar: "3px status color + glow"
+  modal:
+    background: "{colors.surface-2}"
+    backdrop: "rgba(12,9,7,.58) + blur(6px)"
+    rounded: "{rounded.xl}"
     shadow: "{shadow.2}"
+  section-title:
+    marker: "3x11px neutral bar before text"
+  sidebar:
+    brand: "30px rounded-square mark + name + version"
+    activeItem: "surface-3 + 2.5px white marker with glow"
 shadow:
-  1: "0 1px 2px rgba(0,0,0,.35)"
-  2: "0 8px 24px rgba(0,0,0,.45)"
+  1: "0 1px 2px rgba(0,0,0,.30)"
+  2: "0 12px 32px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.30)"
+  3: "0 1px 0 rgba(255,240,222,.06) inset（卡片的受光面）"
+glow:
+  ok: "rgba(76,195,138,.35)"
+  wait: "rgba(227,169,62,.35)"
+  bad: "rgba(232,101,90,.35)"
 ---
 
-# DESIGN.md — 抖音评论运营助手
+# DESIGN.md — 抖音评论运营助手（v2 Studio Graphite）
+
+> 这份文件是给**改这个项目界面的人（或 agent）**读的。
+> 所有值都在 `app/renderer/src/styles.css` 的 `:root` 里，这里不重复第二份数字 ——
+> 两边不一致时以 CSS 为准，并回来改这里。
+> v2（2026-09-19）在 v1 的设计原则不变的前提下整体精修：更深更沉的画布、
+> alpha 发丝线、辉光状态卡、毛玻璃弹窗、分段标签、自定义滚动条。
+> "颜色只表示状态 / 四档文字 / token 化"三条纪律全部保留。
+
 
 > 这份文件是给**改这个项目界面的人（或 agent）**读的。
 > 所有值都在 `app/renderer/src/styles.css` 的 `:root` 里，这里不重复第二份数字 ——
@@ -124,8 +143,8 @@ shadow:
 它的存在意义只有一件事：让人安全地守在发布节奏里。所以界面所有设计决策的
 第一优先级是「**现在能不能发**」这一条信息够不够突出，而不是"页面好不好看"。
 
-设计语言取自 **Warp**（暖炭灰）那一系的深色工具界面：暖色画布、极淡的发丝线、
-偏紧的圆角、克制的层级。选它而不是 Linear / Raycast 那一路冷灰，有两个具体理由：
+设计语言源自 **Warp**（暖炭灰）那一系的深色工具界面，v2 又吸收了 Linear / Raycast
+的质感做法：更深的画布、alpha 发丝线、辉光状态、毛玻璃弹窗。选它而不是 Linear / Raycast 那一路冷灰，有两个具体理由：
 
 1. **暖色长时间盯屏更不容易累**，而冷灰在深色下容易显廉价 —— 这是被用户
    直接抱怨"UI 很丑"之后换的。
@@ -140,23 +159,43 @@ shadow:
 
 | token | 值 | 用途 |
 |---|---|---|
-| `--bg` | `#2b2622` | 画布 |
-| `--bg-1` | `#252120` | 侧栏（比画布**暗**一档） |
-| `--bg-2` | `#383330` | 卡片 / 输入框 / 列表行 |
-| `--bg-3` | `#423c37` | hover / 激活底 |
-| `--bg-4` | `#4d4642` | 最上层（极少用） |
+| `--bg` | `#211d1a` | 画布 |
+| `--bg-1` | `#1a1715` | 侧栏（比画布**暗**一档） |
+| `--bg-2` | `#2a2521` | 卡片 / 列表行 |
+| `--bg-3` | `#352f29` | hover / 激活底 / 次级按钮 |
+| `--bg-4` | `#413a33` | 最上层（角标等小面积） |
+
+**发丝线是 alpha 白而不是实色棕灰**（v2 最重要的改变）：
+`--line: rgba(255,240,222,.07)`、`--line-2: .13`、`--line-3: .20`。
+实色线在两层表面之间会形成"第三种颜色"，是深色界面显脏的头号来源；
+alpha 线永远只是"主表面色 + 一点点白"，任何相邻两层都协调。
 
 侧栏比画布暗，不是亮 —— 侧栏是"退到后面"的导航，靠降低亮度而不是靠边框
 把自己和内容分开。反过来做（侧栏更亮）会让它一直抢注意力。
+
+### 凹槽与图表填充（两个"非状态"的中性值）
+
+| token | 值 | 用途 |
+|---|---|---|
+| `--sunken` | `rgba(0,0,0,.22)` | 输入框、条形/环形的**底槽**。比卡片暗一档，读作"挖进去" |
+| `--chart-lo` | `#5c5348` | 图表中性刻度的最暗端：环形的中性段 / 柱子的根部 |
+| `--chart-mid` | `#6b6156` | 横向条的起点 |
+| `--chart-hi` | `#8a7d6a` | 最亮端：横向条的末端 / 柱子的顶部 |
+
+这几个是**表面色不是状态色**，所以必须中性（见 The one rule）。改造前它们散落成
+四套相近但不同的棕（`#6b6156`/`#857968`/`#8a7d6a`/`#5c5348`）加三处裸写的
+`rgba(0,0,0,.22)`，值一样却各写一份 —— 改画布深浅时不会有人记得去改它们。
+现在收敛成"一个凹槽 + 三档中性刻度"，都在 `:root` 一处。
+`charts.jsx` 里也**不允许**出现颜色字面量，环形的底槽走 `.donut-track` 类。
 
 ### 文字（四档，不是三档）
 
 | token | 值 | 用途 |
 |---|---|---|
-| `--text` | `#f7f5f0` | 主文字、标题 |
-| `--text-2` | `#c9c0ad` | 说明、正文 |
-| `--text-3` | `#aea69c` | 元信息、标签 |
-| `--text-4` | `#7d766d` | 脚注、占位符、禁用 |
+| `--text` | `#f5f2ea` | 主文字、标题 |
+| `--text-2` | `#c9c2b4` | 说明、正文 |
+| `--text-3` | `#a69d8f` | 元信息、标签 |
+| `--text-4` | `#7a7266` | 脚注、占位符、禁用 |
 
 **四档是能看出层次的最小数目。** 改造前只有三档，于是"标题下的说明"和
 "最次要的脚注"被迫用同一个颜色 —— 层级一糊，界面就显乱。这是"丑"的
@@ -166,12 +205,14 @@ shadow:
 
 | token | 值 | soft 变体 |
 |---|---|---|
-| `--ok` | `#5cbe8b` | `--ok-soft` `rgba(92,190,139,.15)` |
-| `--wait` | `#d9a33f` | `--wait-soft` |
-| `--bad` | `#de6a5e` | `--bad-soft` |
-| `--info` | `#7ba7d4` | `--info-soft` |
+| `--ok` | `#4cc38a` | `--ok-soft` 14% · `--ok-glow` 35% |
+| `--wait` | `#e3a93e` | `--wait-soft` · `--wait-glow` |
+| `--bad` | `#e8655a` | `--bad-soft` · `--bad-glow` |
+| `--info` | `#74a9e8` | `--info-soft` |
 
-每个色配一个 15% 的 soft 变体做底色。改造前这些是硬编码的 rgba，而且
+每个色配 soft（14%，提示条底色）与 glow（35%，辉光点/发光条）两个变体，
+浓度在 `:root` 定死一处。v2 的状态色第一次有了"空间感"：
+状态点带 halo、状态带与提示条带同色渐变底光，但面积依然克制。改造前这些是硬编码的 rgba，而且
 两处浓度还不一样（警示 `.07`、成功 `.14`）—— 同一个界面里两种深浅，
 看起来就是"没做完"。
 
@@ -196,7 +237,7 @@ shadow:
   ID、路径 —— 在这个界面里数字本身就是信息，**让它们对齐比让它们好看重要**。
   倒计时每 500ms 重算一次，不用定宽数字就会左右抖动。
 - 状态带的主词（「已熔断」）是 17px —— 比正文大一档，但不抢倒计时的位置。
-- **全页最大的字是倒计时（30px，`--fs-2xl`）**，不是标题。它配得上这个位置：
+- **全页最大的字是倒计时（32px，`--fs-2xl`）**，不是标题。它配得上这个位置：
   这个工具的存在意义就是让人守在发布节奏里，"还要等多久"是屏幕上最该被看见的数字。
 
 ## Layout
@@ -212,8 +253,8 @@ shadow:
 
 ### 宽度与居中
 
-- 普通页面 `.main-col` 上限 880px，**横向居中**。
-- 工作台 `.workspace` 上限 1240px（两栏列表 + 详情），同样居中。
+- 普通页面 `.main-col` 上限 920px，**横向居中**。
+- 工作台 `.workspace` 上限 1280px（两栏列表 + 详情），同样居中。
 
 改造前两者都没有上限或靠左：1920px 宽的窗口里，工作台会拉到 1700px 以上，
 两块面板各自变成"汪洋中的一小撮内容"。靠左则让右侧空出一大块，
@@ -228,22 +269,26 @@ shadow:
 
 ## Elevation & Depth
 
-深色下靠**更亮一档的表面 + 更重的影子**表达抬起，不靠边框加粗：
+深色下靠**更亮一档的表面 + 更重的影子 + 辉光**表达抬起，不靠边框加粗：
 
-- `--sh-1`：轻抬（几乎不用）
-- `--sh-2`：模态框、提示条
+- `--sh-1`：轻抬（批量操作条）
+- `--sh-2`：模态框、Toast
+- `--sh-3`：卡片顶部的 1px 内亮线（"受光面"），列表卡片因此有了体积感
+- **辉光**：状态点的 halo（`box-shadow: 0 0 Npx var(--*-glow)`）、
+  倒计时的 text-shadow、进度条的发光填充 —— 状态色的亮度用光表达，
+  不用更大的色块
 
 模态框用 `--bg-2`（比画布亮），**不是** `--bg-1` —— 后者比画布还暗，
-弹窗会看起来像陷进去。
+弹窗会看起来像陷进去。背景用毛玻璃（`backdrop-filter: blur(6px)`）。
 
 ## Shapes
 
-圆角偏紧（Warp 那一系）：3 / 4 / 6 / 10px。大圆角在这个尺寸的控件上
-会显得软而不可信；"工程感"来自小圆角。
+v2 放松了半档（4/6/8/12/16）：大面积卡片 8-12px 显精致，控件 6-7px
+保持工程感——大圆角全留给"抬起来的东西"（弹窗、提示条）。
 
-- 按钮、输入框：`--r-sm` 4px
-- 卡片、列表容器：`--r-md` 6px
-- 模态框：`--r-lg` 10px
+- 按钮、输入框：7px（写死一处，两族控件统一）
+- 卡片、列表容器、状态带：`--r-lg` 12px
+- 模态框：`--r-xl` 16px
 - 标签、进度条、圆点：`--r-pill`
 
 ## Components
@@ -259,6 +304,8 @@ shadow:
 | `EmptyState` | 改造前"正在读取…"和"没有数据"共用同一个样式 —— 前者要等、后者要动手，是两种处境 |
 | `Modal` | 改造前唯一的弹窗没有 Esc、没有焦点陷阱、没有 `role="dialog"` |
 | `Skeleton` | 改造前 0 个。骨架屏的价值不在好看，在**占住和真实内容一样的形状**，数据回来时不重排 |
+| `TrendChart` | 折线/面积图。`preserveAspectRatio="none"` 横向拉伸自适应 + `vector-effect` 保持线宽，轴文字走 HTML（拉伸过的 SVG 里文字会变形）。带三档 y 轴刻度与网格线 |
+| `LoadingState` | 「正在读」曾经有五种长相（骨架屏 / 骨架屏+空态 / 裸文字 / spinner / **没有**），其中两种长得跟"没有数据"一样。现在按"知不知道内容形状"二选一：知道走骨架屏，不知道走 `EmptyState variant="loading"` |
 
 ### 反馈的粒度
 
@@ -290,13 +337,19 @@ shadow:
 
 诚实记录，避免下一个人以为"这里已经做完了"：
 
-- **加载态还不统一**：`WorkspaceView` 用骨架屏，`WorksView` / `DiagnosticsView`
-  还是纯文字占位。
-- **设置页的 INT / TEXT 字段没有校验反馈**：输入非法值会被静默丢弃
-  （`fields.jsx` 直接 `return`），用户敲的字符不进去也没有任何提示。
 - **没有全局快捷键 / 命令面板**：Warp 与 Raycast 那一系的核心交互，
   对一个"长时间盯着"的工具价值很高，但还没做。
 - **没有拖拽**：图片排序、列表排序都只能靠输入框。
-- **动画只有三处 keyframes**（呼吸 / 提示条入场 / 模态淡入）+ 进度与骨架的
-  循环动效。足够，但谈不上有动效系统。
+- **动效是"微交互"级别**：按钮/行 hover 过渡、状态带呼吸、模态与 Toast 入场
+  （带 8px 位移 + scale 的缓动）、进度与骨架循环。有统一的 `.12-.18s ease`
+  节奏，但没有成体系的动效编排（页面转场等）。
 - 无 `aria-` 标注的旧代码仍有一部分（新组件补了，旧视图没补）。
+- **图表的悬停还是原生 `title`**：`DayBars` / `TrendChart` 用 `title` 给数值 ——
+  1 秒延迟、不可样式化、深色界面弹浅色系统气泡，键盘与触屏完全拿不到
+  （图上已直接标了数字，所以不是信息缺失）。`BarList` 的可点下钻已经做了
+  （`onPick`），但这种 hover 交互还没有。
+- **窄窗口没做适配**：`.donut-svg` 固定 132px、DayBars 30 格无 min-width。
+
+> 已修（2026-09-19）：P0.5 的加载态统一到 `LoadingState`、设置页数字字段非法输入
+> 当场标红并拦住保存、图表颜色全部收进 `:root`；第十一轮把 `BarList` 变成可点
+> （下钻到用户详情），并新增了「找视频」「用户详情」两页。
