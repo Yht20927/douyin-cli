@@ -610,6 +610,40 @@ console.log('[probe] window.dy 就绪');
   fs.writeFileSync(path.join(DIST, '__probe.html'), withStub, 'utf8');
 }
 
+function selfCheckRoutes(routes) {
+  // 位置参数只能猜一个"形状正确但不存在"的样本：真正在跑的库里有视频时用它。
+  let sample = null;
+  try {
+    sample = (require('../core/data/views').listMyVideos({ limit: 1 })[0] || {}).awemeId || null;
+  } catch (e) { /* 读不动就当没有样本 */ }
+  if (!sample && FIXTURE && FIXTURE.drafts.length) sample = FIXTURE.drafts[0].awemeId;
+  if (!sample) sample = 'probe-sample-aweme-id';
+
+  const bad = [];
+  const argGuess = [];
+  for (const [ch, fn] of Object.entries(routes)) {
+    if (WRITE_CHANNELS.has(ch)) continue;   // 写通道一律如实拒绝，不必试
+    try {
+      fn(sample, {});
+    } catch (e) {
+      // 换一个参数再试一次。自检猜的位置参数未必合用（prompts:read 要的是模板
+      // 文件名而不是 awemeId），**只有换参数也不改变的异常**才说明端点自己坏了。
+      let again = null;
+      try { fn(undefined, {}); } catch (e2) { again = e2; }
+      if (again && again.message === e.message) bad.push(`  ${ch} → ${e.message}`);
+      else argGuess.push(ch);
+    }
+  }
+  if (!bad.length) {
+    console.log(`[probe] 自检通过：${Object.keys(routes).length} 个端点逐个调用，没有一处抛异常`
+      + (argGuess.length ? `（${argGuess.length} 个端点因自检猜的位置参数不对而报错，已跳过：${argGuess.join('、')}）` : ''));
+    return;
+  }
+  // 抛异常与"返回了空数据"是两件事：前者一定是探针或 core 坏了。
+  // 不报出来的话，它会以"界面显示读取失败"的样子出现，然后被当成界面的问题去改界面。
+  console.warn(`[probe] ⚠️ 自检发现 ${bad.length} 个端点抛异常（界面会显示成"读取失败"）：\n${bad.join('\n')}`);
+}
+
 function startServer(port) {
   const routes = makeRoutes();
 
@@ -632,6 +666,8 @@ function startServer(port) {
   if (stale.length) {
     console.warn(`[probe] 探针有而主进程没有的端点（ipc 通道已删？）：${stale.join('、')}`);
   }
+
+  selfCheckRoutes(routes);
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
