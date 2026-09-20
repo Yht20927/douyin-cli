@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import Spinner from '../components/Spinner.jsx';
 
 /**
  * 提示词模板编辑器。
@@ -10,6 +11,9 @@ import React, { useCallback, useEffect, useState } from 'react';
  *
  * 覆盖是**逐文件**的：只改过的那份写进用户目录，其余仍读打包目录里的默认值。
  */
+/** 校验结果的严重度 → 标签色。四档都在样式表里（renderer-static 有一族护栏盯着） */
+const SEVERITY_TAG = { error: 'tag-bad', warn: 'tag-warn', info: 'tag-dim', ok: 'tag-ok' };
+
 export default function PromptsField() {
   const [files, setFiles] = useState([]);
   const [name, setName] = useState(null);
@@ -18,6 +22,9 @@ export default function PromptsField() {
   const [backups, setBackups] = useState([]);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
+  /** 校验结果（只针对当前这个模板） */
+  const [checkResult, setCheckResult] = useState(null);
+  const [checking, setChecking] = useState(false);
 
   /**
    * 载入一个模板。
@@ -64,6 +71,19 @@ export default function PromptsField() {
       await selectFile(name);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** 校验当前模板的格式（与 validate-prompts 命令同一份实现） */
+  async function validateCurrent() {
+    if (!name) return;
+    setChecking(true);
+    try {
+      const r = await window.dy.prompts.validate(name);
+      if (r && r.ok) setCheckResult({ hasError: r.data.hasError, templates: r.data.templates });
+      else setCheckResult({ hasError: true, templates: [{ severity: 'error', message: (r && r.error) || '校验失败' }] });
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -138,8 +158,29 @@ export default function PromptsField() {
                   <button className="btn" onClick={resetToDefault} disabled={!doc.overridden}>
                     恢复默认
                   </button>
+                  {/* 校验当前模板。与 `validate-prompts` 命令同一份实现 ——
+                      保存时那个检查是"最小拦截"，这里是完整校验（分隔符、占位符拼写） */}
+                  <button className="btn" onClick={validateCurrent} disabled={busy}>
+                    {checking && <Spinner size={12} />}{checking ? '校验中…' : '校验格式'}
+                  </button>
                   <span className="muted num">{text.length} 字符</span>
                 </div>
+
+                {checkResult && (
+                  <div className={`notice ${checkResult.hasError ? 'notice-bad' : 'notice-warn'}`}>
+                    <div>
+                      <b>{checkResult.hasError ? '格式有错' : '格式没问题'}</b>
+                      <ul>
+                        {checkResult.templates.map((t, i) => (
+                          <li key={i}>
+                            <span className={`tag ${SEVERITY_TAG[t.severity] || 'tag-dim'}`}>{t.severity}</span>
+                            {' '}{t.message}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
 
                 <div className="settings-hint">
                   保存会立即生效（不需要重启），旧版本自动备份。

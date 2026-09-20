@@ -51,9 +51,6 @@ const DEFAULTS = {
     host: '127.0.0.1',
     port: 19422,
     token: '',
-    heartbeatInterval: 30000,
-    heartbeatTimeout: 10000,
-    heartbeatMaxFailures: 3,
     requestTimeout: 30000,
     // 抖音搜索结果等大响应可能远超 1MB，默认 64MB
     maxBodySize: 67108864,
@@ -82,6 +79,13 @@ const DEFAULTS = {
     // CLI 下为 false（保持"读操作只建议不阻塞"的既有语义，避免交互式查询每次卡 30s）；
     // 桌面 GUI 下由主进程置 true —— 因为 GUI 里没有 agent 自觉遵守间隔，必须由代码兜住。
     readEnforce: false,
+    // 全量拉取时**翻页之间**的间隔（秒）。
+    //
+    // 与 read 的区别：read 是「两条命令之间」的间隔，且受上面的 readEnforce 开关控制；
+    // commentPage 是「同一条命令内部翻页之间」的间隔 —— 一次全量拉取会连打几十上百页，
+    // 命令入口那次 read 等待拦不住页与页之间的密度，所以单独给一个。
+    // 它不接 readEnforce 开关：只要有第二页就生效（实测 ~0.7s/页，不节流等于连发）。
+    commentPage: [1, 3],
   },
   multimodal: {
     // text-only | screenshots | video
@@ -399,6 +403,38 @@ const DEFAULTS = {
       pool: ['🌹', '🤝', '😊', '👍', '❤️', '🎉'],
     },
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // ui —— 界面刷新（改造计划 §5.8 的「配置更新时间」）
+  //
+  // 每个页面隔多久**从本地 SQLite 重读一次**。两条纪律必须写在前面：
+  //
+  // 1. **只读本地库，永远不碰抖音。** 从抖音拉新数据受风控约束
+  //    （读操作间隔 30-50 秒），只能由手动触发或将来的定时拉取（P5）负责。
+  //    这里的秒数再小也不会产生任何网络请求。
+  // 2. **0 = 不自动刷新。** 用户自己能按刷新按钮，关掉是合法选择。
+  //
+  // 为什么队列页没有对应键：队列状态是主进程**推**过来的
+  // （`queue:changed`），倒计时也是本地每 500ms 重算的 —— 轮询它纯属浪费。
+  // 加一个永远不会被读的键，就是这个项目一直在说的"看着能配、实际不生效"。
+  //
+  // ⚠️ 工作台默认 0（关）：那个页面有编辑区，定时重读会在用户正打字/正选
+  // 评论时替换掉列表。别的页面是纯读的，替了就替了。
+  // ═══════════════════════════════════════════════════════════
+  ui: {
+    refreshSec: {
+      /** 运营对象列表 */
+      targets: 30,
+      /** 我的作品列表 */
+      works: 30,
+      /** 草稿箱 */
+      drafts: 30,
+      /** 数据分析页（一次全量聚合，比其他页重，所以慢一倍） */
+      analytics: 60,
+      /** 评论工作台。默认关 —— 见上面的说明 */
+      workspace: 0,
+    },
+  },
 };
 
 /**
@@ -529,11 +565,9 @@ function validate(cfg) {
       fail(`bridge.connectionWatch.${k}`, `需为正数，实际为 ${JSON.stringify(v)}`, DEFAULTS.bridge.connectionWatch[k]);
     }
   }
-  for (const k of ['heartbeatInterval', 'requestTimeout']) {
-    const v = getByPath(cfg, `bridge.${k}`);
-    if (!isPositiveNumber(v)) {
-      fail(`bridge.${k}`, `需为正数，实际为 ${JSON.stringify(v)}`, DEFAULTS.bridge[k]);
-    }
+  const requestTimeout = getByPath(cfg, 'bridge.requestTimeout');
+  if (!isPositiveNumber(requestTimeout)) {
+    fail('bridge.requestTimeout', `需为正数，实际为 ${JSON.stringify(requestTimeout)}`, DEFAULTS.bridge.requestTimeout);
   }
   const maxBody = getByPath(cfg, 'bridge.maxBodySize');
   if (!Number.isInteger(maxBody) || maxBody <= 0) {
@@ -556,7 +590,7 @@ function validate(cfg) {
   }
 
   // intervals：两个正整数组成的数组，顺序自动纠正
-  for (const k of ['write', 'read']) {
+  for (const k of ['write', 'read', 'commentPage']) {
     const v = getByPath(cfg, `intervals.${k}`);
     const ok = Array.isArray(v) && v.length === 2 && v.every(isPositiveNumber);
     if (!ok) {
@@ -835,6 +869,14 @@ function validate(cfg) {
   const mode = getByPath(cfg, 'multimodal.mode');
   if (!['text-only', 'screenshots', 'video'].includes(mode)) {
     fail('multimodal.mode', `需为 text-only / screenshots / video 之一，实际为 ${JSON.stringify(mode)}`, DEFAULTS.multimodal.mode);
+  }
+
+  // ui.refreshSec —— 0 是合法的（表示不自动刷新），所以判的是"非负整数"
+  for (const k of Object.keys(DEFAULTS.ui.refreshSec)) {
+    const v = getByPath(cfg, `ui.refreshSec.${k}`);
+    if (!Number.isInteger(v) || v < 0) {
+      fail(`ui.refreshSec.${k}`, `需为不小于 0 的整数（秒，0 = 不自动刷新），实际为 ${JSON.stringify(v)}`, DEFAULTS.ui.refreshSec[k]);
+    }
   }
 
   return warnings;

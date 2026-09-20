@@ -12,6 +12,21 @@ const { getPolicy } = require('../../core/policy');
 const views = require('../../core/data/views');
 
 /**
+ * 简单版本比较：a 是否大于 b（按数字段逐段比，段数不齐补 0）。
+ * 只用于 release tag vs app.getVersion()，不需要完整 semver。
+ */
+function isNewerVersion(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}
+
+/**
  * 注册全部 IPC 处理器。
  *
  * @param {object} opts
@@ -53,6 +68,53 @@ function registerIpc(opts) {
     return { ok: true };
   });
 
+  // ── 应用级：更新检查 / 数据备份 ──
+  // 检查 GitHub 最新 release。网络不通（代理/防火墙）时如实报错，
+  // 绝不把"检查失败"伪装成"已是最新"。
+  ipcMain.handle('app:check-update', async () => {
+    const current = app.getVersion();
+    try {
+      const res = await fetch('https://api.github.com/repos/Yht20927/douyin-cli/releases/latest', {
+        headers: { 'User-Agent': 'douyin-comment-app', Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return { ok: false, current, error: `GitHub 返回 HTTP ${res.status}` };
+      const data = await res.json();
+      const latest = String(data.tag_name || '').replace(/^v/, '');
+      const hasUpdate = !!latest && isNewerVersion(latest, current);
+      return { ok: true, current, latest: latest || null, hasUpdate, url: data.html_url || null };
+    } catch (e) {
+      return { ok: false, current, error: `网络请求失败：${e.message}` };
+    }
+  });
+
+  // 数据目录是个 SQLite + 配置的整体，让用户在文件管理器里看到它，
+  // 比在界面上解释"数据库文件在哪"更直接。
+  ipcMain.handle('app:open-data-dir', async () => {
+    const r = await shell.openPath(dataDirInfo.dir);
+    return r ? { ok: false, error: r } : { ok: true, path: dataDirInfo.dir };
+  });
+
+  // 备份本地数据库（作品/评论/草稿都在里面）到用户选的位置。
+  // 热备份：SQLite 单文件，直接复制 —— 运行中复制最多损失最后几秒的写入，
+  // 对"防误删/迁移"这个用途可以接受；wired-up 的事务级备份属于过度设计。
+  ipcMain.handle('data:backup', async () => {
+    const fs = require('fs');
+    const dbFile = require('../../core/paths').dbFile();
+    const r = await dialog.showSaveDialog({
+      title: '备份数据库',
+      defaultPath: `douyin-data-${new Date().toISOString().slice(0, 10)}.db`,
+      filters: [{ name: 'SQLite 数据库', extensions: ['db'] }],
+    });
+    if (r.canceled) return { ok: true, canceled: true };
+    try {
+      fs.copyFileSync(dbFile, r.filePath);
+      return { ok: true, path: r.filePath };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
   // ── 桥接状态 ──
   ipcMain.handle('bridge:status', () => bridge.getStatus());
   ipcMain.handle('bridge:refresh', async () => {
@@ -76,6 +138,65 @@ function registerIpc(opts) {
     if (!url) return { ok: false, error: '桥接服务尚未启动' };
     clipboard.writeText(url);
     return { ok: true, url };
+  });
+
+  /**
+   * 复制任意文本到剪贴板（诊断页的各类路径用）。
+   *
+   * 走主进程的 clipboard 而不是渲染层的 navigator.clipboard：后者要求
+   * 安全上下文与用户手势同时成立，而这个应用加载的是本地文件 —— 一旦
+   * 某天加载方式变了（改成自定义协议），复制会**静默失效**，
+   * 表现是"点了没反应"。主进程这条路径没有这些前提。
+   */
+  // ── 账号 ──
+  //
+  // 界面靠这两个接口显示"现在在看哪个号"并支持切换。**必须显式显示**：
+  // 用户报的问题就是"换了号数据没变"，而只要把当前账号摆在界面上，
+  // 这件事立刻可验证；多账号同时在线时也才有办法选定一个。
+  ipcMain.handle('account:state', () => {
+    try {
+      const status = bridge.getStatus();
+      const online = accounts.aliveUids(status);
+      const stored = accounts.currentUid();
+      const uid = currentAccountUid();
+      const list = accounts.list().map(a => ({
+        uid: a.uid,
+        nickname: a.nickname,
+        avatar: a.avatar,
+        online: online.includes(String(a.uid)),
+        current: uid != null && String(a.uid) === String(uid),
+      }));
+      return {
+        ok: true,
+        data: {
+          uid,
+          // 多个号同时在线时才需要人工选；只有一个时是自动跟随的
+          needsChoice: online.length > 1,
+          candidates: online,
+          accounts: list,
+        },
+      };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('account:set', (_e, uid) => {
+    // 传 null/'' = 清除选择，回到"自动跟随唯一在线账号"
+    const ok = accounts.setCurrent(uid == null || uid === '' ? null : String(uid));
+    return ok
+      ? { ok: true, data: { uid: uid == null || uid === '' ? null : String(uid) } }
+      : { ok: false, error: '这个账号不在名册里 —— 先在浏览器里连一次，它才会被登记' };
+  });
+
+  ipcMain.handle('app:copy-text', (_e, text) => {
+    if (typeof text !== 'string' || !text) return { ok: false, error: '没有可复制的内容' };
+    try {
+      clipboard.writeText(text);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   });
 
   // ── 配置（脱敏）──
@@ -135,10 +256,27 @@ function registerIpc(opts) {
 
   // 发布前预检：界面在确认弹窗里展示"能不能发、为什么不能、还要等多久"。
   // 只报告不等待 —— 与队列执行时的判定是同一个 beforeWrite，口径一致。
+  //
+  // 连接状态必须并入这里：弹窗向用户承诺"这里说能发、点下去就一定能发"，
+  // 而 beforeWrite 只懂策略不懂桥接 —— 浏览器没连上时它照样放行，
+  // 任务进了队列才会超时失败。这里把"没连上"作为硬拦截塞进去，
+  // 弹窗在点击之前就会说清楚。
   ipcMain.handle('policy:check', (_e, meta) => {
     try {
       const r = getPolicy().beforeWrite(meta && typeof meta === 'object' ? meta : {});
-      return { ok: true, check: r };
+      const online = !!(bridge.getStatus() && bridge.getStatus().online);
+      const check = online
+        ? r
+        : {
+            ...r,
+            ok: false,
+            waitMs: 0,
+            hardBlockers: [
+              { reason: '浏览器没有连上 —— 到「连接」页确认抖音页面开着且已登录' },
+              ...((r && r.hardBlockers) || []),
+            ],
+          };
+      return { ok: true, check };
     } catch (e) {
       return { ok: false, error: e.message };
     }
@@ -159,6 +297,9 @@ function registerIpc(opts) {
         argv: Array.isArray(spec.argv) ? spec.argv.map(String) : [],
         label: spec.label ? String(spec.label) : undefined,
         meta: spec.meta && typeof spec.meta === 'object' ? spec.meta : {},
+        // 插队只对发布类命令开放：批量生成/拉取不允许借它加塞读请求，
+        // 发布才需要跳过排在前面的大批量任务
+        front: spec.front === true && String(spec.command) === 'post',
       });
       return { ok: true, id };
     } catch (e) {
@@ -184,7 +325,32 @@ function registerIpc(opts) {
     }
   };
 
-  ipcMain.handle('data:overview', safe(() => views.overview()));
+  // ── 当前账号 ──
+  //
+  // 界面上的每一份数据都属于某个账号。这里把"当前在看哪个号"解析出来传给
+  // 视图层 —— 不传的话视图只能退回全局猜测，两个号的数据就混在一起，
+  // 而症状正是用户报的"换了号刷新后列表没变"。
+  //
+  // `bridge.getStatus()` 是轮询缓存，同步返回；解析规则复用 core 里那一份，
+  // 不在主进程另写一套（否则两处的"当前账号"迟早不一致）。
+  const accounts = require('../../core/memory/accounts');
+  function currentAccountUid() {
+    try {
+      const online = accounts.aliveUids(bridge.getStatus());
+      const stored = accounts.currentUid();
+      if (online.length === 1) return online[0];
+      if (online.length > 1) return (stored && online.includes(stored)) ? stored : online[0];
+      return stored || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // scope: 'all'（默认）| 'mine' —— 默认全量的理由见 core/data/views.js 的 overview()
+  ipcMain.handle('data:overview', safe((o) => views.overview({
+    scope: o && o.scope,
+    accountUid: currentAccountUid(),
+  })));
   // 返回 { items, total, shown, truncated }：total 是**数据库里的真实条数**，
   // 而不是"这次取了多少条"。改造前界面把 list.length 当总数显示，
   // 有 120 个作品时标题写着"共 50 个作品"，而且第 51 个以后既看不到也点不进去
@@ -192,12 +358,36 @@ function registerIpc(opts) {
   ipcMain.handle('data:videos', safe((opts) => {
     const o = opts && typeof opts === 'object' ? opts : { limit: opts };
     const limit = Math.max(1, Number(o.limit) || 50);
-    const items = views.listMyVideos({ limit });
-    const total = require('../../core/memory/videos').count({ isMine: true });
+    const items = views.listMyVideos({ limit, accountUid: currentAccountUid() });
+    const total = require('../../core/memory/videos').count({ isMine: true, accountUid: currentAccountUid() });
     return { items, total, shown: items.length, truncated: total > items.length };
   }));
-  ipcMain.handle('data:video', safe((awemeId) => views.videoDetail(String(awemeId))));
-  ipcMain.handle('data:videoStats', safe((awemeId) => views.videoStats(String(awemeId))));
+  // 「运营对象」—— 别人的视频里我正在互动的那批评论区。
+  //
+  // 与 data:videos 是两件事，不能合并：data:videos 是"我发的作品"，
+  // 而工作台真正的入口对象是**别人视频下的评论区**（实测 215 个视频里
+  // 只有 7 个是自己的、1850 条评论在别人那边）。此前工作台只能从
+  // 「我的作品」进，于是 96% 的运营数据在界面上不可达。
+  //
+  // 返回 { items, total, shown, truncated, scanned, scanLimit, scanCapped,
+  //        order, unknownOrder, orders } —— orders 由 core 提供，
+  // 界面不自己写一份排序清单（同 commentOrders 的做法）。
+  ipcMain.handle('data:targets', safe((o) => views.listTargets({
+    order: o && o.order,
+    limit: o && o.limit,
+    accountUid: currentAccountUid(),
+  })));
+  // 「找视频」页用：一批视频在库里的状态（已收录 / 可加入 / 是不是当前账号在运营）
+  ipcMain.handle('data:targetStatus', safe((ids) => views.targetStatus(
+    Array.isArray(ids) ? ids : [],
+    { accountUid: currentAccountUid() }
+  )));
+  ipcMain.handle('data:video', safe((awemeId) => views.videoDetail(String(awemeId), {
+    accountUid: currentAccountUid(),
+  })));
+  ipcMain.handle('data:videoStats', safe((awemeId) => views.videoStats(String(awemeId), {
+    accountUid: currentAccountUid(),
+  })));
   // 排序选项由 core 给出，界面不自己写一份 —— 否则加了新排序方式界面看不到。
   //
   // ⚠️ 必须走 safe()：它包出来的形状是 { ok, data }，而界面是按 `r.ok` 判断的。
@@ -212,9 +402,66 @@ function registerIpc(opts) {
     limit: o && o.limit,
     search: o && o.search,
     order: o && o.order,
+    accountUid: currentAccountUid(),
   })));
   ipcMain.handle('data:comment', safe((cid) => views.commentDetail(String(cid))));
-  ipcMain.handle('data:drafts', safe(() => views.listDrafts()));
+  // 查重：纯本地读（语料库有唯一索引），**不走队列** —— 写回复时想确认
+  // "这句没发过"是即时动作，让用户为它等读间隔是错的
+  ipcMain.handle('data:checkDup', safe((text) => views.checkDuplicate(text)));
+  // 诊断页：操作历史 + 清理预演（都是纯本地读；真正执行清理仍然走队列里的 cleanup 命令）
+  // 逐项转发（不整个 `o` 丢下去）：界面传了什么参数，一眼能从这行看出来 ——
+  // 整个对象透传时"界面加了参数但主进程没接"这类问题看不出来
+  ipcMain.handle('data:events', safe((o) => views.listEvents({
+    limit: o && o.limit,
+    command: o && o.command,
+    status: o && o.status,
+  })));
+  // 用户详情（whois 的视图版）+ 交互历史（profile）。纯本地读，不走队列。
+  ipcMain.handle('data:userProfile', safe((uid, o) => views.userProfile(String(uid || ''), {
+    limit: o && o.limit,
+  })));
+  ipcMain.handle('data:userEvents', safe((uid, o) => views.userEvents(String(uid || ''), {
+    limit: o && o.limit,
+  })));
+  /**
+   * 打标签 / 备注（`note` 命令的写入部分）。
+   *
+   * 直接写本地库、不走队列：它不碰抖音，没有任何风控风险 —— 与 draft:save
+   * 同一种性质。命令本身留着给 CLI 用。
+   */
+  ipcMain.handle('user:setNote', (_e, uid, patch) => {
+    const id = String(uid || '');
+    if (!id) return { ok: false, error: '缺少 uid' };
+    try {
+      const users = require('../../core/memory/users');
+      users.upsert({ uid: id });   // 名册里没有先建一行，否则下面的 UPDATE 什么都不改
+      const p = patch && typeof patch === 'object' ? patch : {};
+      if (p.tier !== undefined) users.setTier(id, p.tier ? String(p.tier) : null);
+      if (p.notes !== undefined) users.setNotes(id, p.notes ? String(p.notes) : null);
+      if (Array.isArray(p.addTags)) for (const t of p.addTags) users.addTag(id, String(t));
+      if (Array.isArray(p.removeTags)) for (const t of p.removeTags) users.removeTag(id, String(t));
+      return { ok: true, data: users.get(id) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+  ipcMain.handle('data:cleanupPreview', safe((o) => views.cleanupPreview({
+    days: o && o.days,
+  })));
+  ipcMain.handle('data:drafts', safe(() => views.listDrafts({ accountUid: currentAccountUid() })));
+  // 数据分析页的全量聚合（纯本地读，不占队列）。
+  // 一次算好所有图卡的原料，而不是每个图表各发一个 IPC 各扫一遍库。
+  // scope 默认 'all' —— 只统计自己的作品会让这一页分析 3% 的业务。
+  //
+  // ⚠️ 参数必须**逐个转发**，不能只挑一个。这里曾经只传 scope 而漏了
+  // dayWindow，于是界面上「最近 90 天」的分段按钮点了以后标签变了、
+  // 数字一个没动 —— 因为 core 拿到的还是默认的 30 天。这类"界面参数没接到
+  // 后端"的缺陷在两端都不报错，只能靠把每一个参数都写出来避免。
+  ipcMain.handle('data:analytics', safe((o) => views.analytics({
+    scope: o && o.scope,
+    dayWindow: o && o.dayWindow,
+    accountUid: currentAccountUid(),
+  })));
 
   // ── 草稿箱的本地写操作（同样是本地库，不走队列）──
   ipcMain.handle('draft:save', safe((spec) => {
@@ -256,6 +503,9 @@ function registerIpc(opts) {
   ipcMain.handle('prompts:list', safe(() => prompts.list()));
   ipcMain.handle('prompts:read', safe((name) => prompts.read(String(name || ''))));
   ipcMain.handle('prompts:save', safe((name, text) => prompts.save(String(name || ''), text)));
+  // 完整格式校验（与 `validate-prompts` 命令同一份实现）。
+  // 界面上是一个「校验」按钮 —— 不带参数校验全部，带参数只校验那一个。
+  ipcMain.handle('prompts:validate', safe((name) => prompts.validateAll(name ? String(name) : undefined)));
   ipcMain.handle('prompts:reset', safe((name) => prompts.resetToDefault(String(name || ''))));
   ipcMain.handle('prompts:backups', safe((name) => prompts.listBackups(String(name || ''))));
   ipcMain.handle('prompts:restore', safe((name, file) => prompts.restoreBackup(String(name || ''), String(file || ''))));

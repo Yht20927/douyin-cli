@@ -6,9 +6,6 @@
     "port": 19422,
     "token": "",
     "_token_comment": "留空则首次启动 server 时自动生成并写回本文件。油猴脚本不读这里 —— 它由 scripts/build-userscript.js 在构建时注入（避免把凭证提交进版本库）。",
-    "heartbeatInterval": 30000,
-    "heartbeatTimeout": 10000,
-    "heartbeatMaxFailures": 3,
     "requestTimeout": 30000,
     "_maxBodySize_comment": "HTTP 请求体上限（字节）。抖音搜索结果等大响应可能远超 1MB。",
     "maxBodySize": 67108864

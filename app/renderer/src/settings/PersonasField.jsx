@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import LoadingState from '../components/LoadingState.jsx';
 
 /**
  * 人格编辑器。
@@ -25,7 +26,8 @@ export default function PersonasField({ draft, change }) {
     });
   }, []);
 
-  if (!desc) return <div className="empty">正在读取人格…</div>;
+  // 加载态走统一组件（text 形态）：改造前这里是一句裸文字，与"没有数据"同款
+  if (!desc) return <LoadingState variant="text" label="正在读取人格…" />;
 
   const builtinIds = new Set(desc.builtin.map(p => p.id));
   const disabled = Array.isArray(draft['personas.disabled']) ? draft['personas.disabled'] : [];

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import PublishDialog from '../components/PublishDialog.jsx';
 import Spinner from '../components/Spinner.jsx';
-import Skeleton from '../components/Skeleton.jsx';
+import LoadingState from '../components/LoadingState.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import { ago, fileNameOf } from '../format.js';
+import useAutoRefresh from '../useAutoRefresh.js';
 
 /**
  * 草稿箱。
@@ -27,6 +28,9 @@ export default function DraftsView({ drafts, loading, actions, reload }) {
   const [savingId, setSavingId] = useState(null);
 
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+
+  // 定时重读（间隔在设置页里配，0 = 关）。只读本地库，不发抖音请求。
+  useAutoRefresh('drafts', () => reload());
 
   const list = drafts || [];
 
@@ -55,7 +59,7 @@ export default function DraftsView({ drafts, loading, actions, reload }) {
       </div>
 
       {loading && list.length === 0
-        ? <Skeleton rows={3} title />
+        ? <LoadingState rows={3} title />
         : list.length === 0
           ? (
             // 不给行动按钮：草稿的来源在别的页面，这里放一个按钮要么是空动作、
@@ -116,9 +120,15 @@ export default function DraftsView({ drafts, loading, actions, reload }) {
                                     setNotice(`保存失败：${r.error} —— 原草稿未改动`);
                                     return;
                                   }
-                                  await window.dy.draft.remove(d.id);
-                                  setEditing(null);
-                                  setNotice('已保存');
+                                  const rm = await window.dy.draft.remove(d.id);
+                                  if (rm.ok) {
+                                    setEditing(null);
+                                    setNotice('已保存');
+                                  } else {
+                                    // 先存后删的顺序保证了内容不丢；删除失败只会留下重复，
+                                    // 如实告诉用户该删哪条，而不是让它看起来像凭空多了一条
+                                    setNotice('已保存为新草稿，但删除旧草稿失败 —— 列表里会出现两条相同内容，请手动删掉旧的那条');
+                                  }
                                   reload();
                                 } finally {
                                   setSavingId(null);

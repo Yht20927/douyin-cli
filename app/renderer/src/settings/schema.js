@@ -206,6 +206,8 @@ export const GROUPS = [
   // ═══════════════════════════════════════════════════════════
   {
     key: 'intervals',
+    // advanced：技术性分组，默认收进「高级设置」，避免第一次进设置页被 60+ 项劝退
+    advanced: true,
     label: '节奏间隔',
     desc: '两次操作之间至少要隔多久。写间隔是代码硬强制的，不受界面开关影响。',
     fields: [
@@ -227,12 +229,21 @@ export const GROUPS = [
         label: '读操作也强制等待',
         hint: '关掉的话读操作只提示不阻塞（命令行下就是这样，避免每次查询都卡 30 秒）。',
       },
+      {
+        path: 'intervals.commentPage',
+        type: T.RANGE2,
+        label: '全量拉取翻页间隔（秒）',
+        hint: '全量拉取一个作品时，每翻一页之间等的随机时长。评论多的作品要翻几十上百页，'
+          + '翻太久会觉得慢、翻太快有风控风险。',
+      },
     ],
   },
 
   // ═══════════════════════════════════════════════════════════
   {
     key: 'policy',
+    // advanced：技术性分组，默认收进「高级设置」，避免第一次进设置页被 60+ 项劝退
+    advanced: true,
     label: '运营红线',
     desc: '这些是改造前只写在 markdown 里、靠自觉遵守的规则，现在由代码强制拦截。',
     fields: [
@@ -270,6 +281,8 @@ export const GROUPS = [
   // ═══════════════════════════════════════════════════════════
   {
     key: 'filters',
+    // advanced：技术性分组，默认收进「高级设置」，避免第一次进设置页被 60+ 项劝退
+    advanced: true,
     label: '评论筛选与措辞',
     desc: '哪些评论值得回，以及回复里不该出现的措辞。词表同时用于生成时的提示与发布前的硬校验。',
     fields: [
@@ -410,6 +423,8 @@ export const GROUPS = [
   // ═══════════════════════════════════════════════════════════
   {
     key: 'app',
+    // advanced：技术性分组，默认收进「高级设置」，避免第一次进设置页被 60+ 项劝退
+    advanced: true,
     label: '应用与桥接',
     desc: '桌面应用自身的行为。桥接相关的几项改完要重启应用才生效。',
     fields: [
@@ -449,6 +464,38 @@ export const GROUPS = [
       },
     ],
   },
+
+  // ═══════════════════════════════════════════════════════════
+  {
+    key: 'ui',
+    label: '界面',
+    desc: '各页面隔多久从本地数据库重读一次。只读本机数据，不会产生任何抖音请求。',
+    fields: [
+      {
+        path: 'ui.refreshSec.targets',
+        type: T.INT,
+        label: '运营对象列表刷新间隔（秒）',
+        hint: '0 = 不自动刷新，用页面上的「刷新」按钮手动刷。',
+      },
+      { path: 'ui.refreshSec.works', type: T.INT, label: '我的作品刷新间隔（秒）' },
+      { path: 'ui.refreshSec.drafts', type: T.INT, label: '草稿箱刷新间隔（秒）' },
+      {
+        path: 'ui.refreshSec.analytics',
+        type: T.INT,
+        label: '数据页刷新间隔（秒）',
+        hint: '这一页每次要全量扫一遍本地库，所以默认比别的页慢一倍。',
+      },
+      {
+        path: 'ui.refreshSec.workspace',
+        type: T.INT,
+        label: '评论工作台刷新间隔（秒）',
+        status: cfg => (Number(cfg['ui.refreshSec.workspace']) > 0 ? 'active' : 'inactive'),
+        statusNote: cfg => (Number(cfg['ui.refreshSec.workspace']) > 0
+          ? '开着时，每隔这么久重读一次评论列表 —— 如果你经常在别的终端跑命令，打开它能让列表自己跟上。'
+          : '默认关闭：这个页面有编辑框，定时重读会在你正打字或正选评论时替换掉列表。要刷新点页面上的「刷新」。'),
+      },
+    ],
+  },
 ];
 
 /**
@@ -464,13 +511,6 @@ export const NOT_EXPOSED = {
     '表现为「明明连上了却一直认证失败」，而且没有任何提示。要换 token 请重装脚本（连接页有一键入口）。',
   'bridge.maxBodySize':
     '大响应上限，64MB 已经远超实际需要。调小会让搜索结果拉不回来，调大没有收益。',
-  'bridge.heartbeatInterval':
-    '服务端与油猴脚本之间的心跳节奏，两边必须一致。单方面改动会让存活判断失准 —— ' +
-    '表现为界面明明显示已连接、操作却一直超时。',
-  'bridge.heartbeatTimeout':
-    '判定单次心跳失败的超时。它与心跳间隔是一对：改大间隔而不改它，会把正常的心跳判成失败。',
-  'bridge.heartbeatMaxFailures':
-    '连丢几次心跳判定离线。调大等于"更晚才告诉你断线了"，调小会在网络抖动时反复误报。',
   'policy.riskCodeStopList':
     '触发全局熔断的抖音错误码。改错（比如漏掉一个）会让风控熔断静默失效 —— ' +
     '这是安全相关的一组数字，要改请直接编辑 config.json 并自行确认。',

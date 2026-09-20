@@ -1,10 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
+import Modal from '../components/Modal.jsx';
 import PublishDialog from '../components/PublishDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
-import Skeleton from '../components/Skeleton.jsx';
+import LoadingState from '../components/LoadingState.jsx';
 import Spinner from '../components/Spinner.jsx';
 import ProgressBar from '../components/ProgressBar.jsx';
 import { ago, fileNameOf } from '../format.js';
+import useAutoRefresh from '../useAutoRefresh.js';
+
+/**
+ * LLM 分析结果的展示用词（`analyze` 命令写回 comments.sentiment / .priority）。
+ *
+ * 与 DECISION 是**两套不同的东西**，不要混：
+ *   DECISION   —— 本地决策树算的"该不该回"（建议回复 / 表情回复 / 跳过）
+ *   SENTIMENT  —— LLM 读出来的情绪（正面 / 中性 / 负面）
+ * 前者是我们怎么处理它，后者是这条评论本身什么调性。
+ */
+const SENTIMENT = {
+  positive: { label: '正面', tone: 'ok' },
+  neutral: { label: '中性', tone: 'dim' },
+  negative: { label: '负面', tone: 'bad' },
+};
 
 /** 判定结果 → 界面标签与颜色。三种结果对应三种处置，用词保持一致。 */
 const DECISION = {
@@ -61,9 +77,33 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   const [draftText, setDraftText] = useState('');
   const [genTaskId, setGenTaskId] = useState(null);
   const [publishing, setPublishing] = useState(null);
+  /**
+   * 待确认的删除。`{ cid, kind: 'reply' | 'comment', text }`
+   *
+   * 删除**不可撤销**，所以要二次确认；而确认框里必须写清"删的是什么、后果是什么"
+   * —— 只说一句"确认删除？"等于没确认。
+   */
+  const [deleting, setDeleting] = useState(null);
   const [notice, setNotice] = useState(null);
   /** 生成结果的来源信息：来自 AI 还是固定内容、带了哪张图、是否降级 */
   const [genInfo, setGenInfo] = useState(null);
+  /**
+   * 查重结果，连同"查的是哪段文本"。
+   *
+   * 必须把被查的文本一起存下来：否则用户改了回复内容之后，屏幕上那条
+   * "没发过，可以放心用"仍然挂着 —— 它说的是上一段文本，却看起来像在给
+   * 当前这段背书。
+   */
+  const [dup, setDup] = useState(null);
+  const [dupChecking, setDupChecking] = useState(false);
+  /**
+   * 这条视频在本工具里的点赞状态：null（不知道）/ 'liked' / 'unliked'。
+   *
+   * ⚠️ 只反映**本工具**干过什么。你在抖音 App 或网页里手动点的赞，本地
+   * 没有任何记录 —— 所以 null 时按钮显示「点赞」而不是「已点赞」，
+   * tooltip 里也把这件事说清楚，不让一个猜的状态冒充事实。
+   */
+  const [liked, setLiked] = useState(null);
   /** 当前的回复来源配置（模式 / 固定内容条数 / 图片开关），用于在按钮旁讲清楚会怎么生成 */
   const [replyDesc, setReplyDesc] = useState(null);
 
@@ -75,6 +115,15 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   /** 批量生成的结果摘要（生成/跳过/失败各多少条 + 明细） */
   const [bulk, setBulk] = useState(null);
   const bulkHandled = useRef(null);
+
+  // ── 全量拉取 ──
+  /** 正在跑的全量拉取任务 id */
+  const [fullTaskId, setFullTaskId] = useState(null);
+  /** 全量拉取的结果（本次拿到多少条 / 用时 / 失败原因） */
+  const [full, setFull] = useState(null);
+  const fullHandled = useRef(null);
+  /** 发起全量拉取那一刻的本地条数，用来算"这次新增了多少" */
+  const fullBefore = useRef(0);
 
   /**
    * 正在等待结果的队列任务。
@@ -138,6 +187,10 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
 
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [awemeId, tab, search, order]);
 
+  // 定时重读（间隔在设置页里配）。**这一页默认是关的** —— 有编辑区，
+  // 自动重读会在用户正打字/正选评论时替换列表；要开由用户在设置页开。
+  useAutoRefresh('workspace', () => reload());
+
   // 排序选项由 core 提供，界面不自己写一份
   useEffect(() => {
     window.dy.data.commentOrders().then(r => { if (r && r.ok) setOrders(r.data); });
@@ -151,6 +204,8 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   useEffect(() => {
     setPicked(new Set());
     setBulk(null);
+    // 全量拉取的结果是"这个作品这次拉到多少条"，换视频还留着就是错的
+    setFull(null);
   }, [awemeId, tab, search, order]);
 
   // 回复来源配置随设置页改动而变，进工作台时取一次就够（切视频会重新挂载）
@@ -177,8 +232,37 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           // 只在编辑框是空的时候放回，免得覆盖用户后来输入的内容。
           if (p.text && !draftTextRef.current.trim()) setDraftText(p.text);
           setNotice(`发布未完成：${t.error || '未知原因'} —— 内容已放回编辑框`);
+        } else if (p.kind === 'analyze') {
+          setNotice(`分析未完成：${t.error || '未知原因'}`);
+        } else if (p.kind === 'delete') {
+          // 删除失败最常见的原因是策略闸门（写间隔没到、当日额度用完、
+          // 或账号不一致），t.error 里已经写清楚了，原样转达
+          setNotice(`删除未完成：${t.error || '未知原因'}`);
         } else {
           setNotice(t.error || '拉取未完成');
+        }
+      }
+    }
+
+    // 全量拉取：跑完说清楚"这次拿到多少条"。
+    //
+    // 条数取 `resultSummary.count`（task-queue.js 一直在维护、任务结束后仍然保留），
+    // **不取 queue.result()** —— 队列有 MAX_RESULT_BYTES=64KB 上限，几千条评论的返回值
+    // 会被整个丢掉，那时取结果只会拿到 null，界面就会把一次成功的拉取报成失败。
+    if (fullTaskId && fullHandled.current !== fullTaskId) {
+      const t = tasks.find(x => x.id === fullTaskId);
+      if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
+        fullHandled.current = fullTaskId;
+        setFullTaskId(null);
+        if (t.status === 'done') {
+          setFull({
+            count: (t.resultSummary && t.resultSummary.count) || 0,
+            ms: (t.endedAt || 0) - (t.startedAt || 0),
+          });
+          // 拉到的新评论要出现在列表里 —— 本地库才是这一页的数据源
+          reload();
+        } else {
+          setFull({ error: t.error || '全量拉取未完成' });
         }
       }
     }
@@ -261,6 +345,123 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
     if (!id) return;
     pendingRefresh.current = { id, kind: 'fetch' };
     setNotice('已加入队列 —— 拉取完成后列表会自动刷新');
+  }
+
+  /**
+   * 全量拉取：把这个作品的评论从头翻到尾。
+   *
+   * 和上面「拉取新评论」的区别是**量级**，不是口味：
+   *   - 「拉取新评论」= 一页（最多 20 条），拿的是最新那批，秒回
+   *   - 「全量拉取」  = 翻到服务端说没有为止。评论多的作品要翻几十上百页，
+   *     页与页之间按 intervals.commentPage 等 1-3 秒，跑几分钟很正常，
+   *     而且**期间的串行队列被它占着**（别的命令要排队）
+   *
+   * `--depth 0`：不展开嵌套回复。几千条主评论每条再拉一次 replies 是上千次请求，
+   * 和"拉主评论"不是一个量级。需要回复时在命令行用 `get <id> --all --depth 1`。
+   */
+  async function fullPull() {
+    const id = await actions.enqueue({
+      command: 'get',
+      argv: [awemeId, '--all', '--depth', '0'],
+      label: '全量拉取评论',
+    });
+    if (!id) return;
+    fullHandled.current = null;
+    fullBefore.current = (stats && stats.total) || 0;
+    setFullTaskId(id);
+    setFull(null);
+    setNotice('已加入队列 —— 全量拉取会逐页慢慢拉，期间队列被它占着');
+  }
+
+  /**
+   * 查重：这句以前发过没有。
+   *
+   * 走 data 视图（纯本地读）而不是 `dedup` 命令 —— 那要占串行队列、等读间隔，
+   * 而这是一个想立刻知道答案的小动作。
+   */
+  async function checkDuplicate() {
+    const text = draftText.trim();
+    if (!text) return;
+    setDupChecking(true);
+    try {
+      const r = await window.dy.data.checkDup(text);
+      if (r && r.ok) setDup({ ...r.data, forText: text });
+      else setDup({ error: (r && r.error) || '查重失败', forText: text });
+    } finally {
+      setDupChecking(false);
+    }
+  }
+
+  /** 点赞 / 取消点赞这条视频（写操作，走队列与策略闸门） */
+  async function toggleLike() {
+    const unlike = liked === 'liked';
+    const id = await actions.enqueue({
+      command: 'like',
+      argv: unlike ? [awemeId, '--unlike'] : [awemeId],
+      label: unlike ? '取消点赞' : '点赞视频',
+    });
+    if (!id) return;
+    setNotice(unlike
+      ? '已加入队列 —— 取消点赞同样是写操作，要等写间隔'
+      : '已加入队列 —— 点赞是写操作，要等写间隔');
+    const un = window.dy.queue.onChanged((payload) => {
+      const t = (payload.tasks || []).find(x => x.id === id);
+      if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
+        un();
+        if (t.status === 'done') setLiked(unlike ? 'unliked' : 'liked');
+        else setNotice(`${unlike ? '取消点赞' : '点赞'}未完成：${t.error || '未知原因'}`);
+      }
+    });
+  }
+
+  /**
+   * 用 AI 分析这个视频下的评论（情感 / 优先级，写回本地库）。
+   *
+   * 与工作台已有的判定树是两回事：判定树决定"该不该回"，analyze 给的是
+   * 评论本身的情绪与优先级。跑完之后「优先级」排序才真的按优先级排
+   * （此前只有 54/1912 条有值，那个排序实际上一直在按点赞排）。
+   */
+  async function analyzeComments() {
+    const id = await actions.enqueue({
+      command: 'analyze',
+      argv: [awemeId],
+      label: '用 AI 分析评论',
+    });
+    if (!id) return;
+    pendingRefresh.current = { id, kind: 'analyze' };
+    setNotice('已加入队列 —— 逐条调用 AI，跑完列表会自动刷新（并按优先级重排）');
+  }
+
+  /**
+   * 删除一条评论（我们发出的回复，或我们自己发的顶级评论）。
+   *
+   * 删除是**写操作**：走队列、受写间隔与策略闸门约束，不是点一下就发出去。
+   * 命令内部还会做本地账目回退（移除那行、把父评论放回未回复），
+   * 完成后这里重新读一次列表，界面上的「已回复」与待回复数才会跟着回退。
+   */
+  async function deleteComment(target) {
+    const id = await actions.enqueue({
+      command: 'delete-comment',
+      argv: [target.cid],
+      label: target.kind === 'reply' ? '删除我的回复' : '删除我的评论',
+    });
+    if (!id) return;
+    pendingRefresh.current = { id, kind: 'delete' };
+    setNotice('已加入队列 —— 删除完成后列表会自动刷新（发布类操作要等写间隔）');
+  }
+
+  /**
+   * 批量生成期间发布不排队：front 让发布任务插到所有待执行任务之前。
+   * 风控上没有额外代价（生成不发写请求，写间隔闸门在执行时照常生效），
+   * 而批量生成几十条要跑十几分钟，让一条手写的回复排在它后面是不合理的。
+   */
+  async function publishNow(target) {
+    const argv = [target.awemeId, target.text, '--reply-to', target.cid];
+    if (target.imagePath) argv.push('--image', target.imagePath);
+    // 勾了「跳过本次等待」就告诉队列这一次别等；策略拦截照旧生效
+    const meta = { awemeId: target.awemeId, cid: target.cid, uid: target.uid, text: target.text };
+    if (target.skipWait) meta.skipWait = true;
+    return actions.enqueue({ command: 'post', argv, label: '发布回复', meta, front: true });
   }
 
   async function generate() {
@@ -373,6 +574,11 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   const bulkTask = bulkTaskId
     ? ((queueState && queueState.tasks) || []).find((t) => t.id === bulkTaskId)
     : null;
+
+  /** 正在跑的全量拉取。理由同上：翻页要几分钟，进度得留在这一页看得见。 */
+  const fullTask = fullTaskId
+    ? ((queueState && queueState.tasks) || []).find((t) => t.id === fullTaskId)
+    : null;
   // 让用户点按钮之前就知道这次会不会真的调 AI（固定内容是秒回的）
   const modeHint = replyDesc && {
     ai: 'AI 生成较慢',
@@ -404,8 +610,35 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           <button className="btn" onClick={reload} disabled={loading}>
             {loading && <Spinner size={12} />}刷新
           </button>
-          <button className="btn btn-primary" onClick={fetchComments} disabled={!actions.canQueue}>
+          <button className="btn btn-primary" onClick={fetchComments} disabled={!actions.canQueue}
+            title={!actions.canQueue ? '浏览器未连接 —— 先到「连接」页接上抖音' : '从抖音拉取这条视频的最新评论'}>
             拉取新评论
+          </button>
+          {/* 全量拉取和「拉取新评论」是两条量级完全不同的路径，所以按钮并列而不是合并成
+              一个带下拉的入口 —— 点错一次的代价是几分钟的队列占用 */}
+          <button className="btn" onClick={fullPull} disabled={!actions.canQueue || !!fullTaskId}
+            title={!actions.canQueue
+              ? '浏览器未连接 —— 先到「连接」页接上抖音'
+              : '把这个作品的评论从头翻到尾。评论多的作品要翻几十上百页、跑几分钟，期间队列被它占着'}>
+            {fullTaskId ? <><Spinner size={12} />全量拉取中…</> : '全量拉取'}
+          </button>
+          {/* AI 分析：读评论 + 逐条调 LLM，跑得比较久（见数据页的"单次生成平均耗时"）。
+              跑完把 sentiment/priority 写回本地，列表按优先级重排 */}
+          <button
+            className="btn"
+            onClick={toggleLike}
+            disabled={!actions.canQueue}
+            title={!actions.canQueue
+              ? '浏览器未连接 —— 先到「连接」页接上抖音'
+              : '本工具里记的状态：在抖音 App 或网页里手动点的赞，这里看不到'}
+          >
+            {liked === 'liked' ? '♥ 已点赞' : '♡ 点赞'}
+          </button>
+          <button className="btn" onClick={analyzeComments} disabled={!actions.canQueue}
+            title={!actions.canQueue
+              ? '浏览器未连接 —— 先到「连接」页接上抖音'
+              : '用 AI 逐条分析本视频的评论（情绪 / 优先级），跑完列表会按优先级重排。要调用 AI，会花时间与 token'}>
+            用 AI 分析
           </button>
         </div>
       </div>
@@ -413,6 +646,52 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
       {notice && (
         <div className="notice" style={{ margin: '0 0 12px' }}>
           <div>{notice}</div>
+        </div>
+      )}
+
+      {/* 全量拉取：进度和结果都留在这一页。
+          翻页要几分钟，用户多半就停在这里看着；只把进度丢进队列页等于逼他去别处找。
+          进度条走不确定态（不传 current/total）：服务端回的 total 跟真正能拉到的条数
+          对不上（实测 903 条的视频报 1180），拿它当分母的话永远停不满 100%。 */}
+      {fullTask && (fullTask.progress || fullTask.status === 'waiting') && (
+        <div className="ws-fullpull">
+          <ProgressBar
+            label={fullTask.status === 'waiting'
+              ? (fullTask.wait && fullTask.wait.reason) || '等待中'
+              : (fullTask.progress && fullTask.progress.text) || '拉取中'}
+            tone={fullTask.status === 'waiting' ? 'wait' : 'neutral'}
+          />
+          <button className="btn btn-quiet" onClick={async () => {
+            await actions.cancelTask(fullTaskId);
+            setNotice('已请求取消 —— 当前这一页会先收完');
+          }}>
+            取消
+          </button>
+        </div>
+      )}
+
+      {full && (
+        <div className={`notice ${full.error ? 'notice-warn' : ''}`} style={{ margin: '0 0 12px' }}>
+          <div>
+            {full.error
+              ? `全量拉取没做成：${full.error}`
+              : (
+                <>
+                  <b>全量拉取完成：本次拿到 {full.count} 条</b>
+                  {stats && (
+                    <>
+                      ，本地 {stats.total} 条
+                      {stats.total > fullBefore.current
+                        && `（新增 ${stats.total - fullBefore.current} 条）`}
+                    </>
+                  )}
+                  {full.ms > 0 && `，用时 ${Math.round(full.ms / 1000)} 秒`}
+                  <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                    翻页期间服务端会重复给同一批评论，已按 cid 去重，所以这个数会比抖音上显示的评论数少。
+                  </div>
+                </>
+              )}
+          </div>
         </div>
       )}
 
@@ -562,7 +841,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
       <div className="ws-body">
         <div className="ws-list">
           {loading && comments.length === 0
-            ? <div className="ws-list-pad"><Skeleton rows={6} /></div>
+            ? <div className="ws-list-pad"><LoadingState rows={6} /></div>
             : comments.length === 0
               ? (
                 <div className="ws-list-pad">
@@ -615,6 +894,14 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                         <span className="cmt-reason">{c.decision.reason}</span>
                       )}
                       {c.digg > 0 && <span className="cmt-digg num">♥ {c.digg}</span>}
+                      {/* LLM 分析结果（analyze 写回）。没分析过就不显示 ——
+                          摆一个"未分析"的标签只是噪音 */}
+                      {c.sentiment && SENTIMENT[c.sentiment] && (
+                        <span className={`tag tag-${SENTIMENT[c.sentiment].tone}`}>
+                          {SENTIMENT[c.sentiment].label}
+                        </span>
+                      )}
+                      {c.priority > 0 && <span className="cmt-prio num" title="AI 给的优先级（1–5）">P{c.priority}</span>}
                     </div>
                     {/* 已回复的评论直接把"我当时回了什么"带在下面。
                         取不到就明说未记录 —— 留空白会被读成"从来没回过"，
@@ -637,7 +924,15 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
               <>
                 <div className="detail-head">
                   <div className="detail-user">
-                    {(selected.user && selected.user.nickname) || '匿名'}
+                    {/* 点作者名看他的全部留痕 —— 决定"值不值得认真回"的关键是
+                        "这个人以前来过没有、我们回过他几次" */}
+                    <button
+                      className="linklike"
+                      onClick={() => selected.uid && actions.openUser(selected.uid)}
+                      title={selected.uid ? '看这个人的全部评论与互动记录' : undefined}
+                    >
+                      {(selected.user && selected.user.nickname) || '匿名'}
+                    </button>
                     {selected.user && selected.user.tier && selected.user.tier !== 'normal' && (
                       <span className="tag tag-dim" style={{ marginLeft: 8 }}>{selected.user.tier}</span>
                     )}
@@ -650,6 +945,16 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                 </div>
 
                 <div className="detail-comment">{selected.text}</div>
+
+                {(selected.sentiment || selected.priority > 0) && (
+                  <div className="detail-decision">
+                    AI 分析：
+                    {selected.sentiment && SENTIMENT[selected.sentiment] && (
+                      <b> {SENTIMENT[selected.sentiment].label}</b>
+                    )}
+                    {selected.priority > 0 && <span className="muted"> · 优先级 {selected.priority}/5</span>}
+                  </div>
+                )}
 
                 {selected.decision && (
                   <div className="detail-decision">
@@ -671,7 +976,36 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                 <div className="reply-meta muted num">
                   {draftText.replace(/\s/g, '').length} 字
                   {genInfo && genInfo.imagePath && ` · 附 1 张图`}
+                  <button
+                    className="btn btn-quiet reply-dupcheck"
+                    onClick={checkDuplicate}
+                    disabled={!draftText.trim() || dupChecking}
+                    title="查一下这句以前是不是发过（纯本地查语料库，不联网）"
+                  >
+                    {dupChecking ? '查重中…' : '查重'}
+                  </button>
                 </div>
+
+                {/* 查重结果。只在"查的还是当前这段文本"时显示 —— 否则用户改了内容，
+                    屏幕上那句"没发过"仍然挂着，看起来像在给新内容背书 */}
+                {dup && dup.forText === draftText.trim() && (
+                  <div className={`notice ${dup.duplicate ? 'notice-warn' : ''} reply-dupresult`}>
+                    <div>
+                      {dup.error
+                        ? dup.error
+                        : dup.duplicate
+                          ? (
+                            <>
+                              <b>这句以前发过</b>
+                              {dup.match.postedAt ? ` · ${ago(dup.match.postedAt)}` : ''}
+                              {dup.match.awemeTitle ? ` · 在《${dup.match.awemeTitle.slice(0, 20)}》` : ''}
+                              <div className="reply-dupold">{dup.match.replyText}</div>
+                            </>
+                          )
+                          : '没发过，可以放心用。'}
+                    </div>
+                  </div>
+                )}
 
                 {genInfo && (
                   <div className="reply-origin">
@@ -694,7 +1028,34 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                   </div>
                 )}
 
+                {/* 删除入口。只在对得上的时候出现：
+                      · 这条评论我回过 → 删**我发的那条回复**（最常用：发错了要撤）
+                      · 这条评论是我自己发的 → 删这条评论
+                      · 都不是 → 不显示（放一个点了会失败、或者删别人评论的按钮
+                        比不放置更糟，见 DESIGN.md 的 Don't）
+                    删除不可撤销，走二次确认。 */}
                 <div className="detail-actions">
+                  {selected.replied && selected.replyCid ? (
+                    <button
+                      className="btn btn-quiet text-bad"
+                      onClick={() => setDeleting({
+                        cid: selected.replyCid, kind: 'reply', text: selected.replyText,
+                      })}
+                      title="删除你发出的这条回复"
+                    >
+                      删除我的回复
+                    </button>
+                  ) : selected.isMine ? (
+                    <button
+                      className="btn btn-quiet text-bad"
+                      onClick={() => setDeleting({
+                        cid: selected.cid, kind: 'comment', text: selected.text,
+                      })}
+                      title="删除你发出的这条评论"
+                    >
+                      删除这条评论
+                    </button>
+                  ) : null}
                   <button className="btn" onClick={generate} disabled={genRunning || selected.replied}>
                     {genRunning ? '生成中…' : '生成回复'}
                   </button>
@@ -703,7 +1064,8 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                   </button>
                   <button
                     className="btn btn-primary"
-                    disabled={!canPublish}
+                    disabled={!canPublish || selected.replied}
+                    title={selected.replied ? '这条已经回复过了 —— 策略会拦下重复回复' : undefined}
                     onClick={() => setPublishing({
                       awemeId,
                       cid: selected.cid,
@@ -747,6 +1109,39 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
         </div>
       </div>
 
+      {deleting && (
+        <Modal
+          title={deleting.kind === 'reply' ? '删除这条回复？' : '删除这条评论？'}
+          onClose={() => setDeleting(null)}
+        >
+          <div style={{ marginBottom: 14 }}>
+            会从抖音上<b className="text-bad">真的删掉</b>
+            {deleting.kind === 'reply' ? '你发出的这条回复' : '你发出的这条评论'}，<b>无法恢复</b>。
+            {deleting.kind === 'reply' && '被回复的那条评论会回到「待回复」。'}
+          </div>
+          {deleting.text && (
+            <div className="detail-reply-text" style={{ marginBottom: 14 }}>{deleting.text}</div>
+          )}
+          {/* ⚠️ 内容必须包一层 div：.notice 是 flex 容器，直接放文字的话
+              每个文本节点、每个内联标签都会变成独立的 flex 子项（"写操作"
+              被挤到自己一行）。见 styles.css 里 .notice 的注释。 */}
+          <div className="notice notice-warn" style={{ marginBottom: 14 }}>
+            <div>
+              删除同样是一次<b>写操作</b>：要等写间隔、占用当日额度，被策略闸门拦下时会在队列里说明原因。
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="btn" onClick={() => setDeleting(null)}>取消</button>
+            <button
+              className="btn btn-primary text-bad"
+              onClick={() => { const t = deleting; setDeleting(null); deleteComment(t); }}
+            >
+              仍然删除
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {publishing && (
         <PublishDialog
           target={publishing}
@@ -754,12 +1149,8 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           onConfirm={async (opts) => {
             const t = publishing;
             setPublishing(null);
-            const argv = [t.awemeId, t.text, '--reply-to', t.cid];
-            if (t.imagePath) argv.push('--image', t.imagePath);
-            // 勾了「跳过本次等待」就告诉队列这一次别等；策略拦截照旧生效
-            const meta = { awemeId: t.awemeId, cid: t.cid, uid: t.uid, text: t.text };
-            if (opts && opts.skipWait) meta.skipWait = true;
-            const id = await actions.enqueue({ command: 'post', argv, label: '发布回复', meta });
+            // 发布统一走 publishNow：front 插队 + 失败留内容的处理都在里面
+            const id = await publishNow({ ...t, skipWait: !!(opts && opts.skipWait) });
             if (!id) {
               // 入队失败就把内容留着。改造前这里无条件清空，
               // 用户手写的一段回复会因为一次入队失败而彻底消失。

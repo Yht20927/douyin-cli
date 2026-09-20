@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import ProgressBar from '../components/ProgressBar.jsx';
+import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
 
 /** 秒 → mm:ss */
@@ -34,6 +35,13 @@ const PROBLEM = new Set(['failed', 'blocked']);
 const BLOCK_LABEL = { stop: '不能发', wait: '要等待', rewrite: '要改写' };
 const BLOCK_TAG = { stop: 'tag-bad', wait: 'tag-warn', rewrite: 'tag-warn' };
 
+/** 未连接时状态条上的一句话：区分"从没连上过"与"连过又断了" */
+function everConnectedNote(status) {
+  return status && status.offlineForMs > 0
+    ? '抖音页面断开了'
+    : '还没有抖音页面连上来';
+}
+
 /** 毫秒 → "1 分 20 秒" / "12 秒"。任务耗时比绝对时刻更有用 */
 function duration(ms) {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -63,14 +71,44 @@ function warningsOf(policy) {
  *
  * 这个工具的存在意义就是让人守在发布节奏里，所以把"还要等多久"做成整页最大的
  * 元素，而不是藏在某个小角标里。倒计时在本地每秒重算，不靠主进程推。
+ *
+ * 连接状态必须排在策略前面：浏览器没连上时策略再"可以发"也是发不出去的 ——
+ * 改造前这里只看策略，首次打开应用会显示绿色「可以发」，而实际上什么都没连，
+ * 同屏的侧栏却写着"等待连接"，用户没法判断该信哪个。
  */
-function WriteGate({ policy }) {
+function WriteGate({ policy, status, onGotoConnection }) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(t);
   }, []);
+
+  const disconnected = status && status.listening && !status.online;
+
+  if (disconnected) {
+    const word = everConnectedNote(status);
+    return (
+      <section className="band" data-state="offline">
+        <div className="band-head">
+          <div className="band-main">
+            <div className="band-word">
+              <span className="band-dot" />
+              未连接
+            </div>
+            <p className="band-note">
+              {word}。发布类操作暂时发不出去 —— 到「连接」页接上抖音再回来。
+            </p>
+          </div>
+          {onGotoConnection && (
+            <div className="band-actions">
+              <button className="btn" onClick={onGotoConnection}>去连接页</button>
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  }
 
   if (!policy) return null;
 
@@ -82,7 +120,7 @@ function WriteGate({ policy }) {
   if (policy.risk.blocked) {
     state = 'offline';
     word = '已熔断';
-    note = `近 ${Math.round(policy.risk.windowMs / 60000)} 分钟内出现过风控拦截，已全局停止写操作`;
+    note = `近 ${Math.round(policy.risk.windowMs / 60000)} 分钟内出现过风控拦截，已全局停止发布`;
   } else if (policy.circuit.open) {
     state = 'offline';
     word = '已熔断';
@@ -90,17 +128,17 @@ function WriteGate({ policy }) {
   } else if (quotaFull) {
     state = 'offline';
     word = '额度用尽';
-    note = `今日写操作已达上限 ${policy.writesToday}/${policy.dailyWriteQuota}，明天再继续`;
+    note = `今日发布已达上限 ${policy.writesToday}/${policy.dailyWriteQuota}，明天再继续`;
   } else if (remainingMs > 0) {
     state = 'waiting';
     word = '等待中';
     note = policy.cooldownRemainingMs > 0
-      ? `本轮已写 ${policy.roundWrites}/${policy.roundMaxWrites} 条，冷却后开启新一轮`
-      : '距上次写操作不足最小间隔';
+      ? `本轮已发 ${policy.roundWrites}/${policy.roundMaxWrites} 条，冷却后开启新一轮`
+      : '距上次发布不足最小间隔';
   } else {
     state = 'online';
     word = '可以发';
-    note = '距上次写操作已超过最小间隔';
+    note = '距上次发布已超过最小间隔';
   }
 
   return (
@@ -127,7 +165,7 @@ function WriteGate({ policy }) {
 function QuotaRow({ policy }) {
   if (!policy) return null;
   const cells = [
-    { label: '今日写操作', used: policy.writesToday, max: policy.dailyWriteQuota },
+    { label: '今日发布', used: policy.writesToday, max: policy.dailyWriteQuota },
     { label: '本 轮', used: policy.roundWrites, max: policy.roundMaxWrites },
     { label: '轮 次', used: policy.roundsToday, max: policy.dailyRounds },
   ];
@@ -157,12 +195,13 @@ function QuotaRow({ policy }) {
   );
 }
 
-export default function QueueView({ state, actions, busy }) {
+export default function QueueView({ state, status, actions, busy }) {
   const tasks = (state && state.tasks) || [];
   const policy = state && state.policy;
   const counts = (state && state.stats && state.stats.counts) || {};
   const active = tasks.filter(t => ['running', 'waiting', 'pending'].includes(t.status));
   const pendingCount = tasks.filter(t => t.status === 'pending').length;
+  const failedCount = (counts.failed || 0) + (counts.blocked || 0);
 
   return (
     <div className="main-col">
@@ -172,7 +211,7 @@ export default function QueueView({ state, actions, busy }) {
         这一步由代码兜住，不靠自觉。
       </p>
 
-      <WriteGate policy={policy} />
+      <WriteGate policy={policy} status={status} onGotoConnection={actions.gotoConnection} />
 
       {/* 风控升级提示。
           core 的 stats() 返回的是 `warning`（单个字符串或 null），不是数组 ——
@@ -204,9 +243,12 @@ export default function QueueView({ state, actions, busy }) {
           <h2 className="section-title">常用操作</h2>
         </div>
         <div className="row">
-          <button className="btn btn-primary" disabled={busy}
+          <button
+            className="btn btn-primary"
+            disabled={busy || !actions.canQueue}
+            title={!actions.canQueue ? '浏览器未连接 —— 先到「连接」页接上抖音' : '从抖音拉取作品列表（不产生发布）'}
             onClick={() => actions.runCommand({
-              command: 'my', argv: ['--count', '20'], label: '拉取我的作品',
+              command: 'my', argv: ['--count', '50'], label: '拉取我的作品',
               // 跑完自动刷新作品列表。改造前这里没传 afterDone：用户在队列页点
               // 「拉取我的作品」、看到"已完成"、切到「我的作品」依然是旧列表，
               // 会以为根本没拉到。
@@ -214,13 +256,14 @@ export default function QueueView({ state, actions, busy }) {
             })}>
             拉取我的作品
           </button>
+          {/* 节奏自检只读本地策略，不需要浏览器在线，不受连接状态限制 */}
           <button className="btn" disabled={busy}
             onClick={() => actions.runCommand({ command: 'preflight', label: '节奏自检' })}>
             节奏自检
           </button>
         </div>
         <p className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
-          这两条都是只读操作，不会产生任何写动作。回复相关的操作在「我的作品」里 ——
+          这两条都是只读操作，不会发布任何内容。回复相关的操作在「我的作品」里 ——
           点进任意作品就是评论工作台。
         </p>
       </section>
@@ -230,6 +273,7 @@ export default function QueueView({ state, actions, busy }) {
           <h2 className="section-title">任务</h2>
           <span className="section-meta">
             {active.length > 0 ? `${active.length} 个进行中` : `共 ${counts.done || 0} 个已完成`}
+            {failedCount > 0 && ` · ${failedCount} 个未成功`}
           </span>
           {/* 排队中的任务此前没有取消入口 —— 队列排了十几条想收手时，
               只能等每条真正开始跑才能一条条取消，而写操作之间还隔着几十秒。
@@ -242,7 +286,7 @@ export default function QueueView({ state, actions, busy }) {
         </div>
 
         {tasks.length === 0
-          ? <div className="empty">队列是空的。上面挑一个操作试试。</div>
+          ? <EmptyState title="队列是空的。" hint="上面挑一个操作试试。" />
           : (
             <div className="list">
               {tasks.slice().reverse().map((t) => (

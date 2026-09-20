@@ -23,6 +23,25 @@ contextBridge.exposeInMainWorld('dy', {
   /** 退出应用 */
   quit: () => ipcRenderer.invoke('app:quit'),
 
+  /** 当前账号：界面据此显示"现在在看哪个号"，多账号时用来切换 */
+  account: {
+    /** { ok, data: { uid, needsChoice, candidates, accounts[] } } */
+    state: () => ipcRenderer.invoke('account:state'),
+    /** 选定当前账号（多开时用）。传 null 清除选择，回到自动跟随 */
+    set: (uid) => ipcRenderer.invoke('account:set', uid),
+  },
+
+  app: {
+    /** 检查 GitHub 最新 release。{ok, hasUpdate, latest, current, url} 或 {ok:false, error} */
+    checkUpdate: () => ipcRenderer.invoke('app:check-update'),
+    /** 复制一段文本（诊断页的路径用）。排障第一件事就是把这些贴给别人 */
+    copyText: (text) => ipcRenderer.invoke('app:copy-text', text),
+    /** 在系统文件管理器里打开数据目录（数据库、配置都在里面） */
+    openDataDir: () => ipcRenderer.invoke('app:open-data-dir'),
+    /** 把本地数据库备份到用户选的位置 */
+    backupData: () => ipcRenderer.invoke('data:backup'),
+  },
+
   bridge: {
     /** 取当前状态（立即返回，不用等推送） */
     status: () => ipcRenderer.invoke('bridge:status'),
@@ -74,15 +93,47 @@ contextBridge.exposeInMainWorld('dy', {
 
   /** 本地数据读取。都是同步读 SQLite，不走队列也不碰抖音。 */
   data: {
-    overview: () => ipcRenderer.invoke('data:overview'),
+    /** @param {{scope?: 'all'|'mine'}} [opts] 缺省 all */
+    overview: (opts) => ipcRenderer.invoke('data:overview', opts),
+    /** 我发的作品。注意这不是工作台的唯一入口了 —— 见 targets */
     videos: (limit) => ipcRenderer.invoke('data:videos', limit),
+    /**
+     * 运营对象：别人的视频里我互动过的评论区，按待回复/最近互动排序。
+     * @param {{order?: 'pending'|'recent'|'comments', limit?: number}} [opts]
+     */
+    targets: (opts) => ipcRenderer.invoke('data:targets', opts),
+    /**
+     * 一批视频在本地库里的状态。返回 { [awemeId]: { inLibrary, mineOfCurrent, commentCount, … } }
+     * @param {string[]} ids
+     */
+    targetStatus: (ids) => ipcRenderer.invoke('data:targetStatus', ids),
     video: (awemeId) => ipcRenderer.invoke('data:video', awemeId),
     videoStats: (awemeId) => ipcRenderer.invoke('data:videoStats', awemeId),
     comments: (awemeId, opts) => ipcRenderer.invoke('data:comments', awemeId, opts),
     comment: (cid) => ipcRenderer.invoke('data:comment', cid),
+    /** 查重：这段文本以前发过没有（纯本地读，即时返回） */
+    checkDup: (text) => ipcRenderer.invoke('data:checkDup', text),
+    /** 最近的操作事件（诊断页用） */
+    events: (opts) => ipcRenderer.invoke('data:events', opts),
+    /** 清理预演：按 TTL 算"会删掉多少行"，不删 */
+    cleanupPreview: (opts) => ipcRenderer.invoke('data:cleanupPreview', opts),
+    /** 某个评论者的画像（whois 的视图版） */
+    userProfile: (uid, opts) => ipcRenderer.invoke('data:userProfile', uid, opts),
+    /** 某个用户的交互历史（profile 的视图版） */
+    userEvents: (uid, opts) => ipcRenderer.invoke('data:userEvents', uid, opts),
     /** 评论列表可用的排序方式（由 core 提供） */
     commentOrders: () => ipcRenderer.invoke('data:commentOrders'),
     drafts: () => ipcRenderer.invoke('data:drafts'),
+    /**
+     * 数据分析页的全量聚合（作品对比 / 每日评论 / 判定分布 / Top 榜）。
+     * @param {{scope?: 'all'|'mine'}} [opts] 缺省 all
+     */
+    analytics: (opts) => ipcRenderer.invoke('data:analytics', opts),
+  },
+
+  /** 用户分级 / 标签 / 备注（本地写，不碰抖音） */
+  user: {
+    setNote: (uid, patch) => ipcRenderer.invoke('user:setNote', uid, patch),
   },
 
   draft: {
@@ -104,6 +155,8 @@ contextBridge.exposeInMainWorld('dy', {
     read: (name) => ipcRenderer.invoke('prompts:read', name),
     /** 保存（会自动备份上一版并清模板缓存，改完立即生效） */
     save: (name, text) => ipcRenderer.invoke('prompts:save', name, text),
+    /** 完整格式校验（与 `validate-prompts` 命令同一份实现） */
+    validate: (name) => ipcRenderer.invoke('prompts:validate', name),
     /** 恢复默认：删掉用户目录那份，回退到内置 */
     reset: (name) => ipcRenderer.invoke('prompts:reset', name),
     /** 历史备份（新→旧） */

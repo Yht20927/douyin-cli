@@ -1,13 +1,12 @@
 import React from 'react';
+import LoadingState from '../components/LoadingState.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import { abbrNum } from '../format.js';
+import useAutoRefresh from '../useAutoRefresh.js';
 
-/** 大数字缩写：2589 → 2.6k，避免列表里数字长度参差 */
-function abbr(n) {
-  if (n == null) return '—';
-  if (n < 10000) return String(n);
-  return `${(n / 10000).toFixed(1)}w`;
-}
-
-/** 互动数据是否已经拉到过（v9 之前入库的视频没有这些列） */
+/**
+ * 互动数据是否已经拉到过（v9 之前入库的视频没有这些列）
+ */
 function hasAnyStat(stats) {
   if (!stats) return false;
   return ['plays', 'likes', 'comments', 'shares'].some(k => stats[k] != null);
@@ -76,9 +75,22 @@ function Cover({ url }) {
  * `total` 是**数据库里的真实作品数**，来自 data.videos 的返回。
  * 改造前这里把 list.length 当总数显示（"共 50 个作品"），而有 120 个作品时
  * 第 51 个以后既看不到也点不进去 —— 工作台的唯一入口就在这一行。
+ * 现在「加载更早」逐步放大读取上限（本地库直读，放大没有代价）。
  */
-export default function WorksView({ videos, total, loading, actions }) {
+export default function WorksView({ videos, total, loading, actions, onRefresh, onLoadMore }) {
+  const [q, setQ] = React.useState('');
+
+  // 定时重读（间隔在设置页里配，0 = 关）。只读本地库，不发抖音请求。
+  // 用 onRefresh 而不是自己再取一次 —— 列表由 App 持有，取数口径只有一份
+  useAutoRefresh('works', onRefresh);
   const list = videos || [];
+  const kw = q.trim();
+  // 搜索只筛**已加载**的部分，并如实说明 —— "看到的就是全部"比藏在背后的
+  // 全量扫描更不容易让人误会
+  const filtered = kw
+    ? list.filter(v => (v.title || '').includes(kw) || v.awemeId.includes(kw))
+    : list;
+  const hasMore = total > list.length;
 
   return (
     <div className="main-col">
@@ -88,31 +100,44 @@ export default function WorksView({ videos, total, loading, actions }) {
       </p>
 
       <div className="row" style={{ marginBottom: 18 }}>
-        <button className="btn btn-primary" disabled={loading}
-          onClick={() => actions.runCommand({
-            command: 'my', argv: ['--count', '20'], label: '拉取我的作品',
-            afterDone: 'refreshVideos',
-          })}>
+        <button
+          className="btn btn-primary"
+          disabled={loading || !actions.canQueue}
+          title={!actions.canQueue
+            ? '浏览器未连接 —— 先到「连接」页接上抖音'
+            : '从抖音拉取最近 50 个作品（不发布任何内容）'}
+          onClick={onRefresh}>
           刷新列表
         </button>
+        <input
+          className="input"
+          style={{ width: 230 }}
+          placeholder="搜索标题或视频 ID（限已加载的）"
+          value={q}
+          onChange={e => setQ(e.target.value)}
+        />
         <span className="muted" style={{ alignSelf: 'center', fontSize: 12.5 }}>
           共 {total || list.length} 个作品
-          {total > list.length && `（当前显示最近 ${list.length} 个）`}
+          {total > list.length && `（已加载最近 ${list.length} 个）`}
+          {kw && ` · 匹配 ${filtered.length} 条`}
         </span>
       </div>
 
       {loading && list.length === 0
-        ? <div className="empty">正在读取…</div>
+        // 骨架屏而不是一句「正在读取…」：作品行有封面、有高，文字塌成一行
+        // 会让数据回来时整页重排（见 Skeleton 的注释）
+        ? <LoadingState rows={6} thumb title />
         : list.length === 0
           ? (
-            <div className="empty">
-              还没有作品记录。<strong>点上面的「刷新列表」</strong>从抖音拉一次 ——
-              前提是浏览器里已装好脚本并打开着 douyin.com。
-            </div>
+            <EmptyState
+              title="还没有作品记录。"
+              hint={<>点上面的「刷新列表」从抖音拉一次 —— 前提是浏览器里已装好脚本并打开着 douyin.com。</>}
+            />
           )
           : (
-            <div className="list">
-              {list.map(v => (
+            <>
+              <div className="list">
+                {filtered.map(v => (
                 <button
                   className="work-row"
                   key={v.awemeId}
@@ -127,13 +152,13 @@ export default function WorksView({ videos, total, loading, actions }) {
                         否则满屏的"— 播放 — 点赞"看着像坏了，而其实只是还没拉过。 */}
                     {hasAnyStat(v.stats) ? (
                       <div className="work-meta">
-                        <span className="num">{abbr(v.stats.plays)}</span> 播放
+                        <span className="num">{abbrNum(v.stats.plays)}</span> 播放
                         <i />
-                        <span className="num">{abbr(v.stats.likes)}</span> 点赞
+                        <span className="num">{abbrNum(v.stats.likes)}</span> 点赞
                         <i />
-                        <span className="num">{abbr(v.stats.comments)}</span> 评论
+                        <span className="num">{abbrNum(v.stats.comments)}</span> 评论
                         <i />
-                        <span className="num">{abbr(v.stats.shares)}</span> 分享
+                        <span className="num">{abbrNum(v.stats.shares)}</span> 分享
                       </div>
                     ) : (
                       <div className="work-meta muted">互动数据尚未拉取</div>
@@ -161,7 +186,18 @@ export default function WorksView({ videos, total, loading, actions }) {
                   </div>
                 </button>
               ))}
-            </div>
+              </div>
+
+              {/* 「加载更早」只在没有搜索词时出现 —— 搜索是针对已加载内容的，
+                  此时加载更多只会让"匹配数"和"已加载数"互相追赶，没有意义 */}
+              {hasMore && !kw && (
+                <div className="row" style={{ marginTop: 12, justifyContent: 'center' }}>
+                  <button className="btn" disabled={loading} onClick={onLoadMore}>
+                    {loading ? '读取中…' : `加载更早的作品（还有 ${total - list.length} 个）`}
+                  </button>
+                </div>
+              )}
+            </>
           )}
     </div>
   );

@@ -1,10 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Sidebar from './components/Sidebar.jsx';
 import Toasts from './components/Toast.jsx';
+import Modal from './components/Modal.jsx';
 import QueueView from './views/QueueView.jsx';
+import DiscoverView from './views/DiscoverView.jsx';
+import UserView from './views/UserView.jsx';
+import TargetsView from './views/TargetsView.jsx';
 import WorksView from './views/WorksView.jsx';
 import WorkspaceView from './views/WorkspaceView.jsx';
 import DraftsView from './views/DraftsView.jsx';
+import AnalyticsView from './views/AnalyticsView.jsx';
 import ConnectionView from './views/ConnectionView.jsx';
 import DiagnosticsView from './views/DiagnosticsView.jsx';
 import SettingsView from './views/SettingsView.jsx';
@@ -13,13 +18,40 @@ export default function App() {
   const [info, setInfo] = useState(null);
   const [status, setStatus] = useState(null);
   const [queueState, setQueueState] = useState(null);
+  /**
+   * 当前账号。
+   *
+   * 界面上的每一份数据都属于某个账号 —— 不把它取回来传给页面，两个号的
+   * 作品/评论/草稿就会混在一起（这正是"换了号刷新后列表没变"的根因）。
+   * 主进程那边按"浏览器当前登录的号"解析，这里只管显示与切换。
+   */
+  const [account, setAccount] = useState(null);
 
   // view 决定主区渲染哪个页面；workspaceId 非空时优先显示工作台
   const [view, setView] = useState('queue');
   const [workspaceId, setWorkspaceId] = useState(null);
+  /**
+   * 是从哪个页面点进工作台的。
+   *
+   * 工作台现在有两个入口（运营对象 / 我的作品），返回时回原来那个 ——
+   * 此前写死回「我的作品」，从运营对象点进去再返回，人会莫名其妙地
+   * 落到一个自己没去过的页面上。
+   */
+  const workspaceFrom = useRef('works');
+  /**
+   * 正在看的用户（评论者画像）。
+   *
+   * 它是**第二层下钻**（工作台/数据页 → 用户），与 workspaceId 并列而不是嵌在
+   * 里面：从数据页点过来时并不经过工作台。非空时主区优先显示它。
+   */
+  const [userId, setUserId] = useState(null);
+  /** 从哪一层进的用户页，返回时要回得去 */
+  const userFrom = useRef('analytics');
 
   const [videos, setVideos] = useState([]);
   const [drafts, setDrafts] = useState([]);
+  /** 未发布草稿的真实条数（drafts 只是加载进来的那一页） */
+  const [draftTotal, setDraftTotal] = useState(0);
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
 
@@ -36,13 +68,49 @@ export default function App() {
 
   const everConnected = useRef(false);
 
+  // ── 全局可见性（失败/断线不能只留在队列页里）──
+  /** 用户是否点过侧栏导航 —— 首次落地重定向只在用户没动过界面时生效 */
+  const navClicked = useRef(false);
+  /** 首次落地重定向只做一次 */
+  const didRedirect = useRef(false);
+  /** 上一轮的连接状态，用于"断开/恢复"的边沿检测 */
+  const prevOnline = useRef(null);
+  /** 已经提示过失败的任务 id —— 同一个失败只弹一次 toast */
+  const seenFailures = useRef(new Set());
+
+  /** 退出确认弹窗（有活动任务时才出现） */
+  const [confirmQuit, setConfirmQuit] = useState(null);
+
   // ── 数据读取（本地 SQLite，不走队列）──
   const [videoTotal, setVideoTotal] = useState(0);
+  /** 作品列表的显示上限：点「加载更早」逐步放大（本地库直读，放大没有代价） */
+  const [videoLimit, setVideoLimit] = useState(50);
 
-  const reloadVideos = useCallback(async () => {
+  /**
+   * 取当前账号。
+   *
+   * ⚠️ 桥接状态**每 5 秒推一次**（connectionWatch 的轮询），applyStatus 每次都
+   * 会调到这里。所以必须在"账号真的变了"时才换 state 对象：每次都换新对象
+   * 不仅白重渲染，下面 `.main-inner` 上的 `key` 虽然按 uid 算不会重挂载，
+   * 但无谓的对象更新会让所有子页面的 props 全部变化。
+   */
+  const reloadAccount = useCallback(async () => {
+    const r = await window.dy.account.state();
+    if (!r || !r.ok) return;
+    setAccount((prev) => {
+      const same = prev
+        && String(prev.uid) === String(r.data.uid)
+        && prev.needsChoice === r.data.needsChoice
+        && JSON.stringify(prev.candidates) === JSON.stringify(r.data.candidates);
+      return same ? prev : r.data;
+    });
+  }, []);
+
+  const reloadVideos = useCallback(async (limit) => {
+    const n = limit || 50;
     setLoadingVideos(true);
     try {
-      const r = await window.dy.data.videos({ limit: 50 });
+      const r = await window.dy.data.videos({ limit: n });
       if (r.ok) {
         setVideos(r.data.items || []);
         setVideoTotal(r.data.total || 0);
@@ -59,7 +127,13 @@ export default function App() {
     try {
       const r = await window.dy.data.drafts();
       if (r.ok) {
-        setDrafts(r.data);
+        setDrafts(r.data.items || []);
+        setDraftTotal(r.data.total || 0);
+        // 加载上限一直是不可见的：第 201 条草稿既不会出现也不会有任何提示，
+        // 于是"草稿箱只有 200 条"这个界面事实与库里事实悄悄分叉
+        if (r.data.truncated) {
+          flash(`草稿箱只显示最近 ${(r.data.items || []).length} 条（共 ${r.data.total} 条）`, 'wait', 6000);
+        }
       } else {
         // 失败不能伪装成"草稿箱是空的"：那会让用户以为草稿被删了，
         // 而侧栏角标同时变成 0，两边互相印证一个错误结论。
@@ -74,8 +148,9 @@ export default function App() {
 
     window.dy.info().then((i) => { if (!cancelled) setInfo(i); });
     window.dy.bridge.status().then((s) => { if (!cancelled) applyStatus(s); });
+    reloadAccount();
     window.dy.queue.state().then((q) => { if (!cancelled && q) setQueueState(q); });
-    reloadVideos();
+    reloadVideos(50);
     // 草稿角标要在启动时就有值。改造前只在进入草稿箱页面时才加载，
     // 于是工作台「存草稿」提示成功之后，侧栏角标还是旧值 —— 用户以为没存上。
     reloadDrafts();
@@ -83,6 +158,14 @@ export default function App() {
     const unStatus = window.dy.bridge.onStatusChanged((s) => applyStatus(s));
     const unQueue = window.dy.queue.onChanged((payload) => {
       setQueueState({ tasks: payload.tasks, stats: payload.stats, policy: payload.policy });
+      // 任务失败不能只留在队列页 —— 用户多半停在别的页面。
+      // 每个失败任务只提示一次（同一个 id 不重复弹）。
+      for (const t of payload.tasks || []) {
+        if ((t.status === 'failed' || t.status === 'blocked') && !seenFailures.current.has(t.id)) {
+          seenFailures.current.add(t.id);
+          flash(`「${t.label}」未完成：${t.error || '被策略拦下'}`, 'bad', 8000);
+        }
+      }
     });
 
     return () => { cancelled = true; unStatus(); unQueue(); };
@@ -90,6 +173,26 @@ export default function App() {
 
   function applyStatus(s) {
     if (s && s.online) everConnected.current = true;
+    // 连接的账号可能变了（在浏览器里换了号、或关掉了某个页面）——
+    // 重新解析一次当前账号，界面上的数据随之整体重读
+    reloadAccount();
+
+    // 断开/恢复是**状态边沿**，值得打断用户一下；初始状态（prevOnline 为 null）不弹。
+    if (prevOnline.current === true && s && !s.online && s.listening) {
+      flash('连接已断开 —— 抖音页面可能被关掉了，命令会一直排队直到超时', 'bad', 8000);
+    } else if (prevOnline.current === false && s && s.online) {
+      flash('连接已恢复', 'ok');
+    }
+    if (s) prevOnline.current = s.online;
+
+    // 第一次使用（从没连上过）且用户还没点过导航 → 直接带到「连接」页，
+    // 那里有三步安装引导。用户点过导航就不再插手。
+    if (!didRedirect.current && !navClicked.current && !everConnected.current
+      && s && s.listening && !s.online) {
+      didRedirect.current = true;
+      setView('connection');
+    }
+
     setStatus(s);
   }
 
@@ -159,7 +262,7 @@ export default function App() {
       const meta = { awemeId: d.awemeId, cid: d.cid, uid: d.uid || null, text: d.text };
       if (d.skipWait) meta.skipWait = true;
 
-      const r = await window.dy.queue.enqueue({ command: 'post', argv, label: '发布草稿', meta });
+      const r = await window.dy.queue.enqueue({ command: 'post', argv, label: '发布草稿', meta, front: true });
       if (!r.ok) { flash(r.error || '入队失败', 'bad'); return null; }
       trackTask(r.id, async () => {
         const m = await window.dy.draft.markPosted(d.draftId);
@@ -171,8 +274,51 @@ export default function App() {
     async cancelTask(id) { await window.dy.queue.cancel(id); },
     async cancelPending() { await window.dy.queue.cancelPending(); },
 
-    openWorkspace(awemeId) { setWorkspaceId(awemeId); },
-    backToWorks() { setWorkspaceId(null); reloadVideos(); },
+    /**
+     * 退出应用。有任务在跑/在排时先确认 —— 退出会取消未开始的任务、
+     * 中断正在执行的任务，批量生成跑到一半手滑退出等于白跑。
+     */
+    async quit() {
+      try {
+        const s = await window.dy.queue.state();
+        const c = (s && s.stats && s.stats.counts) || {};
+        const active = (c.pending || 0) + (c.running || 0) + (c.waiting || 0);
+        if (active > 0) { setConfirmQuit({ active }); return; }
+      } catch (e) { /* 状态拿不到就不拦 —— 退出本身不该被故障挡住 */ }
+      await window.dy.quit();
+    },
+
+    openWorkspace(awemeId) { workspaceFrom.current = view; setWorkspaceId(awemeId); },
+
+    /** 打开某个评论者的详情（工作台里点作者名、数据页点活跃榜） */
+    openUser(uid) {
+      userFrom.current = workspaceId ? 'workspace' : view;
+      setUserId(String(uid));
+    },
+    /** 从用户页返回：回工作台就带着 workspaceId 一起回 */
+    closeUser() {
+      setUserId(null);
+      if (userFrom.current !== 'workspace') setView(userFrom.current);
+    },
+    /** 返回工作台的来源页（运营对象 或 我的作品） */
+    backFromWorkspace() {
+      setWorkspaceId(null);
+      setView(workspaceFrom.current);
+      // 作品列表的统计要跟着刷新（在工作台里发过回复，"待回复"应该少一条）。
+      // 回运营对象页时不用手动刷 —— 那个视图是重新挂载的，自己会取一次。
+      if (workspaceFrom.current === 'works') reloadVideos(videoLimit);
+    },
+
+    /** 多账号同时在线时选定当前账号（只有一个时是自动跟随的，用不到） */
+    async setAccount(uid) {
+      const r = await window.dy.account.set(uid);
+      if (!r || !r.ok) { flash((r && r.error) || '切换账号失败', 'bad'); return; }
+      await reloadAccount();
+      flash('已切换当前账号 —— 各页数据会按新账号重新读取', 'ok');
+    },
+
+    /** 侧栏之外的第二条去「连接」页的路（队列页状态条上用） */
+    gotoConnection() { setWorkspaceId(null); setView('connection'); },
 
     async openDouyin() {
       return withBusy(async () => {
@@ -200,8 +346,6 @@ export default function App() {
       const r = await window.dy.bridge.openUserscript();
       flash(r.ok ? '已在浏览器里打开安装页 —— 确认 Tampermonkey 的安装提示' : (r.error || '打开失败'), r.ok ? 'ok' : 'bad');
     },
-
-    async quit() { await window.dy.quit(); },
 
     /** 工作台「存草稿」之后要刷新草稿角标与草稿箱列表 */
     async refreshDrafts() { return reloadDrafts(); },
@@ -233,45 +377,75 @@ export default function App() {
 
   const counts = (queueState && queueState.stats && queueState.stats.counts) || {};
   const activeCount = (counts.pending || 0) + (counts.running || 0) + (counts.waiting || 0);
-  const draftCount = drafts.length;
 
   return (
     <div className="shell">
       <Sidebar
-        view={workspaceId ? 'works' : view}
-        onNavigate={(v) => { setWorkspaceId(null); setView(v); }}
+        // 在工作台里时，高亮的应该是"从哪进来的"那一项，而不是写死「我的作品」
+        view={userId ? (userFrom.current === 'workspace' ? workspaceFrom.current : userFrom.current)
+          : workspaceId ? workspaceFrom.current : view}
+        onNavigate={(v) => { navClicked.current = true; setWorkspaceId(null); setUserId(null); setView(v); }}
         status={status}
+        account={account}
+        onSwitchAccount={actions.setAccount}
         queueCount={activeCount}
-        draftCount={draftCount}
+        draftCount={draftTotal}
         version={info && info.version}
         onQuit={actions.quit}
       />
 
       <main className="main">
-        <div className="main-inner">
-          {workspaceId
+        {/* key 里带上当前账号：换号之后把当前页面整个重挂载，各页的取数
+            effect 自然重跑。比在每个页面里各写一遍"账号变了要重读"可靠得多
+            ——后者只要有一页忘了写，那一页就会继续显示上一个号的数据，
+            而症状恰好又是"换了号数据没变"。 */}
+        <div
+          className="main-inner"
+          key={`${account ? String(account.uid || 'none') : 'loading'}:${userId || workspaceId || ''}`}
+        >
+          {userId
+            ? <UserView uid={userId} actions={actions} onBack={actions.closeUser} />
+            : workspaceId
             ? (
               <WorkspaceView
                 awemeId={workspaceId}
                 queueState={queueState}
                 actions={actions}
-                onBack={actions.backToWorks}
+                onBack={actions.backFromWorkspace}
               />
             )
             : (
               <>
-                {view === 'queue' && <QueueView state={queueState} actions={actions} busy={busy} />}
+                {view === 'queue' && (
+                  <QueueView state={queueState} status={status} actions={actions} busy={busy} />
+                )}
+                {view === 'discover' && <DiscoverView actions={actions} />}
+                {view === 'targets' && <TargetsView actions={actions} />}
                 {view === 'works' && (
-                  <WorksView videos={videos} total={videoTotal} loading={loadingVideos} actions={actions} />
+                  <WorksView
+                    videos={videos}
+                    total={videoTotal}
+                    shown={videos.length}
+                    loading={loadingVideos}
+                    actions={actions}
+                    onRefresh={() => reloadVideos(videoLimit)}
+                    onLoadMore={() => {
+                      const next = Math.min(videoLimit + 100, 500);
+                      setVideoLimit(next);
+                      reloadVideos(next);
+                    }}
+                  />
                 )}
                 {view === 'drafts' && (
                   <DraftsView
                     drafts={drafts}
+                    total={draftTotal}
                     loading={loadingDrafts}
                     actions={actions}
                     reload={reloadDrafts}
                   />
                 )}
+                {view === 'analytics' && <AnalyticsView actions={actions} />}
                 {view === 'settings' && <SettingsView />}
                 {view === 'connection' && <ConnectionView status={status} actions={actions} busy={busy} />}
                 {view === 'diagnostics' && <DiagnosticsView info={info} status={status} actions={actions} />}
@@ -279,6 +453,19 @@ export default function App() {
             )}
         </div>
       </main>
+
+      {confirmQuit && (
+        <Modal title="确认退出？" onClose={() => setConfirmQuit(null)}>
+          <div style={{ marginBottom: 16 }}>
+            还有 <b className="text-strong num">{confirmQuit.active}</b> 个任务在排队或执行中。
+            退出会<b className="text-bad">取消未开始的任务、中断正在执行的任务</b>（批量生成跑到一半会白跑）。
+          </div>
+          <div className="modal-actions">
+            <button className="btn" onClick={() => setConfirmQuit(null)}>取消</button>
+            <button className="btn btn-primary text-bad" onClick={() => window.dy.quit()}>仍然退出</button>
+          </div>
+        </Modal>
+      )}
 
       <Toasts items={toasts} onDismiss={dismissToast} />
     </div>

@@ -97,46 +97,145 @@ function JsonField({ value, onChange }) {
   );
 }
 
-/** 比例：内部存 0–1，界面按百分比输入，省得用户去数小数点 */
-function RatioField({ value, onChange }) {
-  const pct = Number.isFinite(value) ? Math.round(value * 100) : 0;
+/**
+ * 一个数字输入框：本地保留文本 + 非法值当场说清。
+ *
+ * 为什么不能直接 `value={value}` 受控 —— 改造前三个数字控件都那么写，
+ * 于是同一个动作有三种坏法，共同点是**用户不知道发生了什么**：
+ *   - INT：`if (!Number.isFinite(n)) return;` —— 敲进去的字符**根本不显示**，
+ *     界面上什么都不发生，也没有任何提示（DESIGN.md 的 Known Gaps 记的就是它）
+ *   - RANGE2：没有守卫，`Number('') === 0` —— 清空输入框会把值悄悄写成 0
+ *   - RATIO：非法输入被静默夹到 0–100
+ *
+ * 保留本地文本、只在解析成功时向上抛，是同一个文件里 ListField 已经在用的做法
+ * （见它上面的注释）。这样"正在输入"的中间状态不会被格式化回去，
+ * 而"这个值不算数"是看得见的。
+ *
+ * 非法值**不向上抛**：草稿里留着的仍是上一个合法值，保存时不会把半个数字写进配置。
+ * 同时通过 onInvalid 把错误报给上层，让保存按钮拦住 —— 不然"保存成功"会是假话。
+ *
+ * @param {object} props
+ * @param {number} props.value
+ * @param {(n:number)=>void} props.onChange
+ * @param {(msg:string|null)=>void} [props.onInvalid]
+ * @param {number} [props.scale=1] - 显示值 = 实际值 × scale（比例按百分比显示时用 100）
+ * @param {number} [props.min] [props.max] - 以**显示值**为单位
+ * @param {boolean} [props.integer]
+ * @param {string} [props.suffix] - 控件后面的单位文字
+ */
+function NumInput({
+  value, onChange, onInvalid, scale = 1, min, max, integer = false, suffix, width,
+}) {
+  // 浮点噪声（0.1*100 = 10.000000000000002）不该显示给用户
+  const fmt = (v) => (Number.isFinite(v) ? String(Math.round(v * scale * 1e6) / 1e6) : '');
+  const [text, setText] = useState(() => fmt(value));
+  const [error, setError] = useState(null);
+  const lastExternal = useRef(fmt(value));
+
+  // 外部值变了（点了「恢复默认」、保存后回灌）才回写文本 ——
+  // 无条件回灌会把用户正在敲的内容覆盖掉
+  useEffect(() => {
+    const now = fmt(value);
+    if (now !== lastExternal.current) {
+      lastExternal.current = now;
+      setText(now);
+      setError(null);
+      if (onInvalid) onInvalid(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  function handle(t) {
+    setText(t);
+    const msg = validateNum(t, { min, max, integer });
+    setError(msg);
+    if (onInvalid) onInvalid(msg);
+    if (msg) return;                       // 非法值不向上抛，草稿保持上一个合法值
+    const n = Number(t) / scale;
+    // 先把"外部值"对齐，免得下面 onChange 触发的重渲染把文本格式化回去
+    lastExternal.current = fmt(n);
+    onChange(n);
+  }
+
   return (
-    <div className="settings-inline">
+    <div className={`settings-inline ${error ? 'settings-inline-invalid' : ''}`}>
       <input
-        className="input settings-num"
-        type="number"
-        min={0}
-        max={100}
-        value={pct}
-        onChange={e => {
-          const n = Number(e.target.value);
-          if (!Number.isFinite(n)) return;
-          onChange(Math.min(100, Math.max(0, n)) / 100);
-        }}
+        className={`input settings-num ${error ? 'input-invalid' : ''}`}
+        // 用 text 而不是 number：number 输入框在部分浏览器上会把非法输入
+        // 从 e.target.value 里直接吞掉，连"用户敲了什么"都拿不到
+        type="text"
+        inputMode="decimal"
+        value={text}
+        style={width ? { width } : undefined}
+        onChange={e => handle(e.target.value)}
+        aria-invalid={error ? 'true' : undefined}
       />
-      <span className="muted">%</span>
+      {suffix && <span className="muted">{suffix}</span>}
+      {error && <span className="settings-invalid">{error}</span>}
     </div>
   );
 }
 
-function Range2Field({ value, onChange }) {
+/** 只判"这个值算不算数"，不重复 core 的范围规则（那是 config 校验的事） */
+function validateNum(text, { min, max, integer }) {
+  const t = String(text).trim();
+  if (t === '') return '不能为空';
+  const n = Number(t);
+  if (!Number.isFinite(n)) return '要填数字';
+  if (integer && !Number.isInteger(n)) return '要填整数';
+  if (min != null && n < min) return `不能小于 ${min}`;
+  if (max != null && n > max) return `不能大于 ${max}`;
+  return null;
+}
+
+/** 比例：内部存 0–1，界面按百分比输入，省得用户去数小数点 */
+function RatioField({ value, onChange, onInvalid }) {
+  return (
+    <NumInput
+      value={Number.isFinite(value) ? value : 0}
+      onChange={onChange}
+      onInvalid={onInvalid}
+      scale={100}
+      min={0}
+      max={100}
+      suffix="%"
+    />
+  );
+}
+
+/**
+ * 区间（如"期望回复长度 30~60 字"）。
+ *
+ * 两个输入框各自会报错，但上层的 onInvalid 只有一个位置 ——
+ * 所以这里要合成：**任意一个不对就算这一项不对**。分开报的话，
+ * 后一个输入框的清空会把前一个的错误状态顶掉，保存按钮又放行了。
+ */
+function Range2Field({ value, onChange, onInvalid }) {
   const arr = Array.isArray(value) ? value : [0, 0];
+  const [errs, setErrs] = useState([null, null]);
+  // 用 ref 记一份：把 onInvalid 放进 setErrs 的更新函数里会让它在
+  // StrictMode 下被调用两次，而它又会去 setState 上层 —— 侧效应不该写在更新函数里
+  const errsRef = useRef([null, null]);
+
+  function report(i, msg) {
+    const next = [...errsRef.current];
+    next[i] = msg;
+    errsRef.current = next;
+    setErrs(next);
+    if (onInvalid) onInvalid(next[0] || next[1] || null);
+  }
+
   const set = (i, n) => {
     const next = [...arr];
     next[i] = n;
     onChange(next);
   };
+
   return (
     <div className="settings-inline">
-      <input
-        className="input settings-num" type="number" min={1} value={arr[0] ?? ''}
-        onChange={e => set(0, Number(e.target.value))}
-      />
+      <NumInput value={arr[0]} onChange={(n) => set(0, n)} onInvalid={(m) => report(0, m)} min={0} integer width={88} />
       <span className="muted">~</span>
-      <input
-        className="input settings-num" type="number" min={1} value={arr[1] ?? ''}
-        onChange={e => set(1, Number(e.target.value))}
-      />
+      <NumInput value={arr[1]} onChange={(n) => set(1, n)} onInvalid={(m) => report(1, m)} min={0} integer width={88} />
     </div>
   );
 }
@@ -151,9 +250,13 @@ function Range2Field({ value, onChange }) {
  * @param {*} props.defaultValue - 默认值（用于"恢复默认"按钮与占位提示）
  * @param {boolean} props.dirty  - 是否改过
  * @param {() => void} props.onReset
+ * @param {(msg: string|null) => void} [props.onInvalid] - 这一项当前填得对不对。
+ *   只有数字类控件会报（字符串/列表类没有"填错"这种状态），
+ *   上报给设置页用来拦住保存 —— 否则用户填了个非法值、点保存、被告知"已保存"，
+ *   而那个值根本没进去。
  * @param {React.ReactNode} [props.extra] - 特殊组件需要的额外内容
  */
-export default function Field({ field, cfg, value, onChange, defaultValue, dirty, onReset, extra }) {
+export default function Field({ field, cfg, value, onChange, defaultValue, dirty, onReset, extra, onInvalid }) {
   const { type, path } = field;
   // status / statusNote 可以写成 (cfg) => string 的形式：有些配置项"管不管用"
   // 取决于别的项（比如固定回复内容只在非 AI 模式下被读取），
@@ -174,16 +277,17 @@ export default function Field({ field, cfg, value, onChange, defaultValue, dirty
       break;
 
     case T.INT:
+      // 改造前这里是 `if (!Number.isFinite(n)) return;` —— 敲进去的字符
+      // 不显示、不报错、不生效，用户只能反复试。现在交给 NumInput：
+      // 当场标红并说明原因，且不把这个值提交上去（见它的注释）
       control = (
-        <input
-          className="input settings-num"
-          type="number"
-          value={value ?? ''}
-          onChange={e => {
-            const n = Number(e.target.value);
-            if (e.target.value === '' || !Number.isFinite(n)) return;
-            onChange(Math.round(n));
-          }}
+        <NumInput
+          value={Number.isFinite(value) ? value : 0}
+          onChange={onChange}
+          onInvalid={onInvalid}
+          integer
+          min={0}
+          width={130}
         />
       );
       break;
@@ -233,11 +337,11 @@ export default function Field({ field, cfg, value, onChange, defaultValue, dirty
       break;
 
     case T.RANGE2:
-      control = <Range2Field value={value} onChange={onChange} />;
+      control = <Range2Field value={value} onChange={onChange} onInvalid={onInvalid} />;
       break;
 
     case T.RATIO:
-      control = <RatioField value={value} onChange={onChange} />;
+      control = <RatioField value={value} onChange={onChange} onInvalid={onInvalid} />;
       break;
 
     case T.STR_LIST:

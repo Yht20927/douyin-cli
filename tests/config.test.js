@@ -80,6 +80,27 @@ describe('校验与告警', () => {
     expect(config.getWarnings().some(w => w.key === 'intervals.write')).toBe(true);
   }));
 
+  // 翻页间隔是后加的第三组 intervals。它必须和 write/read 一样被校验 ——
+  // 漏掉它就等于给了一个"界面能改、改了不生效"的假配置项。
+  it('intervals.commentPage 缺省时补默认 [1,3]', withTempConfig({ intervals: { read: [3, 5] } }, () => {
+    expect(config.get('intervals.commentPage')).toEqual([1, 3]);
+  }));
+
+  it('intervals.commentPage 非法值 → 回退默认并告警', withTempConfig({
+    intervals: { commentPage: '慢一点' },
+  }, () => {
+    expect(config.get('intervals.commentPage')).toEqual([1, 3]);
+    const w = config.getWarnings().find(x => x.key === 'intervals.commentPage');
+    expect(w).toBeTruthy();
+    expect(w.message).toContain('两个正数');
+  }));
+
+  it('intervals.commentPage 顺序颠倒 → 自动纠正', withTempConfig({
+    intervals: { commentPage: [5, 1] },
+  }, () => {
+    expect(config.get('intervals.commentPage')).toEqual([1, 5]);
+  }));
+
   it('端口越界 → 回退默认', withTempConfig({ bridge: { port: 99999 } }, () => {
     expect(config.get('bridge.port')).toBe(19422);
     expect(config.getWarnings().some(w => w.key === 'bridge.port')).toBe(true);

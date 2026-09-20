@@ -28,6 +28,18 @@ export function formatBytes(n) {
   return `${(n / 1048576).toFixed(1)} MB`;
 }
 
+/**
+ * 大数字缩写：2589 → "2589"，11473 → "1.1万"。
+ * 与抖音 App 一致用「万」——界面是给中文用户看的，"w" 是程序员习惯。
+ * 非法输入显示 "—"，让缺数据长得像缺数据，而不是像 0。
+ */
+export function abbrNum(n) {
+  const v = Number(n);
+  if (n == null || !Number.isFinite(v) || v < 0) return '—';
+  if (v < 10000) return String(v);
+  return `${(v / 10000).toFixed(1)}万`;
+}
+
 /** "多久之前"。传入的必须是毫秒时间戳（views.js 已经把抖音的秒归一成毫秒） */
 export function ago(ts) {
   if (!ts) return '';

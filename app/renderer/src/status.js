@@ -30,12 +30,22 @@ export function describeStatus(status) {
 
   if (status.online) {
     const n = status.totalConnections || 0;
+    // 连接页现在以账号为主角，状态条同样把"操作的是哪个号"说出来 ——
+    // 尤其多开时，"可以开始操作"不说明身份，用户没法确认连的是大号还是小号。
+    const names = [...new Set(
+      (status.connections || [])
+        .filter(c => c.alive && c.account && c.account.nickname)
+        .map(c => c.account.nickname)
+    )];
+    const who = names.length === 1
+      ? `，正在以「${names[0]}」的身份操作`
+      : names.length > 1 ? `，共 ${names.length} 个账号：${names.join('、')}` : '';
     return {
       state: 'online',
       word: '已连接',
       note: n > 1
-        ? `${n} 个抖音页面连上了，可以开始操作。`
-        : '抖音页面连上了，可以开始操作。',
+        ? `${n} 个抖音页面连上了${who || ''}。`
+        : `抖音页面连上了${who}，可以开始操作。`,
       actions: ['refresh', 'openDouyin'],
     };
   }

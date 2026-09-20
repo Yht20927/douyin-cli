@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import LoadingState from '../components/LoadingState.jsx';
 import { GROUPS, T } from '../settings/schema.js';
 import Field from '../settings/fields.jsx';
 import PersonasField from '../settings/PersonasField.jsx';
@@ -24,15 +25,50 @@ export default function SettingsView() {
   const [described, setDescribed] = useState(null);
   const [draft, setDraft] = useState({});
   const [dirty, setDirty] = useState(() => new Set());
+  /**
+   * 当前填得不对的字段：path → 人话原因。
+   *
+   * 为什么要有它：数字控件对非法输入的处理此前是"静默丢弃"（见 fields.jsx 里
+   * NumInput 的注释）。现在非法值当天标红、且不会被提交 —— 但那样又会产生
+   * 一个更坏的局面：用户填了个非法值、点保存、界面说「已保存，立即生效」，
+   * 而那一项其实还停在旧值上。所以这里把它攒起来，**保存按钮直接拦下**，
+   * 并列出是哪几项 —— 与"配置里有非法值被自动回退"那条提示是两回事：
+   * 那条是 core 在保存后判的，这条是界面在保存前判的。
+   */
+  const [invalid, setInvalid] = useState(() => new Map());
   const [group, setGroup] = useState(GROUPS[0].key);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState(null);
   const [replyDesc, setReplyDesc] = useState(null);
+  /**
+   * 高级分组（节奏间隔/发布策略/评论筛选/应用与桥接）默认收起。
+   * 不持久化：需要的人每次点一下即可，而普通用户永远不会被端口、超时
+   * 这类项打扰 —— 这个页面对非技术用户的主要问题是"项太多不知道从哪
+   * 看起"，分组分层比逐项写说明更能解决它。
+   */
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const applyDescribed = useCallback((d) => {
     setDescribed(d);
     setDraft(flatten(d.config, d.sensitiveKeys));
     setDirty(new Set());
+    // 重新读配置（保存成功或点「放弃」）后，界面上那些"填得不对"的标记
+    // 指的是上一份草稿，必须一起清掉 —— 留着会拦住下一次保存而没有任何原因
+    setInvalid(new Map());
+  }, []);
+
+  /** 某个字段报上来的校验结果（null = 这一项没问题了）*/
+  const markInvalid = useCallback((path, message) => {
+    setInvalid((prev) => {
+      if (!message) {
+        if (!prev.has(path)) return prev;      // 没记过就不用产生新对象
+        const next = new Map(prev);
+        next.delete(path);
+        return next;
+      }
+      if (prev.get(path) === message) return prev;
+      return new Map(prev).set(path, message);
+    });
   }, []);
 
   const load = useCallback(async () => {
@@ -83,7 +119,10 @@ export default function SettingsView() {
   }
 
   const warnings = (described && described.warnings) || [];
-  const activeGroup = GROUPS.find(g => g.key === group) || GROUPS[0];
+  // 可见的分组：高级组只在勾了"显示高级设置"后出现
+  const visibleGroups = GROUPS.filter(g => showAdvanced || !g.advanced);
+  // 当前选中的分组被收起时（比如刚取消勾选），回退到第一个可见分组
+  const activeGroup = visibleGroups.find(g => g.key === group) || visibleGroups[0];
 
   // showWhen 用的是**草稿**而不是已保存的配置：勾上"附带图片"，下面的选项
   // 应该立刻出现，而不是等保存后才出现。
@@ -93,7 +132,12 @@ export default function SettingsView() {
   );
 
   if (!described) {
-    return <div className="main-col"><div className="empty">正在读取配置…</div></div>;
+    return (
+      <div className="main-col">
+        <h1 className="page-title">设置</h1>
+        <LoadingState variant="text" label="正在读取配置…" />
+      </div>
+    );
   }
 
   return (
@@ -115,16 +159,28 @@ export default function SettingsView() {
       )}
 
       <div className="settings-tabs">
-        {GROUPS.map(g => (
+        {visibleGroups.map(g => (
           <button
             key={g.key}
-            className={`tab ${group === g.key ? 'tab-active' : ''}`}
+            className={`tab ${activeGroup.key === g.key ? 'tab-active' : ''}`}
             onClick={() => setGroup(g.key)}
           >
             {g.label}
             {countDirtyInGroup(g, dirty) > 0 && <span className="settings-tab-dot" />}
           </button>
         ))}
+      </div>
+
+      {/* 高级开关放在分组条下面、正文上面：眼熟的位置，不打断阅读 */}
+      <div className="muted" style={{ marginTop: 10, fontSize: 12.5 }}>
+        <label style={{ cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={showAdvanced}
+            onChange={e => setShowAdvanced(e.target.checked)}
+          />{' '}
+          显示高级设置（节奏间隔、发布策略、评论筛选、应用与桥接）
+        </label>
       </div>
 
       <section className="section">
@@ -166,6 +222,7 @@ export default function SettingsView() {
             dirty={dirty.has(f.path)}
             onReset={() => resetField(f.path)}
             onChange={(v) => change(f.path, v)}
+            onInvalid={(msg) => markInvalid(f.path, msg)}
           />
         ))}
 
@@ -175,13 +232,38 @@ export default function SettingsView() {
         </div>
       </section>
 
+      {/* 填得不对的项：逐条列出，而不是只让用户看到某个输入框变红 ——
+          它们可能分散在几个分组里，切来切去找是最烦的 */}
+      {invalid.size > 0 && (
+        <div className="notice notice-bad">
+          <div>
+            <b>{invalid.size} 项填得不对，不会保存：</b>
+            <ul>
+              {[...invalid.entries()].map(([p, msg]) => (
+                <li key={p}><code>{p}</code> — {msg}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* 保存条常驻在底部：滚到长分组的末尾时不必再翻回去找按钮 */}
       {dirty.size > 0 && (
         <div className="settings-savebar">
-          <span className="num">{dirty.size} 项未保存</span>
+          <span className="num">
+            {dirty.size} 项未保存
+            {invalid.size > 0 && <span className="text-bad"> · {invalid.size} 项填得不对</span>}
+          </span>
           <div className="row">
             <button className="btn btn-quiet" onClick={load} disabled={saving}>放弃</button>
-            <button className="btn btn-primary" onClick={save} disabled={saving}>
+            <button
+              className="btn btn-primary"
+              onClick={save}
+              // 填错就不让保存：放行的话用户会得到一句"已保存，立即生效"，
+              // 而那一项其实还停在旧值上 —— 承诺了一个没发生的事
+              disabled={saving || invalid.size > 0}
+              title={invalid.size > 0 ? '先把填得不对的项改好' : undefined}
+            >
               {saving ? '保存中…' : '保存'}
             </button>
           </div>
