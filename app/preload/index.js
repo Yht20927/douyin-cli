@@ -123,7 +123,12 @@ contextBridge.exposeInMainWorld('dy', {
     userEvents: (uid, opts) => ipcRenderer.invoke('data:userEvents', uid, opts),
     /** 评论列表可用的排序方式（由 core 提供） */
     commentOrders: () => ipcRenderer.invoke('data:commentOrders'),
-    drafts: () => ipcRenderer.invoke('data:drafts'),
+    /**
+     * 草稿箱列表。
+     * @param {{q?: string}} [opts] q = 关键词（命中草稿正文 / 视频标题 / 被回复的评论原文）。
+     *   搜索在 SQLite 里做，不是在已加载的那一页里过滤 —— 后者会把"没有命中"说成假话。
+     */
+    drafts: (opts) => ipcRenderer.invoke('data:drafts', opts),
     /**
      * 数据分析页的全量聚合（作品对比 / 每日评论 / 判定分布 / Top 榜）。
      * @param {{scope?: 'all'|'mine'}} [opts] 缺省 all
@@ -139,6 +144,13 @@ contextBridge.exposeInMainWorld('dy', {
   draft: {
     save: (spec) => ipcRenderer.invoke('draft:save', spec),
     remove: (id) => ipcRenderer.invoke('draft:delete', id),
+    /**
+     * 批量删除（主进程限定在当前账号内）。
+     * @param {number[]} ids
+     * @returns data 为 `{ deleted, requested }` —— deleted 是**真正删掉的条数**，
+     *   比 requested 小说明有些 id 已经不属于当前账号的草稿箱，界面要照实说。
+     */
+    removeMany: (ids) => ipcRenderer.invoke('draft:delete-many', ids),
     /** 发布成功后标记草稿已发布（否则它会一直留在草稿箱里） */
     markPosted: (id) => ipcRenderer.invoke('draft:mark-posted', id),
   },

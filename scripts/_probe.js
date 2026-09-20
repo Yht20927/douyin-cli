@@ -66,6 +66,7 @@ const WRITE_CHANNELS = new Set([
   'prompts:restore',
   'draft:save',
   'draft:delete',
+  'draft:delete-many',
   'draft:mark-posted',
 ]);
 
@@ -78,6 +79,14 @@ function readIpcChannels() {
   while ((m = re.exec(src)) !== null) out.add(m[1]);
   return out;
 }
+
+/**
+ * 与 app/main/ipc.js 同一个解析规则：界面上每份数据都属于某个账号。
+ * 探针里固定用 account:state 返回的那个号 —— 两者必须是同一个值，
+ * 否则界面显示"当前账号是 X"而数据是按 Y 取的，验证就成了自欺。
+ * 放在模块顶层是因为 FIXTURE 那条分支也要按同一个账号取数（见 fixtureDrafts）。
+ */
+const PROBE_ACCOUNT_UID = '1179139456380456';
 
 /**
  * 可选的假数据（--fixture）。
@@ -102,6 +111,14 @@ const FIXTURE = process.argv.includes('--fixture') ? {
       replyToCid: null, replyToText: null, replyToUid: null,
       text: '（这条没有回复对象，用来对比"回复对象"那一行该不该出现）',
       personaId: null, imagePath: null, createdAt: Date.now() - 90 * 1000, posted: false,
+    },
+    {
+      // 必须有一个**不同视频**的条目：只有一组时界面不会加分组壳（那是设计），
+      // 于是组头、组内条数、整组勾选、收起这四样在探针里永远渲染不出来
+      id: 9003, awemeId: 'v-fixture-2', videoTitle: '（探针假数据）另一个作品',
+      replyToCid: 'c-fixture-3', replyToText: '多账号切换后草稿箱会串号吗？', replyToUid: 'u-fixture-3',
+      text: '不会，草稿按账号隔离，换号后另一号的草稿整箱消失。',
+      personaId: null, imagePath: null, createdAt: Date.now() - 45 * 1000, posted: false,
     },
   ],
   tasks: [
@@ -162,6 +179,31 @@ function refused() {
 }
 
 /**
+ * --fixture 模式下草稿箱的返回，带搜索语义。
+ *
+ * 过滤必须在"数据层"做而不是让界面自己 filter —— 探针要是把全量原样返回，
+ * 「搜索到 N 条」与那个「没有草稿含 X」的空态就永远渲染不出来，
+ * 而这两处恰恰是这一轮新加的界面分支。返回形状与 views.listDrafts 逐项对齐。
+ */
+function fixtureDrafts(q) {
+  const key = String(q || '').trim();
+  const hit = (d) => !key
+    || (d.text || '').includes(key)
+    || (d.videoTitle || '').includes(key)
+    || (d.replyToText || '').includes(key);
+  const items = FIXTURE.drafts.filter(hit);
+  return {
+    items,
+    total: FIXTURE.drafts.length,
+    matched: items.length,
+    truncated: false,
+    q: key,
+    accountUid: PROBE_ACCOUNT_UID,
+    accountCertain: true,
+  };
+}
+
+/**
  * channel → 处理函数，返回值就是**最终响应体**（是否包 { ok, data } 一并决定）。
  *
  * 这一点必须照抄 app/main/ipc.js：那里有的端点走 safe()（包成 {ok,data}），
@@ -175,10 +217,6 @@ function makeRoutes() {
   const comments = require('../core/memory/comments');
   const videos = require('../core/memory/videos');
   const prompts = require('../core/prompts');
-  // 与 app/main/ipc.js 同一个解析规则：界面上每份数据都属于某个账号。
-  // 探针里固定用 account:state 返回的那个号 —— 两者必须是同一个值，
-  // 否则界面显示"当前账号是 X"而数据是按 Y 取的，验证就成了自欺。
-  const PROBE_ACCOUNT_UID = '1179139456380456';
 
   return {
     'app:info': () => ({
@@ -294,9 +332,9 @@ function makeRoutes() {
     'data:userEvents': (uid, o) => ok(views.userEvents(String(uid || ''), { limit: o && o.limit })),
     // 探针只读：改用户标签是写操作，如实拒绝
     'user:setNote': refused,
-    'data:drafts': () => ok(FIXTURE
-      ? { items: FIXTURE.drafts, total: FIXTURE.drafts.length, truncated: false, accountUid: PROBE_ACCOUNT_UID, accountCertain: true }
-      : views.listDrafts({ accountUid: PROBE_ACCOUNT_UID })),
+    'data:drafts': (o) => ok(FIXTURE
+      ? fixtureDrafts(o && o.q)
+      : views.listDrafts({ q: o && o.q, accountUid: PROBE_ACCOUNT_UID })),
     // 数据页的原料。少了这个端点，界面 `window.dy.data.analytics()` 直接抛
     // TypeError → data 永远是 null → 页面永久停在"正在统计…"，
     // 于是整个图表层在没有验证手段的情况下被改动。
@@ -347,6 +385,7 @@ function makeRoutes() {
     'queue:result': () => ({ ok: true, result: null }),
     'draft:save': refused,
     'draft:delete': refused,
+    'draft:delete-many': refused,
     'draft:mark-posted': refused,
   };
 }
@@ -520,7 +559,7 @@ window.dy = {
     userProfile: (uid, opts) => call('data:userProfile', uid, opts),
     userEvents: (uid, opts) => call('data:userEvents', uid, opts),
     commentOrders: () => call('data:commentOrders'),
-    drafts: () => call('data:drafts'),
+    drafts: (opts) => call('data:drafts', opts),
     analytics: (opts) => call('data:analytics', opts),
   },
 
@@ -531,6 +570,7 @@ window.dy = {
   draft: {
     save: (spec) => call('draft:save', spec),
     remove: (id) => call('draft:delete', id),
+    removeMany: (ids) => call('draft:delete-many', ids),
     markPosted: (id) => call('draft:mark-posted', id),
   },
 

@@ -1101,6 +1101,61 @@ textarea.input { line-height: 1.6; }
 }
 .draft-meta { font-size: 11.5px; margin-top: 5px; }
 
+/* 勾选列：与草稿主体并排。行本身改成两列 flex，
+   主体仍然吃满剩余宽度（min-width:0 才有省略号） */
+.draft-row { display: flex; align-items: flex-start; gap: 2px; }
+.draft-pick { display: flex; align-items: flex-start; padding: 2px 8px 0 0; cursor: pointer; flex: none; }
+.draft-pick input {
+  width: 14px; height: 14px; margin: 2px 0 0;
+  accent-color: var(--text); cursor: pointer;
+}
+.draft-main { flex: 1; min-width: 0; }
+
+/* 搜索框 + 条数一行。搜索框固定一个可读的宽度，不参与拉伸 */
+.drafts-search { flex: 0 1 320px; min-width: 180px; }
+.drafts-count { white-space: nowrap; }
+
+/* 全选 / 切分组这一条：只在有内容时出现 */
+.drafts-tools { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.drafts-pickall { font-size: var(--fs-xs); padding: 3px 10px; }
+
+/* 批量操作条：有勾选时才出现（与工作区那条同一长相） */
+.drafts-bulkbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 13px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  box-shadow: var(--sh-1);
+}
+.drafts-bulkbar-main { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-2); }
+
+/* 按视频分组：组头 + 一个 .list 卡片。
+   分组的目的只是"同一视频的草稿挨在一起并可以收起"，
+   所以组头保持一行高，不做成大标题 */
+.draft-group { margin-bottom: 14px; }
+.draft-group-head {
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 4px 6px 0;
+}
+.draft-group-toggle {
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0; flex: 1;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--text); font: inherit; text-align: left;
+}
+.draft-group-title {
+  font-size: var(--fs-sm); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.draft-group-count { font-size: var(--fs-xs); flex: none; }
+.draft-caret {
+  display: inline-block; flex: none;
+  font-size: 10px; line-height: 1; color: var(--text-3);
+  transition: transform .12s ease;
+}
+.draft-caret[data-closed] { transform: rotate(-90deg); }
+
 /* ══════════════════════════════════════════════
    模态框 —— 毛玻璃背景 + 深阴影
    ══════════════════════════════════════════════ */

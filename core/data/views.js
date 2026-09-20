@@ -581,16 +581,21 @@ function videoStats(awemeId, opts = {}) {
  * 与 memory 层其他模块返回驼峰对象不同。这里统一转成驼峰再交给界面，
  * 免得界面到处混用两种命名。
  *
- * 返回 `{ items, total, truncated }` 而不是裸数组：drafts.list 会把 limit 夹到
- * MAX_LIMIT，只返数组的话第 201 条草稿既看不到也不提示，而界面的"共 N 条"
+ * 返回 `{ items, total, matched, truncated, q }` 而不是裸数组：drafts.list 会把 limit
+ * 夹到 MAX_LIMIT，只返数组的话第 201 条草稿既看不到也不提示，而界面的"共 N 条"
  * 会拿列表长度当真实总数（作品列表改造前正是这个 bug）。
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.q] - 关键词，命中草稿正文 / 视频标题 / 被回复的评论原文
+ * @param {string} [opts.accountUid] - 当前账号（缺省时不隔离，见 resolveActor）
  */
 function listDrafts(opts = {}) {
   const actor = resolveActor(opts);
   const limit = drafts.clampLimit(opts.limit || drafts.MAX_LIMIT);
+  const q = typeof opts.q === 'string' ? opts.q.trim() : '';
   // 草稿也要按账号隔离：一条草稿是"以某个号的身份回某条评论"，
   // 换号后它必须消失，否则 B 号会把 A 号准备的回复发出去（且以 B 的登录状态发）
-  const rows = drafts.list({ posted: false, limit, accountUid: actor.scopedUid });
+  const rows = drafts.list({ posted: false, limit, accountUid: actor.scopedUid, q });
   const titles = new Map();
 
   // 草稿是"回复某条评论"的，但列表与发布确认框此前都只显示一句"回复评论" ——
@@ -624,9 +629,22 @@ function listDrafts(opts = {}) {
     };
   });
 
-  // count 而不是拿 items.length 当总数：界面上那句"共 N 条"必须是真实条数
-  const total = drafts.count({ posted: false, accountUid: actor.scopedUid });
-  return { items, total, truncated: total > items.length, accountUid: actor.uid, accountCertain: actor.certain };
+  // count 而不是拿 items.length 当总数：界面上那句"共 N 条"必须是真实条数。
+  // 两个数都要给，因为它们是两件事：
+  //   matched —— 当前搜索条件命中多少条（不带 q 时等于 total）
+  //   total   —— 草稿箱里到底还有多少条待发布（侧栏角标用它；否则搜一个词
+  //              角标就变成"3 条"，而那是搜索结果数，不是箱子的量）
+  const matched = drafts.count({ posted: false, accountUid: actor.scopedUid, q });
+  const total = q
+    ? drafts.count({ posted: false, accountUid: actor.scopedUid })
+    : matched;
+  return {
+    items, total, matched,
+    truncated: matched > items.length,
+    q,
+    accountUid: actor.uid,
+    accountCertain: actor.certain,
+  };
 }
 
 /**

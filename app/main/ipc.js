@@ -448,7 +448,13 @@ function registerIpc(opts) {
   ipcMain.handle('data:cleanupPreview', safe((o) => views.cleanupPreview({
     days: o && o.days,
   })));
-  ipcMain.handle('data:drafts', safe(() => views.listDrafts({ accountUid: currentAccountUid() })));
+  // 逐个转发（理由见下面 data:analytics 的注释）：这里原本写的是 `...(o || {})`，
+  // 参数能不能过全靠运气 —— 界面上加一个搜索框、preload 里传了 q，而主进程
+  // 若改成挑字段就会静默丢掉。显式列出来，护栏（preload-contract）才看得见它。
+  ipcMain.handle('data:drafts', safe((o) => views.listDrafts({
+    q: o && o.q,
+    accountUid: currentAccountUid(),
+  })));
   // 数据分析页的全量聚合（纯本地读，不占队列）。
   // 一次算好所有图卡的原料，而不是每个图表各发一个 IPC 各扫一遍库。
   // scope 默认 'all' —— 只统计自己的作品会让这一页分析 3% 的业务。
@@ -558,6 +564,23 @@ function registerIpc(opts) {
   ipcMain.handle('draft:delete', safe((id) => {
     const drafts = require('../../core/memory/drafts');
     return { deleted: drafts.remove(Number(id)) };
+  }));
+
+  /**
+   * 批量删除草稿。纯本地操作，不碰抖音，因此不占串行队列（与 draft:delete 同理）。
+   *
+   * 限定当前账号：勾选集合可能来自刷新之前（刚换号、或某条已被另一个窗口删掉），
+   * 拿 id 直接删会删到用户在界面上根本看不见的草稿。删掉的条数如实返回，
+   * 界面说"删了 N 条（另有 M 条已不在当前账号的草稿箱里）"，而不是报个好看的数。
+   */
+  ipcMain.handle('draft:delete-many', safe((ids) => {
+    const drafts = require('../../core/memory/drafts');
+    const requested = [...new Set((Array.isArray(ids) ? ids : [])
+      .map(Number).filter(n => Number.isInteger(n) && n > 0))];
+    if (!requested.length) return { deleted: 0, requested: 0 };
+    const deleted = drafts.removeMany(requested, { accountUid: currentAccountUid() });
+    if (deleted < 0) throw new Error('批量删除失败（原因已记入日志）');
+    return { deleted, requested: requested.length };
   }));
 }
 

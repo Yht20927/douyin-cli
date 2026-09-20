@@ -52,6 +52,14 @@ export default function App() {
   const [drafts, setDrafts] = useState([]);
   /** 未发布草稿的真实条数（drafts 只是加载进来的那一页） */
   const [draftTotal, setDraftTotal] = useState(0);
+  /** 当前搜索条件命中的条数。与 draftTotal 是两个数：搜一个词不该让侧栏角标变小 */
+  const [draftMatched, setDraftMatched] = useState(0);
+  /**
+   * 草稿箱的搜索词。放在 ref 里而不是 state：`reloadDrafts()` 会被
+   * 自动刷新、发布成功、删除之后等多处**无参**调用，它必须沿用当前搜索词，
+   * 否则用户搜着搜着后台刷一次，列表就悄悄变回全量了。
+   */
+  const draftQueryRef = useRef('');
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
 
@@ -122,17 +130,21 @@ export default function App() {
     } finally { setLoadingVideos(false); }
   }, []);
 
-  const reloadDrafts = useCallback(async () => {
+  const reloadDrafts = useCallback(async (q) => {
+    if (typeof q === 'string') draftQueryRef.current = q;
     setLoadingDrafts(true);
     try {
-      const r = await window.dy.data.drafts();
+      const r = await window.dy.data.drafts({ q: draftQueryRef.current });
       if (r.ok) {
         setDrafts(r.data.items || []);
+        // total 恒为整箱待发布数（侧栏角标读它），matched 才是这次搜索的命中数。
+        // 两者混成一个的话，搜一个词就会让角标变成"3"，那是对整个箱子的假话。
         setDraftTotal(r.data.total || 0);
+        setDraftMatched(r.data.matched || 0);
         // 加载上限一直是不可见的：第 201 条草稿既不会出现也不会有任何提示，
         // 于是"草稿箱只有 200 条"这个界面事实与库里事实悄悄分叉
         if (r.data.truncated) {
-          flash(`草稿箱只显示最近 ${(r.data.items || []).length} 条（共 ${r.data.total} 条）`, 'wait', 6000);
+          flash(`只显示最近 ${(r.data.items || []).length} 条（${draftQueryRef.current ? '搜索命中' : '共'} ${r.data.total} 条）`, 'wait', 6000);
         }
       } else {
         // 失败不能伪装成"草稿箱是空的"：那会让用户以为草稿被删了，
@@ -440,6 +452,7 @@ export default function App() {
                   <DraftsView
                     drafts={drafts}
                     total={draftTotal}
+                    matched={draftMatched}
                     loading={loadingDrafts}
                     actions={actions}
                     reload={reloadDrafts}

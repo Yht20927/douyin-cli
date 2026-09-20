@@ -381,6 +381,50 @@ describe('草稿箱', () => {
     drfs.markPosted(id);
     expect(views.listDrafts().items).toEqual([]);
   }));
+
+  // 搜索条件必须在 SQL 里，且 matched / total 两个数都要返回。
+  // 界面一旦只拿 items 过滤，"没有命中"和"共 N 条"都会成为假话（详见 drafts.searchWhere）。
+  it('搜索：matched 是命中数，total 仍是箱子总量', withTempEnv({}, async ({ views, vids, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: '咖啡机测评', isMine: true });
+    drfs.save({ awemeId: 'v1', text: '第一条：性价比很高' });
+    drfs.save({ awemeId: 'v1', text: '第二条普通内容' });
+    drfs.save({ awemeId: 'v1', text: '第三条普通内容' });
+
+    const hit = views.listDrafts({ q: '性价比' });
+    expect(hit.items.map(d => d.text)).toEqual(['第一条：性价比很高']);
+    expect(hit).toMatchObject({ matched: 1, total: 3, truncated: false, q: '性价比' });
+
+    const none = views.listDrafts({ q: '咖啡机' });   // 靠视频标题命中
+    expect(none.items).toHaveLength(3);
+    expect(none).toMatchObject({ matched: 3, total: 3 });
+
+    const miss = views.listDrafts({ q: '不存在xyz' });
+    expect(miss).toMatchObject({ items: [], matched: 0, total: 3, truncated: false });
+
+    // 不带关键词时两个数必须相同 —— 侧栏角标与"共 N 条"同源，不会各说各话
+    const all = views.listDrafts();
+    expect(all).toMatchObject({ matched: 3, total: 3, q: '' });
+  }));
+
+  it('truncated 说的是命中数超出返回条数', withTempEnv({}, async ({ views, drfs }) => {
+    for (const t of ['性价比甲', '性价比乙', '性价比丙']) drfs.save({ awemeId: 'v1', text: t });
+    const page = views.listDrafts({ q: '性价比', limit: 2 });
+    expect(page.items).toHaveLength(2);
+    expect(page).toMatchObject({ matched: 3, truncated: true });
+    // 放开了就不该再报截断
+    expect(views.listDrafts({ q: '性价比' })).toMatchObject({ truncated: false });
+  }));
+
+  it('搜索不越过账号边界', withTempEnv({}, async ({ views, vids, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    drfs.save({ awemeId: 'v1', text: '甲号的性价比回复', accountUid: 'uidA' });
+    drfs.save({ awemeId: 'v1', text: '乙号的性价比回复', accountUid: 'uidB' });
+
+    const a = views.listDrafts({ accountUid: 'uidA', q: '性价比' });
+    expect(a.items.map(d => d.text)).toEqual(['甲号的性价比回复']);
+    // total 也只数当前账号：否则角标会显示成 2
+    expect(a).toMatchObject({ matched: 1, total: 1 });
+  }));
 });
 
 describe('总览', () => {
