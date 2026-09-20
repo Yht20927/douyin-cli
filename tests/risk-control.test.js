@@ -344,3 +344,120 @@ describe('读写各用各的间隔', () => {
     expect(w).toBeGreaterThan(r1);
   }), T);
 });
+
+// ═══════════════════════════════════════════════════════════
+// 闸门"看得见哪些操作"
+//
+// 回归背景（第十五轮）：私信与补全都不在这两份名单里。实测：
+//   - 发完一条私信（events 里记的是 `dm.send`）→ `lastWriteTs()` 仍是 0
+//     → 下一条私信**零间隔**；`writesToday` 也数不到它，
+//       "当日 30 条写操作"对私信等于不存在。而私信恰恰最经不起连点。
+//   - 补完 200 个视频（`enrich`）→ `lastReadTs()` 看到的还是几小时前的 get
+//     → 紧跟着的「拉取评论」一次都不等。
+// 名单漏一个名字不报错、不抛异常，只会安静地变成"这里没有闸门"，
+// 所以除了下面的逐条断言，还加了一条静态护栏：凡是会向抖音发请求的命令，
+// 它的审计操作名必须登记在读或写某一侧。
+// ═══════════════════════════════════════════════════════════
+
+describe('闸门名单：私信与补全', () => {
+  it('发完一条私信，写间隔看得见它', withTempEnv({ intervals: { write: [40, 55] } },
+    async ({ riskControl, events }) => {
+      events.append({ ts: Date.now(), command: 'dm.send', status: 'success' });
+      expect(riskControl.lastWriteTs()).toBeGreaterThan(0);
+      expect(riskControl.msUntilNext('write')).toBeGreaterThan(35000);
+    }));
+
+  it('补完一批视频，读间隔看得见它', withTempEnv({ intervals: { read: [30, 50] } },
+    async ({ riskControl, events }) => {
+      events.append({ ts: Date.now(), command: 'enrich', status: 'success' });
+      expect(riskControl.lastReadTs()).toBeGreaterThan(0);
+      expect(riskControl.msUntilNext('read')).toBeGreaterThan(25000);
+    }));
+
+  it('私信在桌面队列里算写操作（要排轮次、要显示倒计时、要计入配额）', () => {
+    const { isWriteCommand } = require('../core/policy');
+    // 注册表里的名字（界面入队时用的那个）
+    expect(isWriteCommand('dm')).toBe(true);
+    expect(isWriteCommand('delete-comment')).toBe(true);   // 连字形的另一套拼写
+    expect(isWriteCommand('enrich')).toBe(false);          // 补全始终是读操作
+  });
+});
+
+describe('护栏：碰抖音的命令必须登记在节奏名单里', () => {
+  const CMD_DIR = path.join(__dirname, '..', 'core', 'commands');
+
+  /**
+   * 操作名是变量、静态取不出来的文件 —— 在这里写死。
+   * like.js 用的是 `startOperation(action)`，action 只可能是 like / unlike。
+   */
+  const DYNAMIC_NAMES = { 'like.js': ['like', 'unlike'] };
+
+  /**
+   * 文件里确实有发请求的调用、但这个**操作本身**不登记，以及理由。
+   * 写在这里等于把它变成一个显式的待决问题（见 开发进度.md §3），
+   * 而不是让它像这两轮之前那样安静地躺着。
+   */
+  const NOT_REGISTERED_ON_PURPOSE = {
+    // 只是把页面内存里的 window.__dmQueue 倒出来，一个抖音请求都不发。
+    // 登记进去的副作用是"看一眼已收到的私信"会把下一条读操作卡住 30 秒。
+    'dm.list': '不发请求：读的是浏览器页面内存里的队列',
+    // 一次运行只打一次详情（批量模式也是同一个视频）。
+    // 登记成读操作当然更严 —— 但后果是界面上每点一次「生成回复」都要先等
+    // 30–50 秒，而那一步大头本来就是等 AI。这条收不收是产品决定，不是接线疏漏。
+    'getReply': '一次运行只有一次详情请求；登记会让每次生成都先等读间隔（待决）',
+  };
+
+  /** 从源码里取出字面量写法的审计操作名：startOperation('x' / withAudit(ctx, 'x' */
+  function literalOpNames(src) {
+    const names = new Set();
+    for (const re of [
+      /startOperation\(\s*'([\w.-]+)'/g,
+      /withAudit\(\s*ctx\s*,\s*'([\w.-]+)'/g,
+    ]) {
+      let m;
+      while ((m = re.exec(src)) !== null) names.add(m[1]);
+    }
+    return [...names];
+  }
+
+  const riskControl = require('../core/risk-control');
+  const registered = new Set([...riskControl.READ_COMMANDS, ...riskControl.WRITE_COMMANDS]);
+
+  const files = fs.readdirSync(CMD_DIR).filter(f => f.endsWith('.js'));
+  const checked = [];
+  const missing = [];
+  const usedExceptions = new Set();
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(CMD_DIR, f), 'utf8');
+    // 只管真的会发请求的那些：`analyze` / `note` / `draft` 这些纯本地命令
+    // 一次抖音请求都不发，登记进去只会让读间隔莫名其妙地卡住下一条命令
+    const hitsDouyin = /ctx\.loggedCall\(|ctx\.bridgeCall\(|bridgeCall\(/.test(src);
+    if (!hitsDouyin) continue;
+    const names = [...literalOpNames(src), ...(DYNAMIC_NAMES[f] || [])];
+    for (const n of names) {
+      checked.push(`${f}:${n}`);
+      if (registered.has(n)) continue;
+      if (Object.prototype.hasOwnProperty.call(NOT_REGISTERED_ON_PURPOSE, n)) {
+        usedExceptions.add(n);
+        continue;
+      }
+      missing.push(`${f} → ${n}`);
+    }
+  }
+
+  it('解析器确实取到了操作名（护栏本身要有效）', () => {
+    expect(checked.length).toBeGreaterThan(5);
+    // 这两条就是本轮新登记的：它们必须真的在名单里
+    expect(registered.has('enrich')).toBe(true);
+    expect(registered.has('dm.send')).toBe(true);
+  });
+
+  it('每个会发请求的命令都登记了读或写某一侧', () => {
+    expect(missing).toEqual([]);
+  });
+
+  it('例外表里不留已经不存在或已经登记的名字', () => {
+    // 例外写死了不管就会一直留在表上 —— 那正是本轮那两个坑被埋没的方式。
+    expect([...usedExceptions].sort()).toEqual(Object.keys(NOT_REGISTERED_ON_PURPOSE).sort());
+  });
+});

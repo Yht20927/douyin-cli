@@ -30,7 +30,15 @@ const { sleepAbortable } = require('./runtime/abort');
 const DEFAULT_INTERVALS = config.DEFAULTS.intervals;
 
 // 写操作命令名（对应 events.command 列；like 与 unlike 分开记录）
-const WRITE_COMMANDS = new Set(['post', 'like', 'unlike', 'delete_comment']);
+//
+// ⚠️ 这一列的值来自 `audit.startOperation(name)`，不是命令行里那个名字 ——
+// 私信在审计里叫 `dm.send`（带点），因为一条 dm 命令有多个操作。
+// 之前这里没有它，实测后果是：发一条私信 → events 里记了 `dm.send` →
+// `lastWriteTs()` 查 `command IN ('post','like','unlike','delete_comment')`
+// 一条都查不到 → 返回 0 → "距上次写 0 秒" → **连发私信之间零间隔**。
+// 私信恰恰是这个工具里最经不起连点的一件事。同理 `writesToday` 也数不到它，
+// 当日写配额对私信完全无效。
+const WRITE_COMMANDS = new Set(['post', 'like', 'unlike', 'delete_comment', 'dm.send']);
 
 /**
  * 读取间隔配置。
@@ -51,8 +59,21 @@ function randomInt(min, max) {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
-/** 读操作命令名（对应 events.command 列） */
-const READ_COMMANDS = new Set(['get', 'search', 'my', 'replies', 'user', 'analyze']);
+/**
+ * 读操作命令名（对应 events.command 列）
+ *
+ * `enrich`（补全视频信息）此前不在这里：一批 200 次详情请求跑完之后，
+ * 下一次「拉取评论」查 `lastReadTs()` 仍然看到的是几小时前的 get，
+ * 于是"刚连打了 200 个请求"这件事对读间隔完全不可见。
+ * 注意它一批只写**一行** events（endOperation 时写），所以这一条只管
+ * "批次与批次之间"；批内逐条的节奏在 core/commands/enrich.js 自己等。
+ */
+const READ_COMMANDS = new Set([
+  'get', 'search', 'my', 'replies', 'user', 'analyze', 'enrich',
+  // `dm listen` 会向抖音的 IM 服务器发起长连接并轮询到超时 —— 是一次真读。
+  // 它的兄弟 `dm list` **不在**这里：那个只是把页面内存里的队列清空，一个请求都不发。
+  'dm.listen',
+]);
 
 /**
  * 查 events 表最近一次指定命令集合的成功时间戳（ms）。

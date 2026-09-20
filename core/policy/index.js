@@ -33,8 +33,20 @@ function commentsModule() { return require('../memory/comments'); }
 function usersModule() { return require('../memory/users'); }
 function corpusModule() { return require('../memory/corpus'); }
 
-/** 写操作命令族（与 risk-control 的 WRITE_COMMANDS 保持一致） */
-const WRITE_COMMANDS = ['post', 'like', 'unlike', 'delete_comment'];
+/**
+ * 写操作命令族（口径必须与 core/risk-control 的同名集合一致 ——
+ * 那一份管节奏间隔，这一份管配额与"要不要排轮次"，两边漏一个就是
+ * "间隔看不见、配额也看不见"）
+ *
+ * 私信在这里占**两个**名字，因为这个列表同时被用在两件事上：
+ *   - `'dm'`      —— 命令注册表里的名字，`isWriteCommand('dm')` 靠它。
+ *                    缺它的后果：桌面队列不给私信排轮次、界面上不显示倒计时、
+ *                    也不补 --no-throttle，等待全部跑到命令内部去。
+ *   - `'dm.send'` —— events 表里的名字（审计操作名带点）。
+ *                    缺它的后果：`writesToday` 数不到私信，
+ *                    "当日 30 条写操作"对私信等于不存在（实测确实如此）。
+ */
+const WRITE_COMMANDS = ['post', 'like', 'unlike', 'delete_comment', 'dm', 'dm.send'];
 
 /**
  * "这个命令算不算写操作"。
