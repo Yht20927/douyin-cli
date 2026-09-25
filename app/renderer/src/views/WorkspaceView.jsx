@@ -137,6 +137,8 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
   const [bulkKind, setBulkKind] = useState('setting');
   /** 批量生成的结果摘要（生成/跳过/失败各多少条 + 明细） */
   const [bulk, setBulk] = useState(null);
+  /** 「改用「固定内容」」那颗按钮的进行中状态（它会写配置，防连点） */
+  const [switchingMode, setSwitchingMode] = useState(false);
   const bulkHandled = useRef(null);
 
   // ── 全量拉取 ──
@@ -681,6 +683,29 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
           : `${(replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还生成不了'}`
             + '；把「回复模式」改成「固定内容」不需要它';
 
+  /**
+   * 只把「回复模式」改成「固定内容」。
+   *
+   * 补丁里只有这一项，别的配置一律不动 —— 用户点的是一颗具体的出口，
+   * 不是一次"保存设置"。改完必须重新读 reply.describe()，否则界面上那三颗
+   * 按钮还按旧的模式灰着，看起来像没生效。
+   */
+  async function useFixedMode() {
+    setSwitchingMode(true);
+    try {
+      const r = await window.dy.config.set({ reply: { mode: 'fixed' } });
+      if (!r || !r.ok) {
+        setNotice(`没能改成「固定内容」：${failText(r && r.error, '未知原因')}`);
+        return;
+      }
+      const d = await window.dy.reply.describe();
+      if (d && d.ok) setReplyDesc(d.data);
+      setNotice('已改用「固定内容」生成 —— 不再需要 AI。想换回来在设置页的「回复策略」里。');
+    } finally {
+      setSwitchingMode(false);
+    }
+  }
+
   return (
     <div className="workspace">
       <div className="ws-head">
@@ -689,12 +714,25 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
           <div className="ws-title-main">{video ? (video.title || '（无标题）') : '…'}</div>
           {stats && (
             <div className="ws-title-sub">
-              本地 {stats.total} 条 ·
-              已回 <span className="num">{stats.replied}</span> ·
-              待回 <b className="text-strong num">{stats.pending}</b>
-              　建议回复 <span className="num">{stats.byDecision.reply}</span> ·
-              表情 <span className="num">{stats.byDecision.emoji_reply}</span> ·
-              跳过 <span className="num">{stats.byDecision.skip}</span>
+              <span className="ws-statgroup">
+                待处理 <b className="text-strong num">{stats.pending}</b>
+                {' · '}已回 <span className="num">{stats.replied}</span>
+                {' · '}我发的 <span className="num">{stats.mine}</span>
+                {' · '}本地 <span className="num">{stats.total}</span>
+              </span>
+              <span className="ws-statgroup">
+                工具判定：建议回复 <span className="num">{stats.byDecision.reply}</span>
+                {' · '}表情 <span className="num">{stats.byDecision.emoji_reply}</span>
+                {' · '}跳过 <span className="num">{stats.byDecision.skip}</span>
+              </span>
+              {/* 两组数确实对不上，因为它们数的是不同的事。不说这一句，
+                  运营者只会怀疑数据错了 —— 而"我发的"与"已回"互斥这件事，
+                  只有跟"待处理怎么算"一起讲才读得出来。 */}
+              <span className="muted">
+                待处理 = 本地 − 已回 − 我发的；「工具判定」是逐条判该不该回，
+                已回和我发的也算在内，所以跟上面那组不是同一口径。
+                {search && '当前有搜索词，下面列表里的条数与这些数字无关。'}
+              </span>
             </div>
           )}
         </div>
@@ -941,10 +979,14 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                   {bulk.saved > 0 && (
                     <>
                       —— 可以勾选多条一次发完。
-                      {/* 光说"到草稿箱里确认"等于没说：用户还得自己想起侧栏里有这么一页。
-                          与「找视频」页的「去「运营对象」」同一个道理。 */}
-                      <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('drafts')}>
-                        去「草稿箱」
+                      {/* 光说"到草稿箱里确认"等于没说：用户还得自己想起侧栏里有这么一页，
+                          进去再凭正文认出刚生成的那几条。所以现在把 draftId 一并带过去。 */}
+                      <button
+                        className="btn btn-quiet drafts-pickall"
+                        onClick={() => actions.gotoDrafts(
+                          bulk.generated.filter(g => g.draftId).map(g => g.draftId))}
+                      >
+                        去「草稿箱」并勾上这 {bulk.saved} 条
                       </button>
                     </>
                   )}
@@ -1169,6 +1211,18 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                   <div className="notice notice-warn reply-genblock">
                     <div>
                       现在生成不了：{genBlock}。
+                      {/* 只在"确实是被 AI 挡住"且"固定列表真的有货"时给这条路：
+                          固定列表本身空着时改模式只是把同一个坑换个位置踩。 */}
+                      {genBlock !== FIXED_EMPTY && fixedUsable > 0 && replyDesc && replyDesc.mode !== 'fixed' && (
+                        <button
+                          className="btn btn-quiet drafts-pickall"
+                          disabled={switchingMode}
+                          onClick={useFixedMode}
+                          title={`只改「回复模式」这一项，其它设置不动；固定内容列表里有 ${fixedUsable} 条可用`}
+                        >
+                          {switchingMode ? '改中…' : `改用「固定内容」（${fixedUsable} 条可用）`}
+                        </button>
+                      )}
                       <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('settings')}>
                         去「设置」
                       </button>

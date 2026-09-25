@@ -25,7 +25,7 @@ const config = require('./config');
 const BUILTIN = [
   {
     id: 'casual_friend',
-    name: 'casual 朋友',
+    name: '随和朋友型',
     weight: 20,
     temperature: 0.75,
     lengthRange: [10, 40],

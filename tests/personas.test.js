@@ -76,6 +76,18 @@ describe('personas', () => {
     }
   });
 
+  // 界面第一行字就是这些名字，受众是不懂技术的运营者 ——
+  // 曾经有一个写成中英混排的 'casual 朋友'，跟其余六个纯中文的并排看像内部 id 泄漏。
+  it('内置人格的显示名全是纯中文且互不重复', () => {
+    const names = listPersonas().map(p => p.name);
+    expect(names).toHaveLength(7);
+    for (const n of names) {
+      expect(n).toBeTruthy();
+      expect(n).not.toMatch(/[A-Za-z]/);
+    }
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   it('findPersona 未知 id 返回 null', () => {
     expect(findPersona('no_such_persona')).toBeNull();
     expect(findPersona('casual_friend')).not.toBeNull();

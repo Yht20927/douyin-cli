@@ -243,7 +243,10 @@ export default function TargetsView({ actions }) {
                     <div className="row-sub target-sub">
                       <span className="num">{t.commentStats.total}</span> 条评论
                       {' · '}已回 <span className="num">{t.commentStats.replied}</span>
-                      {t.commentStats.mine > 0 && <>（其中我发的 <span className="num">{t.commentStats.mine}</span>）</>}
+                      {' · '}我发的 <span className="num">{t.commentStats.mine}</span>
+                      {/* 这两个桶互斥（我发的回复 replied 仍是 0），但"互斥"这件事
+                          只有跟"待回复怎么算"一起说才读得出来 */}
+                      <span className="muted">（都不算待回复）</span>
                       {titled && t.authorNickname && <> · 作者 {t.authorNickname}</>}
                     </div>
                   </div>

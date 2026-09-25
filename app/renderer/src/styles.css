@@ -889,6 +889,9 @@ code {
 .ws-title { flex: 1; min-width: 0; }
 .ws-title-main { font-size: 17px; font-weight: 650; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-title-sub { font-size: var(--fs-sm); color: var(--text-3); margin-top: 3px; }
+/* 一组一个口径，所以一组一块；口径不同的两组并排摆，读的人才会去对数 */
+.ws-statgroup { display: inline-block; margin-right: 14px; white-space: nowrap; }
+.ws-title-sub .muted { display: block; margin-top: 2px; white-space: normal; max-width: 76ch; }
 .ws-actions { display: flex; gap: 8px; flex: none; }
 
 /* 筛选行：标签是"软性分段"，底部一条发丝线收住 */

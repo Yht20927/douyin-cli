@@ -217,6 +217,10 @@ export default function SettingsView() {
             // 有些项"管不管用"取决于别的配置项，比如固定回复内容只在
             // 非 AI 模式下才被读取，写死成静态文案必然有一半场合是错的。
             cfg={draft}
+            // 已落盘的那一份，敏感字段是**打码值**而不是空串：
+            // "这一格到底填没填过"只有这里看得出 —— draft 里敏感字段被 flatten
+            // 一律抹成空串，从没填过与填过了两种情况长得一模一样。
+            saved={described ? flatten(described.config, []) : {}}
             value={draft[f.path]}
             defaultValue={getPath(described.defaults, f.path)}
             dirty={dirty.has(f.path)}

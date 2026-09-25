@@ -255,15 +255,19 @@ function Range2Field({ value, onChange, onInvalid }) {
  *   上报给设置页用来拦住保存 —— 否则用户填了个非法值、点保存、被告知"已保存"，
  *   而那个值根本没进去。
  * @param {React.ReactNode} [props.extra] - 特殊组件需要的额外内容
+ * @param {object} [props.saved] - **已落盘**的配置（扁平点号路径表）。
+ *   与 cfg 的区别只有一处但很要命：敏感字段在 cfg 里是空串（从没填过与填过了
+ *   长得一样），在 saved 里是打码值 —— 所以"这一格到底配过没有"只能读 saved。
  */
-export default function Field({ field, cfg, value, onChange, defaultValue, dirty, onReset, extra, onInvalid }) {
+export default function Field({ field, cfg, saved, value, onChange, defaultValue, dirty, onReset, extra, onInvalid }) {
   const { type, path } = field;
   // status / statusNote 可以写成 (cfg) => string 的形式：有些配置项"管不管用"
   // 取决于别的项（比如固定回复内容只在非 AI 模式下被读取），
   // 静态文案必然有一半场合是错的，而说错比不说更糟。
-  const status = typeof field.status === 'function' ? field.status(cfg || {}) : field.status;
+  const status = typeof field.status === 'function'
+    ? field.status(cfg || {}, saved || {}) : field.status;
   const statusNote = typeof field.statusNote === 'function'
-    ? field.statusNote(cfg || {}) : field.statusNote;
+    ? field.statusNote(cfg || {}, saved || {}) : field.statusNote;
   let control;
 
   switch (type) {
@@ -421,6 +425,11 @@ function StatusBadge({ status }) {
   }
   if (status === 'advisory') {
     return <span className="tag tag-warn">只提示</span>;
+  }
+  // 敏感项留空 = 不修改，于是"从没填过"与"填过了但不回显"在输入框里一模一样。
+  // 这一档说的是前者 —— 不新增样式，复用告警色的标签。
+  if (status === 'unset') {
+    return <span className="tag tag-warn">未设置</span>;
   }
   return null;
 }

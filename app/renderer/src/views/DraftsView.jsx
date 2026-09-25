@@ -47,8 +47,11 @@ function estimatePublishSpan(n, interval) {
  * @param {number} props.unattributed - 没有标明归属账号、因此不在这个列表里的草稿条数
  * @param {object|null} props.bulkPublish - 批量发布的进度快照（没有批量在跑/刚跑完时为 null）。
  *   记在 App 层：这一页会被卸载，而进度必须活着回来。
+ * @param {string[]|null} props.presetPicked - 从工作台「去草稿箱」带过来、要替用户勾上的草稿 id
+ * @param {function} props.onPresetUsed - 应用完预选后回调，让 App 层把它清掉
  */
-export default function DraftsView({ drafts, total, matched, unattributed = 0, bulkPublish, loading, actions, reload }) {
+export default function DraftsView({ drafts, total, matched, unattributed = 0, bulkPublish, loading, actions, reload,
+  presetPicked = null, onPresetUsed }) {
   // 注：「发布成功后把草稿标记为已发布」的跟踪**不在这个组件里** ——
   // 它只在草稿箱页面挂载，用户一点发布就切到队列页的话组件卸载，
   // 标记永远不会执行（草稿留在箱里 → 用户再点一次 → 被重复回复策略拦下）。
@@ -90,6 +93,26 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
   const hitTotal = typeof matched === 'number' ? matched : list.length;
   /** 这一页没显示出来的条数（搜索中按命中数算，否则按整箱算） */
   const hidden = Math.max(0, (query ? hitTotal : boxTotal) - list.length);
+
+  /**
+   * 从工作台「去草稿箱」带过来的预选：必须等列表读回来再勾。
+   *
+   * 立刻 setPicked 的话，"勾上了但这一页没有"与"根本没勾上"在界面上长得一样，
+   * 而批量发布是按勾选集合发的 —— 所以这里与可见集合求交集，并把没勾到的条数
+   * 说出来（当前有搜索词、或这批草稿归属在别的号下，是两种不同的下一步）。
+   */
+  useEffect(() => {
+    if (!presetPicked || presetPicked.length === 0 || loading) return;
+    const visible = new Set(list.map(d => d.id));
+    const hit = presetPicked.filter(id => visible.has(id));
+    setPicked(new Set(hit));
+    setNotice(hit.length === presetPicked.length
+      ? `已勾上刚生成的 ${hit.length} 条`
+      : `已勾上 ${hit.length} 条；另有 ${presetPicked.length - hit.length} 条不在这个列表里 —— `
+        + (query ? '当前有搜索词，清掉后再看。' : '可能归属别的账号，或已经发掉了。'));
+    if (onPresetUsed) onPresetUsed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetPicked, loading, drafts]);
 
   // 只承认当前看得见的勾选：搜索、刷新、换号之后，选中集合里可能留着
   // 界面上已经不存在的 id —— 那是不属于这个账号的草稿，不能被这批删除带走
@@ -236,9 +259,13 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
             {/* 分组显示时组头已经写了视频标题，行内再重复一次是噪声
                 （还容易让人以为是两个不同的视频）。平铺时它必须留着，
                 否则一条草稿根本看不出属于哪个视频。 */}
-            {!inGroup && <span className="draft-video">{d.videoTitle || d.awemeId}</span>}
+            {!inGroup && <span className="draft-video">{d.videoTitle || `视频 ····${String(d.awemeId).slice(-6)}`}</span>}
             {d.replyToCid && <span className="tag tag-dim">回复评论</span>}
-            {d.personaId && <span className="tag tag-dim">{d.personaId}</span>}
+            {d.personaId && (
+              <span className="tag tag-dim" title={`人格标识 ${d.personaId}`}>
+                {d.personaName || d.personaId}
+              </span>
+            )}
           </div>
 
           {/* 这是一条"回复某条评论"的草稿 —— 不显示被回复的原文，

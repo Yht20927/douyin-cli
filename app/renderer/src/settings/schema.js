@@ -422,8 +422,16 @@ export const GROUPS = [
         path: 'llm.api_key',
         type: T.PASSWORD,
         label: 'API Key',
+        // 判据只能读已落盘的那一份：cfg（草稿）里敏感字段一律被抹成空串，
+        // 从没填过与填过了在输入框里长得一模一样。
+        status: (cfg, saved) => (saved['llm.api_key'] ? null : 'unset'),
+        statusNote: (cfg, saved) => (saved['llm.api_key'] ? null
+          : cfg['reply.mode'] === 'fixed'
+            ? '这里还没有 Key。当前「回复模式」是「固定内容」，生成用不到它；'
+              + '哪天改成「AI 生成」或「混合」之前先把它填上。'
+            : '这里还没有 Key —— 用到 AI 的回复模式（「AI 生成」「混合」）生成不了内容。'
+              + '填一个 Key，或把上面的「回复模式」改成「固定内容」。'),
         hint: '留空表示不修改 —— 所以这一格也清不掉已设置的 Key（要换就填新的）。'
-          + '从没填过就是没有 Key：「回复模式」留在「AI 生成」时生成会做不了。'
           + '已设置时显示为打码值，界面上不会回显真实内容。',
       },
       {

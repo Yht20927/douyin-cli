@@ -199,10 +199,24 @@ export default function ConnectionView({ status, actions, busy }) {
           : (
             <div className="list">
               {connections.map(c => <ConnectionRow key={c.id} c={c} actions={actions} />)}
-              {stale.map(c => <ConnectionRow key={c.id} c={c} actions={actions} />)}
             </div>
           )}
       </section>
+
+      {/* 断开的连接单开一节。它们仍然要露面（"以前装好过、现在断了"与
+          "从来没装过"是两个完全不同的排查方向），但不能追加进上面那个列表 ——
+          标题那个数字是 connections.length，混列的结果是"说 1 个、摆 3 行"。 */}
+      {connections.length > 0 && stale.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">之前的连接（已断开）</h2>
+            <span className="section-meta">{stale.length}</span>
+          </div>
+          <div className="list">
+            {stale.map(c => <ConnectionRow key={c.id} c={c} actions={actions} />)}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

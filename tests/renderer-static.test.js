@@ -523,10 +523,26 @@ describe('工作台的浏览状态要跨页存活，且以当前列表为准', (
     expect(ws).toMatch(/visible\.has\(cid\)/);
   });
 
-  it('批量生成完有直达「草稿箱」的出口，勾选上限写在明面上', () => {
+  it('批量生成完把刚存的那几条带进草稿箱勾上（不是只跳转），上限写在明面上', () => {
     const ws = code();
-    expect(ws).toMatch(/goto\('drafts'\)/);
     expect(ws).toMatch(/\{MAX_PICK\}/);
+    // 带过去的必须是"真的存进草稿箱了"的那些 id：生成成功但存失败的条目
+    // 到了草稿箱里根本不存在，勾上它就是给下一批埋一个"这条已不在箱里"
+    expect(ws).toMatch(/actions\.gotoDrafts\(\s*bulk\.generated\.filter\(g => g\.draftId\)\.map\(g => g\.draftId\)\)/);
+
+    const strip2 = (p) => fs.readFileSync(path.join(RENDERER_SRC, p), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    const app = strip2('App.jsx');
+    expect(app).toMatch(/gotoDrafts\(draftIds\)/);
+    expect(app).toMatch(/presetPicked=\{draftPreset\}/);
+    // 用完即弃：不清的话，后台刷新会让用户手动取消掉的勾选自己长回来
+    expect(app).toMatch(/onPresetUsed=\{\(\) => setDraftPreset\(null\)\}/);
+
+    const dv = strip2('views/DraftsView.jsx');
+    // 关键的一半：勾之前先与**看得见的**那一批求交集，没勾到的条数要说出来
+    expect(dv).toMatch(/presetPicked\.filter\(id => visible\.has\(id\)\)/);
+    expect(dv).toMatch(/不在这个列表里/);
   });
 
   it('「优先级」排序没有数据时界面说出来，且 core 真的给了这个标志', () => {
@@ -570,6 +586,28 @@ describe('生成这条链路必须有前置检查，且理由看得见', () => {
     const code = ws();
     expect(code).toMatch(/现在生成不了：\{genBlock\}/);
     expect(code).toMatch(/goto\('settings'\)/);
+  });
+
+  it('界面：被 AI 挡住时有颗真的改用「固定内容」的出口', () => {
+    const code = ws();
+    // 补丁里只有这一项 —— 用户点的是一颗具体的出口，不是一次"保存设置"
+    expect(code).toMatch(/config\.set\(\{ reply: \{ mode: 'fixed' \} \}\)/);
+    // 改完必须重读结论：否则那三颗按钮还按旧模式灰着，看起来像没生效
+    expect(code).toMatch(/await window\.dy\.reply\.describe\(\)/);
+    // 固定列表本身空着时不给这条路（改了只是把同一个坑换个位置踩）
+    expect(code).toMatch(/genBlock !== FIXED_EMPTY && fixedUsable > 0/);
+  });
+
+  it('设置页：API Key 从没填过要看得出来', () => {
+    // 敏感字段在草稿里一律是空串，"没填过"与"填过了但不回显"长得一模一样 ——
+    // 判据只能读已落盘那份（打码值非空）。写成读 cfg 就恒为"没填过"。
+    const schema = read(path.join(RENDERER_SRC, 'settings'), 'schema.js');
+    expect(schema).toMatch(/status: \(cfg, saved\) => \(saved\['llm\.api_key'\] \? null : 'unset'\)/);
+    expect(read(path.join(RENDERER_SRC, 'views'), 'SettingsView.jsx'))
+      .toMatch(/flatten\(described\.config, \[\]\)/);
+    const fields = read(path.join(RENDERER_SRC, 'settings'), 'fields.jsx');
+    expect(fields).toMatch(/field\.status\(cfg \|\| \{\}, saved \|\| \{\}\)/);
+    expect(fields).toMatch(/status === 'unset'/);
   });
 
   it('那句理由指向的设置分组名，在设置页里真的存在', () => {
@@ -618,5 +656,43 @@ describe('倒计时必须走表，不能停在推送那一刻', () => {
     const code = fs.readFileSync(path.join(ROOT, 'core', 'policy', 'index.js'), 'utf8');
     expect(code).toMatch(/nextWriteAllowedAt:\s*nextWriteAllowedInMs > 0 \? ts \+ nextWriteAllowedInMs : 0/);
     expect(code).toMatch(/cooldownUntil:\s*cooldownRemainingMs > 0 \? ts \+ cooldownRemainingMs : 0/);
+  });
+});
+
+describe('同一页上的数字必须各说各的口径', () => {
+  // 回归背景：这一组的缺陷都不是"算错了"，而是"算对了但没说是怎么算的"——
+  // 于是两个都对的数并排放着，读的人只能得出"界面在撒谎"这一个结论。
+  const strip2 = (rel) => fs.readFileSync(path.join(RENDERER_SRC, rel), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  it('运营对象：不许再说「已回 N（其中我发的 M）」', () => {
+    const code = strip2('views/TargetsView.jsx');
+    // core 的 statsForVideo 里 mine 要求 replied=0，两个桶互斥，
+    // "其中"把它说成 replied 的子集 —— 那是一句假话
+    expect(code).not.toMatch(/其中我发的/);
+    expect(code).toMatch(/我发的 <span className="num">\{t\.commentStats\.mine\}<\/span>/);
+    expect(code).toMatch(/都不算待回复/);
+  });
+
+  it('工作台：减项 mine 要显示出来，且两组口径不同这件事写在明面上', () => {
+    const code = strip2('views/WorkspaceView.jsx');
+    expect(code).toMatch(/我发的 <span className="num">\{stats\.mine\}<\/span>/);
+    expect(code).toMatch(/待处理 = 本地 − 已回 − 我发的/);
+    // 判定三项与状态两组必须分开成两块，混在一行里就是"六个数挤一起"
+    expect(code.match(/ws-statgroup/g).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('连接页：断开的连接不许混进「已连接的账号」那一列', () => {
+    const code = strip2('views/ConnectionView.jsx');
+    // 旧写法是 connections.map 之后紧跟 stale.map 追加进同一个 list，
+    // 于是标题那个 connections.length 与屏幕上的行数不是一回事
+    expect(code).not.toMatch(
+      /\{connections\.map\(c => <ConnectionRow key=\{c\.id\} c=\{c\} actions=\{actions\} \/>\)\}\s*\n\s*\{stale\.map/);
+    // 断开的必须自己成一节：那句话要出现两次（空态下的引导 + 单开的那一节），
+    // 且其中一次确实是节标题 —— 只查两个 section-meta 是假护栏，坏版本里它同样成立
+    expect((code.match(/之前的连接（已断开）/g) || []).length).toBe(2);
+    expect(code).toMatch(/section-title">之前的连接（已断开）<\/h2>/);
+    expect(code).toMatch(/<span className="section-meta">\{stale\.length\}<\/span>/);
   });
 });

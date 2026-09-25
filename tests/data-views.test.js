@@ -375,6 +375,21 @@ describe('草稿箱', () => {
     expect(list[0].text).toBe('这是一条草稿内容');
   }));
 
+  // 草稿行的标签此前只有 casual_friend 这种内部 id —— 运营者认的是中文名。
+  // 解析不到时必须是 null 而不是猜一个：自定义人格可以被删掉，
+  // 而"标签整行消失"会被读成"这条草稿没带人格"。
+  it('人格标签解析成中文名，解析不到时为 null', withTempEnv({}, async ({ views, vids, drfs }) => {
+    vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
+    drfs.save({ awemeId: 'v1', text: '这是一条草稿内容', personaId: 'casual_friend' });
+    drfs.save({ awemeId: 'v1', text: '这是另一条草稿内容', personaId: 'gone_persona' });
+
+    const byPersona = new Map(views.listDrafts().items.map(d => [d.personaId, d]));
+    expect(byPersona.get('casual_friend').personaName)
+      .toBe(require('../core/personas').findPersona('casual_friend').name);
+    expect(byPersona.get('casual_friend').personaName).toBeTruthy();
+    expect(byPersona.get('gone_persona').personaName).toBeNull();
+  }));
+
   it('已发布的草稿不再出现在待发列表', withTempEnv({}, async ({ views, vids, drfs }) => {
     vids.upsert({ awemeId: 'v1', title: 'T', isMine: true });
     const id = drfs.save({ awemeId: 'v1', text: '草稿内容一' });

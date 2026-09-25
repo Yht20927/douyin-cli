@@ -607,6 +607,18 @@ function listDrafts(opts = {}) {
   // 被回复评论的原文一次性查回来（每条草稿一次 get 的话，200 条就是 200 次查询）。
   const targetMap = comments.getMany(rows.map(r => r.reply_to_cid).filter(Boolean));
 
+  // 人格 id → 中文名。effectivePersonas() 每次都要读配置并重建数组，
+  // 所以按整箱只解析一次，而不是每行查一遍。
+  const personaNames = new Map();
+  const personaName = (id) => {
+    if (!id) return null;
+    if (!personaNames.has(id)) {
+      const p = require('../personas').findPersona(id);
+      personaNames.set(id, (p && p.name) || null);
+    }
+    return personaNames.get(id);
+  };
+
   const items = rows.map(r => {
     const awemeId = r.aweme_id;
     if (!titles.has(awemeId)) {
@@ -626,6 +638,8 @@ function listDrafts(opts = {}) {
       replyToUid: target ? target.uid : null,
       text: r.text,
       personaId: r.persona_id || null,
+      // 解析不到时为 null（自定义人格被删掉过），界面据此退回显示原始 id
+      personaName: personaName(r.persona_id),
       // 图片回复的本地路径。发布时必须一并带上，否则草稿箱里存的图会被静默丢掉
       imagePath: r.image_path || null,
       createdAt: r.created_at,

@@ -92,6 +92,14 @@ export default function App() {
   const bulkPublishTaskIds = useRef(new Set());
   const [loadingVideos, setLoadingVideos] = useState(false);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
+  /**
+   * 从工作台「去草稿箱」带过来的一批草稿 id —— 到草稿箱后替用户勾上。
+   *
+   * 用 state 不用 ref：DraftsView 必须等列表**读回来之后**才能判断这些 id
+   * 在不在当前列表里（被搜索词或账号过滤挡住时要说出来，不能假装勾上了），
+   * 而 ref 的变更不会触发那次重跑。
+   */
+  const [draftPreset, setDraftPreset] = useState(null);
 
   const [busy, setBusy] = useState(false);
   /**
@@ -146,7 +154,10 @@ export default function App() {
 
   // 换号就把工作台那张表整个丢掉：里面存的勾选是上一个号的列表，
   // cid 再对得上也不该被当成"用户在这个号下勾过的东西"恢复回来。
-  useEffect(() => { wsMemo.current.clear(); }, [account]);
+  useEffect(() => {
+    wsMemo.current.clear();
+    setDraftPreset(null);
+  }, [account]);
 
   const reloadVideos = useCallback(async (limit) => {
     const n = limit || 50;
@@ -472,6 +483,18 @@ export default function App() {
      */
     goto(next) { setWorkspaceId(null); setUserId(null); setView(next); },
 
+    /**
+     * 带着"刚生成的那几条"去草稿箱。
+     *
+     * 只跳转的话，用户到草稿箱还要在一箱待发草稿里认出刚才那批 —— 而批量生成
+     * 恰恰就是为几十条一起做的。拿不到 id 时（老数据、或部分保存失败）退化成
+     * 单纯跳转，不拦这条路。
+     */
+    gotoDrafts(draftIds) {
+      setDraftPreset(Array.isArray(draftIds) && draftIds.length > 0 ? draftIds : null);
+      setWorkspaceId(null); setUserId(null); setView('drafts');
+    },
+
     async openDouyin() {
       return withBusy(async () => {
         await window.dy.openExternal('https://www.douyin.com');
@@ -651,6 +674,8 @@ export default function App() {
                     unattributed={draftUnattributed}
                     bulkPublish={bulkPublish}
                     loading={loadingDrafts}
+                    presetPicked={draftPreset}
+                    onPresetUsed={() => setDraftPreset(null)}
                     actions={actions}
                     reload={reloadDrafts}
                   />

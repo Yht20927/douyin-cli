@@ -109,7 +109,6 @@ export default function PersonasField({ draft, change }) {
               </label>
               <button className="persona-name" onClick={() => setExpanded(isOpen ? null : p.id)}>
                 <span className="persona-label">{p.name}</span>
-                <span className="muted num">{p.id}</span>
                 {p.custom && <span className="tag tag-dim">自定义</span>}
                 {changed && <span className="tag tag-warn">已改</span>}
               </button>
@@ -161,6 +160,12 @@ function PersonaEditor({ persona, isCustom, overridden, onChangeField, onReset }
           onChange={e => onChangeField('name', e.target.value)}
         />
       </Field>
+
+      {/* 标识不在列表行上显示（对运营者是噪声），但排查问题时要能在截图里指认是哪个人格 */}
+      <div className="settings-hint">
+        标识 <span className="num">{persona.id}</span> —— 草稿与生成记录里存的是它，
+        改上面那个显示名不会动它。
+      </div>
 
       <div className="settings-inline">
         <Field label="权重" hint="被随机选中的相对概率。0 表示不参与加权（等同无权重）">
