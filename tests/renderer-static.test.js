@@ -696,3 +696,116 @@ describe('同一页上的数字必须各说各的口径', () => {
     expect(code).toMatch(/<span className="section-meta">\{stale\.length\}<\/span>/);
   });
 });
+
+describe('切页不会丢掉已经花掉的时间', () => {
+  // 回归背景：主区每个页面都是 `{view === 'x' && <X/>}`，切走就是**整个卸载**。
+  // 于是"等 30–50 秒读间隔换来的搜索结果""排进队列的 8 条拉取"在切页那一刻蒸发，
+  // 而行上的"拉取中…"因为订阅已经退掉而永远停在那里。
+  const code = () => strip2b('views/DiscoverView.jsx');
+
+  function strip2b(rel) {
+    return fs.readFileSync(path.join(RENDERER_SRC, rel), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+  }
+
+  it('App 真的把 memo / onMemo / 队列快照接到了找视频页上', () => {
+    const app = strip2b('App.jsx');
+    expect(app).toMatch(/const discoverMemo = useRef\(null\);/);
+    // 只声明不传等于没接线（这一类"字段存在但没人读"是本仓最常见的 bug 形态）
+    expect(app).toMatch(/memo=\{discoverMemo\.current\}/);
+    expect(app).toMatch(/onMemo=\{\(m\) => \{ discoverMemo\.current = m; \}\}/);
+    expect(app).toMatch(/queueState=\{queueState\}/);
+    // 换号必须清掉：行上的「已在运营」与勾选都是按上一个号算的
+    expect(app).toMatch(/discoverMemo\.current = null;/);
+  });
+
+  it('每一项视图状态都从 memo 起，而不是一进页面就归零', () => {
+    for (const f of ['mode', 'keyword', 'userInput', 'results', 'status',
+      'pending', 'notice', 'error', 'justDone']) {
+      expect(code()).toContain(`useState(() => (memo && memo.${f})`);
+    }
+    expect(code()).toContain('new Set((memo && memo.picked) || [])');
+    // 「拉取中」的那批不另存一份清单：从 pairs 推出来，两处各自更新必然分叉
+    expect(code()).toContain('((memo && memo.addingPairs) || []).map(([a]) => a)');
+    expect(code()).not.toMatch(/addingIds/);
+    expect(code()).toContain("useRef((memo && memo.kind) || 'search')");
+  });
+
+  it('写回 memo 的字段必须覆盖读出来的那些（读了不写回 = 下次回来还是旧的）', () => {
+    const block = code().match(/if \(onMemo\) \{\s*\n\s*onMemo\(\{([\s\S]*?)\}\);/);
+    expect(block).toBeTruthy();
+    for (const f of ['mode', 'keyword', 'userInput', 'results', 'status', 'pending',
+      'notice', 'error', 'justDone', 'kind', 'picked', 'addingPairs']) {
+      expect(block[1]).toMatch(new RegExp(`\\b${f}\\b`));
+    }
+  });
+
+  it('离开期间已经跑完的任务，靠队列快照补收而不是等事件重发', () => {
+    const src = code();
+    // 顺序即语义：先照快照判一次，再决定要不要订阅。反过来就是"永远停在正在搜索…"
+    expect(src.indexOf('isSettled(snap)')).toBeGreaterThan(-1);
+    expect(src.indexOf('isSettled(snap)')).toBeLessThan(src.indexOf('window.dy.queue.onChanged'));
+    expect(src).toMatch(/if \(collectAdded\(queueState\.tasks \|\| \[\]\)\) stopWatching\(\);/);
+    // 还有在跑的必须把监听重新挂上，否则"拉取中…"同样永远不消失
+    expect(src).toMatch(/else watchQueue\(\);/);
+  });
+
+  it('批量拉取的账单分开成功与失败，并给出下一步的出口', () => {
+    const src = code();
+    expect(src).toMatch(/if \(t\.status === 'done'\) ok\.push\(awemeId\); else failedIds\.push\(awemeId\);/);
+    expect(src).toMatch(/个没拉到 —— 行上仍是「加入运营对象」/);
+    // 单个视频直接进工作台；一批则回「运营对象」。只说"完成了"不给出路，等于没修
+    expect(src).toMatch(/actions\.openWorkspace\(justDone\.ok\[0\]\)/);
+    expect(src).toMatch(/actions\.goto\('targets'\)/);
+  });
+});
+
+describe('"有几个号没连上"全仓只能有一个判据', () => {
+  const strip3 = (rel) => fs.readFileSync(path.join(RENDERER_SRC, rel), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  it('侧栏那句与连接页那一节读的是同一个函数', () => {
+    expect(strip3('status.js')).toMatch(/export function unconnectedAccounts\(account, status\)/);
+    const sidebar = strip3('components/Sidebar.jsx');
+    const conn = strip3('views/ConnectionView.jsx');
+    expect(sidebar).toMatch(/unconnectedAccounts\(account, status\)/);
+    expect(conn).toMatch(/unconnectedAccounts\(account, status\)/);
+    // 各自 filter 一遍就是两个 N：侧栏说 2、点进去看到 1，用户开始怀疑所有数字
+    expect(sidebar).not.toMatch(/otherAccounts/);
+    expect(conn).not.toMatch(/listedUids/);
+  });
+
+  it('那句提示是真的入口，不是只多说一句', () => {
+    const sidebar = strip3('components/Sidebar.jsx');
+    expect(sidebar).toMatch(/onClick=\{\(\) => onNavigate\('connection'\)\}/);
+    expect(sidebar).toMatch(/另有 \{unconnected\.length\} 个号未连接 —— 怎么连上/);
+  });
+
+  it('「怎么连上」写在明面上，不是悬停才看得到', () => {
+    const conn = strip3('views/ConnectionView.jsx');
+    expect(conn).toMatch(/新开一个标签页登录那个号/);
+    expect(conn).not.toMatch(/title=[^\n]*新开一个标签页/);
+    expect(conn).toMatch(/section-title">名册里的其他号（当前没连上）</);
+  });
+});
+
+describe('「全选」不许承诺它覆盖不到的范围', () => {
+  const drafts = fs.readFileSync(path.join(RENDERER_SRC, 'views', 'DraftsView.jsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  it('按钮说的是可见条数，没载入的那些当场说清楚', () => {
+    expect(drafts).not.toMatch(/全选这一页/);
+    expect(drafts).toMatch(/全选这 \{list\.length\} 条/);
+    expect(drafts).toMatch(/条没载入，这一勾覆盖不到它们/);
+    // hidden 的口径只有一个来源：命中数（或整箱数）减去已载入
+    expect(drafts).toMatch(/const hidden = Math\.max\(0, \(query \? hitTotal : boxTotal\) - list\.length\)/);
+  });
+
+  it('勾满可见的那些时，批量条要说出没覆盖的那部分', () => {
+    expect(drafts).toMatch(/hidden > 0 && pickedIds\.length === list\.length/);
+    expect(drafts).toMatch(/没勾上/);
+  });
+});

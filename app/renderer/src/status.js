@@ -91,3 +91,27 @@ export function describeStatus(status) {
 export function isProblem(state) {
   return state === 'offline' || state === 'down';
 }
+
+/**
+ * 名册里认得、但界面上别的地方还没有交代过的号。
+ *
+ * 侧栏那句「另有 N 个号」与连接页那一节**必须用同一个判据算同一个 N**：
+ * 两处数字对不上的话，用户会开始怀疑屏幕上所有数字（这个毛病在连接页刚修过一次）。
+ *
+ * 三个排除条件，每个都对应"别处已经说过了"：
+ * - 已作为连接行列出（含已断开的残留行）：那一行就是它的交代
+ * - `online`：名册的 online 与 status.connections 来自两次 IPC 读取，会有
+ *   "名册说在线、这份 status 里却没它的行"的错位窗口 —— 那种时候不能说它没连上
+ * - `current`：它已经以「当前账号」的身份摆在同一块侧栏里，再算进"另有的号"
+ *   等于把自己正在操作的那个号说成别的号
+ *
+ * @param {object|null} account - account:state 的 data（用它的 accounts[]）
+ * @param {object|null} status - 桥接状态（用它的 connections[]）
+ */
+export function unconnectedAccounts(account, status) {
+  const listed = new Set(((status && status.connections) || [])
+    .filter(c => c.account)
+    .map(c => String(c.account.uid)));
+  return ((account && account.accounts) || [])
+    .filter(a => !a.online && !a.current && !listed.has(String(a.uid)));
+}

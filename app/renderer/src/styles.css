@@ -282,6 +282,9 @@ code {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sidebar-account-more { font-size: var(--fs-xs); color: var(--text-4); margin-top: 2px; }
+/* 这句现在是能点的（跳到连接页），但它在一个自带内边距的盒子里，
+   用 .nav-item 的默认内边距会缩进得比上面的账号名还深 */
+.sidebar-account-box .nav-item { padding: 3px 4px; margin-left: -4px; }
 /* 多账号同时在线时的选择器：占满侧栏宽度，别让它把侧栏挤变形 */
 .sidebar-account-select { width: 100%; font-size: 12.5px; padding: 4px 6px; min-height: 26px; }
 

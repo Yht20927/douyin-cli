@@ -475,8 +475,14 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
               <div className="drafts-bulkbar">
                 <span className="drafts-bulkbar-main">
                   已选 {pickedIds.length} 条
-                  {query && `（搜索中的 ${list.length} 条里）`}
-                  <span className="muted">　·　发布后这些草稿会自动移出箱子；没发出去的会留着</span>
+                  {query && `（当前是搜索结果里的 ${list.length} 条）`}
+                  <span className="muted">　·　
+                    {hidden > 0 && pickedIds.length === list.length
+                      // 勾到"可见的全部"不等于勾到"全部"。这时候不提醒，
+                      // 用户会以为这一批发完箱子就空了。
+                      ? `这已经是全部可见的 ${list.length} 条；同条件的还有 ${hidden} 条没载入、没勾上 —— 要一次做完先用搜索缩小范围`
+                      : '发布后这些草稿会自动移出箱子；没发出去的会留着'}
+                  </span>
                 </span>
                 {/* 批量发布进行中先把"删除所选"灰掉：删掉一条已经排进队列的草稿
                     并不会取消那次发布（任务里带着自己的正文），
@@ -498,10 +504,20 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
               </div>
             )
             : (
-              <button className="btn btn-quiet drafts-pickall"
-                onClick={() => setPicked(new Set(list.map(d => d.id)))}>
-                全选这一页（{list.length} 条）
-              </button>
+              <>
+                {/* 原来叫「全选这一页」：这一页到底是什么范围，用户只能猜。
+                    而列表最多只载入 core 的 MAX_LIMIT 条，"全选"覆盖的其实只是
+                    已载入的那几条 —— 勾完之后批量发布漏掉一半才是真事故。 */}
+                <button className="btn btn-quiet drafts-pickall"
+                  onClick={() => setPicked(new Set(list.map(d => d.id)))}>
+                  全选这 {list.length} 条
+                </button>
+                {hidden > 0 && (
+                  <span className="muted">
+                    同条件的还有 <span className="num">{hidden}</span> 条没载入，这一勾覆盖不到它们
+                  </span>
+                )}
+              </>
             )}
           {groups.length > 1 && (
             <button className="btn btn-quiet drafts-pickall" onClick={() => setGrouped(v => !v)}>

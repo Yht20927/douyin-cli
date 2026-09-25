@@ -1,5 +1,5 @@
 import React from 'react';
-import { describeStatus } from '../status.js';
+import { describeStatus, unconnectedAccounts } from '../status.js';
 
 /**
  * 导航分两组：「运行」是日常工作会来回切的页面，「通用」是配置与排障。
@@ -47,7 +47,9 @@ export default function Sidebar({
   // 在线）时，也才有地方选定到底操作哪一个。
   const current = (account && account.accounts || []).find(a => a.current);
   const accountName = current ? (current.nickname || current.uid) : '';
-  const otherAccounts = (account && account.accounts || []).filter(a => !a.current);
+  // 与连接页那一节同一个判据：侧栏说"另有 2 个"，点过去只能恰好是 2 行。
+  // 当前这个号不在里面 —— 它就显示在这句话上面，再算进"另有"里是重复计账。
+  const unconnected = unconnectedAccounts(account, status);
 
   return (
     <aside className="sidebar">
@@ -106,12 +108,18 @@ export default function Sidebar({
                 {accountName}
               </div>
             )}
-            {otherAccounts.length > 0 && !account.needsChoice && (
+            {unconnected.length > 0 && !account.needsChoice && (
               // 只有一个在线时不显示下拉框，但把"库里还有别的号"说一句 ——
-              // 否则用户会以为另一个号的数据没了
-              <div className="sidebar-account-more">
-                另有 {otherAccounts.length} 个号（未连接）
-              </div>
+              // 否则用户会以为另一个号的数据没了。
+              // 这句话原来到此为止：它说出了缺陷，却不给下一步，而下一步
+              // （去浏览器里登录那个号）写在另一页上。所以做成能点的。
+              <button
+                type="button"
+                className="nav-item sidebar-account-more"
+                onClick={() => onNavigate('connection')}
+              >
+                另有 {unconnected.length} 个号未连接 —— 怎么连上
+              </button>
             )}
           </div>
         )}

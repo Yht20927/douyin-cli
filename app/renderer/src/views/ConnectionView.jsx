@@ -2,6 +2,7 @@ import React from 'react';
 import StatusBand from '../components/StatusBand.jsx';
 import { abbrNum } from '../format.js';
 import { describeError } from '../errors.js';
+import { unconnectedAccounts } from '../status.js';
 
 /** 把时间戳转成"多久之前" */
 function ago(iso) {
@@ -138,7 +139,7 @@ function SetupGuide({ actions, busy }) {
   );
 }
 
-export default function ConnectionView({ status, actions, busy }) {
+export default function ConnectionView({ status, actions, busy, account }) {
   // 桥接服务返回的 connections 里**包含已经断掉的残留连接**（alive: false）。
   // 之前这里直接用 connections.length 当"已连接"的数量，于是同一个屏幕上
   // 会出现两个对不上的数字：这里写"已连接的页面 3"，上面的状态条和诊断页
@@ -147,6 +148,13 @@ export default function ConnectionView({ status, actions, busy }) {
   const all = (status && status.connections) || [];
   const connections = all.filter(c => c.alive);
   const stale = all.filter(c => !c.alive);
+
+  /**
+   * 名册里认得、但这一页任何一行都没提到的号 —— 侧栏那句「另有 N 个号（未连接）」
+   * 点过来要有东西可看。判据与侧栏共用（见 status.js 的 unconnectedAccounts），
+   * 否则同一个屏幕会出现两个不同的 N。
+   */
+  const unlisted = unconnectedAccounts(account, status);
 
   // status.error 是主进程读桥接状态失败时的原始串（EADDRINUSE、
   // "Bridge Server 未启动 (127.0.0.1:19422) …"）。这一页就是给"连不上"的人看的，
@@ -214,6 +222,42 @@ export default function ConnectionView({ status, actions, busy }) {
           </div>
           <div className="list">
             {stale.map(c => <ConnectionRow key={c.id} c={c} actions={actions} />)}
+          </div>
+        </section>
+      )}
+
+      {unlisted.length > 0 && (
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">名册里的其他号（当前没连上）</h2>
+            <span className="section-meta">{unlisted.length}</span>
+          </div>
+
+          {/* 侧栏那句「另有 N 个号（未连接）」跳过来必须落到这儿，而且要把
+              "怎么让它连上"写在明面上 —— 只给一个列表等于换个地方不说。
+              不做成悬停提示：悬停不等于说出来。 */}
+          <div className="notice" style={{ marginBottom: 10 }}>
+            <div>
+              这几个号工具以前见过（在名册里），只是<b>当前没有它们的页面连上来</b>。
+              要接上其中一个：在浏览器里<b>新开一个标签页登录那个号</b>并保持开着，
+              脚本会自动把它报上来 —— 不需要重装脚本，也不用在这里改什么。
+            </div>
+            <div className="row" style={{ marginTop: 6 }}>
+              <button className="btn" disabled={busy} onClick={actions.openDouyin}>打开抖音</button>
+              <button className="btn btn-quiet" disabled={busy} onClick={actions.refresh}>重新检测</button>
+            </div>
+          </div>
+
+          <div className="list">
+            {unlisted.map(a => (
+              <div key={a.uid} className="row-item">
+                <Avatar name={a.nickname || a.uid} off />
+                <div className="row-main">
+                  <div className="row-title">{a.nickname || '（没有昵称）'}</div>
+                  <div className="row-sub">UID {a.uid} —— 以前连上过，现在浏览器里没有它的页面</div>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       )}

@@ -23,28 +23,48 @@ import { failText } from '../errors.js';
 /** 一次搜多少条。上限与 search 命令内部一致（20）。 */
 const PAGE_SIZE = 20;
 
-export default function DiscoverView({ actions }) {
-  const [mode, setMode] = useState('search');
-  const [keyword, setKeyword] = useState('');
-  const [userInput, setUserInput] = useState('');
+/** 队列里"不会再变了"的那几个状态。三处判断都用它，别各写一份清单 */
+const FINISHED = ['done', 'failed', 'blocked', 'cancelled'];
+const isSettled = t => !!t && FINISHED.includes(t.status);
 
-  const [results, setResults] = useState([]);
-  const [status, setStatus] = useState({});
+/**
+ * @param {object} props
+ * @param {object} props.memo - App 层存的这一页的浏览状态（切页会卸载，见 App.jsx 的 discoverMemo）
+ * @param {function} props.onMemo - 每次变化写回去
+ * @param {object} props.queueState - 队列快照，用来续上"离开这一页期间跑完"的任务
+ */
+export default function DiscoverView({ actions, memo, onMemo, queueState }) {
+  const [mode, setMode] = useState(() => (memo && memo.mode) || 'search');
+  const [keyword, setKeyword] = useState(() => (memo && memo.keyword) || '');
+  const [userInput, setUserInput] = useState(() => (memo && memo.userInput) || '');
+
+  const [results, setResults] = useState(() => (memo && memo.results) || []);
+  const [status, setStatus] = useState(() => (memo && memo.status) || {});
   /** 正在等的任务（搜索 / 看主页），跑完自动取结果 */
-  const [pending, setPending] = useState(null);
-  /** 已加入过队列、正在等结果的那几条视频 id */
-  const [adding, setAdding] = useState(() => new Set());
+  const [pending, setPending] = useState(() => (memo && memo.pending) || null);
+  /** 已加入过队列、正在等结果的那几条视频 id（由 addingPairs 推出，不另存一份） */
+  const [adding, setAdding] = useState(
+    () => new Set(((memo && memo.addingPairs) || []).map(([a]) => a))
+  );
   /** 勾选要批量加入的视频 id */
-  const [picked, setPicked] = useState(() => new Set());
-  const [notice, setNotice] = useState(null);
-  const [error, setError] = useState(null);
+  const [picked, setPicked] = useState(() => new Set((memo && memo.picked) || []));
+  const [notice, setNotice] = useState(() => (memo && memo.notice) || null);
+  const [error, setError] = useState(() => (memo && memo.error) || null);
+  /**
+   * 刚跑完的一批"拉取评论"的账单：成功的 id 列表与失败条数。
+   * 它是这一页唯一的"下一步"出口（拉完就能去工作台），所以要活得过切页。
+   */
+  const [justDone, setJustDone] = useState(() => (memo && memo.justDone) || null);
 
   /** 这次等的是哪个命令的结果（'search' | 'user'）—— normalize 要按它分派 */
-  const kindRef = useRef('search');
+  const kindRef = useRef((memo && memo.kind) || 'search');
   /** 视频 id → 正在为它拉评论的任务 id。批量时靠它把完成的任务落回行上 */
-  const addingRef = useRef(new Map());
+  const addingRef = useRef(new Map((memo && memo.addingPairs) || []));
   /** 只订阅一次队列，避免"点了 8 次就挂 8 个监听" */
   const watchRef = useRef(null);
+  /** 最新一次队列快照。用 ref 读：它不是判断条件，不该让订阅跟着重挂 */
+  const queueRef = useRef(queueState);
+  queueRef.current = queueState;
 
   useEffect(() => () => {
     // 组件卸载（切页）时队列还在跑 —— 不取消订阅的话监听会一直握着已卸载组件的 setState
@@ -58,34 +78,44 @@ export default function DiscoverView({ actions }) {
     if (r && r.ok) setStatus(prev => ({ ...prev, ...r.data }));
   }, []);
 
+  /** 把一条已完成的搜索/看主页任务收成列表 */
+  const settlePending = useCallback(async (taskId, task) => {
+    setPending(null);
+    if (task.status !== 'done') {
+      setError(failText(task.error, '未完成'));
+      setResults([]);
+      setJustDone(null);
+      return;
+    }
+    const r = await window.dy.queue.result(taskId);
+    // ⚠️ kind 必须取自入队时记下的那个，**不能**拿 pending（它是任务 id）。
+    // 写成 normalize(pending, …) 的话两个分支都会走错那个，
+    // 表现是"搜索结果永远是空的" —— 而错误本身不抛，只是没结果。
+    const items = normalize(kindRef.current, r && r.result);
+    setResults(items);
+    // 换了一批结果就把勾选清掉：留着上一批的 id，批量按钮上的数字就和眼前这页对不上
+    setPicked(new Set());
+    setError(null);
+    setNotice(items.length === 0
+      ? '没有结果。换个关键词，或者确认浏览器里已登录、页面开着。'
+      : `找到 ${items.length} 个视频 —— 逐条点「加入运营对象」，或勾几条一次排进队列。`
+        + '加入就是去拉它的评论（读操作，要等间隔）。');
+    refreshStatus(items.map(i => i.awemeId));
+  }, [refreshStatus]);
+
   // 任务跑完 → 取结果
   useEffect(() => {
     if (!pending) return undefined;
-    const un = window.dy.queue.onChanged(async (payload) => {
+    // 这一页被卸载期间任务可能已经跑完 —— 那次变更事件**不会重发**，
+    // 只订阅的话界面会永远停在"正在搜索…"。先照快照判一次。
+    const snap = (queueRef.current && queueRef.current.tasks || []).find(x => x.id === pending);
+    if (isSettled(snap)) { settlePending(pending, snap); return undefined; }
+    const un = window.dy.queue.onChanged((payload) => {
       const t = (payload.tasks || []).find(x => x.id === pending);
-      if (!t || !['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) return;
-      setPending(null);
-      if (t.status !== 'done') {
-        setError(failText(t.error, '未完成'));
-        return;
-      }
-      const r = await window.dy.queue.result(pending);
-      // ⚠️ kind 必须取自入队时记下的那个，**不能**拿 pending（它是任务 id）。
-      // 写成 normalize(pending, …) 的话两个分支都会走错那个，
-      // 表现是"搜索结果永远是空的" —— 而错误本身不抛，只是没结果。
-      const items = normalize(kindRef.current, r && r.result);
-      setResults(items);
-      // 换了一批结果就把勾选清掉：留着上一批的 id，批量按钮上的数字就和眼前这页对不上
-      setPicked(new Set());
-      setError(null);
-      setNotice(items.length === 0
-        ? '没有结果。换个关键词，或者确认浏览器里已登录、页面开着。'
-        : `找到 ${items.length} 个视频 —— 逐条点「加入运营对象」，或勾几条一次排进队列。`
-          + '加入就是去拉它的评论（读操作，要等间隔）。');
-      refreshStatus(items.map(i => i.awemeId));
+      if (isSettled(t)) settlePending(pending, t);
     });
     return un;
-  }, [pending, refreshStatus]);
+  }, [pending, settlePending]);
 
   async function run(kind) {
     const kw = (kind === 'search' ? keyword : userInput).trim();
@@ -98,6 +128,8 @@ export default function DiscoverView({ actions }) {
     setResults([]);
     setError(null);
     setNotice(null);
+    // 上一批的"拉完了"账单指的那几行已经从这一页消失了，留着会跳去看不存在的视频
+    setJustDone(null);
     kindRef.current = kind;
     setPending(id);
   }
@@ -122,6 +154,7 @@ export default function DiscoverView({ actions }) {
     for (const q of queueIn) addingRef.current.set(q.awemeId, q.id);
     setAdding(new Set(addingRef.current.keys()));
     setPicked(new Set());
+    setJustDone(null);
     setNotice(`已排入 ${queueIn.length} 条。队列是一条条走的，每条之间要等一次读间隔`
       + ` —— ${queueIn.length} 条不是"一会儿全部好"，而是按间隔依次完成。`
       + '可以放着让它跑，拉完的行会自己变成「去工作台」。');
@@ -137,22 +170,80 @@ export default function DiscoverView({ actions }) {
   function watchQueue() {
     if (watchRef.current) return;
     watchRef.current = window.dy.queue.onChanged((payload) => {
-      const tasks = payload.tasks || [];
-      const finished = [];
-      for (const [awemeId, id] of addingRef.current) {
-        const t = tasks.find(x => x.id === id);
-        if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) finished.push(awemeId);
-      }
-      if (!finished.length) return;
-      for (const a of finished) addingRef.current.delete(a);
-      setAdding(new Set(addingRef.current.keys()));
-      refreshStatus(finished);
-      if (!addingRef.current.size && watchRef.current) {
-        watchRef.current();
-        watchRef.current = null;
-      }
+      if (collectAdded(payload.tasks || [])) stopWatching();
     });
   }
+
+  function stopWatching() {
+    if (watchRef.current) {
+      watchRef.current();
+      watchRef.current = null;
+    }
+  }
+
+  /**
+   * 把已经跑完的"拉取评论"任务落回行上，并攒成一份账单。
+   *
+   * 成功与失败必须分开数：整批只说"完成了 N 条"的话，那几条失败的行仍然写着
+   * 「加入运营对象」，而用户刚看过批量条上那个 N —— 两边对不上就只能怀疑数据丢了。
+   *
+   * @returns {boolean} 是否已经没有在等的任务了（调用方据此退订）
+   */
+  function collectAdded(tasks) {
+    const ok = [];
+    const failedIds = [];
+    for (const [awemeId, id] of addingRef.current) {
+      const t = tasks.find(x => x.id === id);
+      if (!isSettled(t)) continue;
+      addingRef.current.delete(awemeId);
+      if (t.status === 'done') ok.push(awemeId); else failedIds.push(awemeId);
+    }
+    const settled = ok.length + failedIds.length;
+    if (!settled) return addingRef.current.size === 0;
+    setAdding(new Set(addingRef.current.keys()));
+    // 失败的行也要重问一次状态：它可能其实已经写进库了（拉了一半），
+    // 只刷成功的那半会让行上的按钮停在错误的分支上
+    refreshStatus([...ok, ...failedIds]);
+    setJustDone(prev => {
+      const base = prev || { ok: [], failed: 0 };
+      return { ok: [...base.ok, ...ok], failed: base.failed + failedIds.length };
+    });
+    return addingRef.current.size === 0;
+  }
+
+  /**
+   * 续上"离开这一页期间"跑完的拉取任务。
+   *
+   * 与 pending 那条同一个道理：变更事件不会重发。这一页卸载时退掉了订阅，
+   * 回来若不照快照补一次，行上会永远挂着"拉取中…"，而账单也永远出不来。
+   */
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (resumedRef.current || !queueState) return;
+    resumedRef.current = true;
+    if (!addingRef.current.size) return;
+    if (collectAdded(queueState.tasks || [])) stopWatching();
+    else watchQueue(); // 还有在跑的：把这一页的监听重新挂上
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueState]);
+
+  /**
+   * 把这一页的浏览状态写回 App。
+   *
+   * 只在变化时写、不在渲染里读 —— 与工作台那份 `wsMemo` 同一套：
+   * 切页时组件卸载，state 就没了，而"等过一轮读间隔才换来的结果"是这一页最贵的东西。
+   */
+  useEffect(() => {
+    if (onMemo) {
+      onMemo({
+        mode, keyword, userInput, results, status, pending, notice, error, justDone,
+        kind: kindRef.current,
+        picked: [...picked],
+        addingPairs: [...addingRef.current.entries()],
+      });
+    }
+  }, [mode, keyword, userInput, results, status, pending, notice, error,
+    justDone, picked, adding]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function togglePick(awemeId) {
     setPicked(prev => {
@@ -223,6 +314,29 @@ export default function DiscoverView({ actions }) {
 
       {notice && <div className="notice"><div>{notice}</div></div>}
       {error && <div className="notice notice-bad"><div>{error}</div></div>}
+
+      {justDone && (justDone.ok.length > 0 || justDone.failed > 0) && (
+        // 拉完是这一页真正的"下一步"时刻：以前只会把行上的按钮换成「去工作台」，
+        // 用户得自己在 20 行里找到那条。失败的条数必须一起说 —— 整批只报"完成"
+        // 的话，失败的那几行仍然写着「加入运营对象」，跟数字对不上。
+        <div className="notice">
+          <div>
+            已拉完 <b className="num">{justDone.ok.length}</b> 个视频的评论
+            {justDone.failed > 0 && <>，另有 <b className="num text-bad">{justDone.failed}</b> 个没拉到 —— 行上仍是「加入运营对象」，可以再点一次</>}
+          </div>
+          <div className="row" style={{ marginTop: 6 }}>
+            {justDone.ok.length === 1 ? (
+              <button className="btn btn-primary" onClick={() => actions.openWorkspace(justDone.ok[0])}>
+                去这个视频的工作台
+              </button>
+            ) : (
+              <button className="btn" onClick={() => actions.goto('targets')}>
+                去「运营对象」看这一批
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {searching ? (
         <EmptyState

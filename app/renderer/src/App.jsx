@@ -53,6 +53,15 @@ export default function App() {
    */
   const wsMemo = useRef(new Map());
   /**
+   * 「找视频」页的搜索结果与勾选。
+   *
+   * 这一页切走就是**整个卸载**（`{view === 'discover' && …}`），而"搜一个词 →
+   * 勾几条 → 排进队列（每条之间要等一个读间隔）→ 去运营对象看一眼 → 回来"
+   * 是同一条动线：结果留在组件里的话，回来只剩空页，用户得再搜一次、再等一轮。
+   * 只有一份（不像 wsMemo 那样按 key 分表），因为这一页没有"当前对象"的概念。
+   */
+  const discoverMemo = useRef(null);
+  /**
    * 正在看的用户（评论者画像）。
    *
    * 它是**第二层下钻**（工作台/数据页 → 用户），与 workspaceId 并列而不是嵌在
@@ -156,6 +165,8 @@ export default function App() {
   // cid 再对得上也不该被当成"用户在这个号下勾过的东西"恢复回来。
   useEffect(() => {
     wsMemo.current.clear();
+    // 找视频那份同理：行上的「本地已有 N 条评论 / 已在运营」和勾选都是按上一个号算的
+    discoverMemo.current = null;
     setDraftPreset(null);
   }, [account]);
 
@@ -649,7 +660,14 @@ export default function App() {
                 {view === 'queue' && (
                   <QueueView state={queueState} status={status} actions={actions} busy={busy} />
                 )}
-                {view === 'discover' && <DiscoverView actions={actions} />}
+                {view === 'discover' && (
+                  <DiscoverView
+                    actions={actions}
+                    queueState={queueState}
+                    memo={discoverMemo.current}
+                    onMemo={(m) => { discoverMemo.current = m; }}
+                  />
+                )}
                 {view === 'targets' && <TargetsView actions={actions} />}
                 {view === 'works' && (
                   <WorksView
@@ -682,7 +700,14 @@ export default function App() {
                 )}
                 {view === 'analytics' && <AnalyticsView actions={actions} />}
                 {view === 'settings' && <SettingsView />}
-                {view === 'connection' && <ConnectionView status={status} actions={actions} busy={busy} />}
+                {view === 'connection' && (
+                  <ConnectionView
+                    status={status}
+                    account={account}
+                    actions={actions}
+                    busy={busy}
+                  />
+                )}
                 {view === 'diagnostics' && <DiagnosticsView info={info} status={status} actions={actions} />}
               </>
             )}
