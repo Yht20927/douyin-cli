@@ -12,6 +12,9 @@
 //   - 计数从 events 表派生 → 跨进程、跨重启都成立，不依赖内存状态
 //   - 违规时返回**可读的原因**，界面直接展示，不必再维护一份文案
 //   - 命令入口也会调用（见 assertWritable），裸调 `node cli.js post` 同样跳不掉
+//   - 每条规则的**生效状态**是明确的（硬强制 / 只提示，见 运营规则说明.md §1）：
+//     轮次上限 `dailyRounds` 只提示、不管量；真正管量的是 `dailyWriteQuota`
+//     与触顶冷却。别把"提示"当成闸门，也别指望"闸门"会提示。
 //
 // 会话内状态（连续跳过次数）不持久化，因为它描述的是"当前这一轮正在做什么"，
 // 进程重启后本来就该重新计。
@@ -32,6 +35,25 @@ function eventsModule() { return require('../memory/events'); }
 function commentsModule() { return require('../memory/comments'); }
 function usersModule() { return require('../memory/users'); }
 function corpusModule() { return require('../memory/corpus'); }
+// 写操作的账号归属要查它（见 scopeByAccount）—— 同样必须延迟 require
+function videosModule() { return require('../memory/videos'); }
+
+/**
+ * 毫秒时间戳 → "35 分钟" / "3 天"这样的短语，用于拦截理由里指代"什么时候"。
+ *
+ * 纯文案函数：运营规则只返回可读原因（见文件头"违规时返回可读的原因"），
+ * 而直接把 `posted_at` 那个 13 位数字端上界面，等于让运营者自己心算日期。
+ */
+function agoWords(ts) {
+  const ms = Number(ts);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const min = Math.floor((Date.now() - ms) / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return `${min} 分钟前`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} 小时前`;
+  return `${Math.floor(h / 24)} 天前`;
+}
 
 /**
  * 写操作命令族（口径必须与 core/risk-control 的同名集合一致 ——
@@ -163,9 +185,77 @@ function createPolicyEngine(opts = {}) {
   // ═══════════════════════════════════════════════════════════
 
   /**
-   * 当前策略全景。界面与 IPC 都用它，保证只有一处算账。
+   * 一笔写操作是**哪个执行账号**做的。
+   *
+   * ⚠️ **不能看 `events.uid`** —— 那个字段装的是**被回复的评论者**
+   * （`core/commands/post.js` 把 targetUid 传进 audit，`core/audit.js` 原样落进
+   * `events.uid`；「同一用户每轮 ≤1 条」正是靠它）。拿它跟执行账号比，
+   * 结果恒为"不相等"→ 你自己回复的每一条都不计入配额，只剩点赞/删除那些
+   * uid 为空的行被算上 —— 配额被大幅放松，是危险的方向。
+   *
+   * 正确的归属是**这个事件操作的那个视频是谁在运营**：`videos.ops_uid`
+   * （"本机以哪个号拉取/运营过这个视频"）。这也是全仓统一的口径 ——
+   * 运营对象的账号隔离用的就是它（见 `core/data/views.js` 的"按 ops_uid 隔离"），
+   * v14 给 drafts 回填 account_uid 也用它，理由都是同一句：
+   * 别人的视频没有归属账号，只能靠"是哪次操作、哪个账号"。
+   *
+   * @param {object} row
+   * @param {Map<string,string|null>} cache - awemeId → ops_uid，同一个视频只查一次
+   * @returns {string|null} 查不到归属时返回 null，由调用方决定并入谁
    */
-  function stats() {
+  function ownerOfRow(row, cache) {
+    const awemeId = row && row.awemeId != null ? String(row.awemeId) : '';
+    if (!awemeId) return null;
+    if (cache.has(awemeId)) return cache.get(awemeId);
+    let owner = null;
+    try {
+      const v = videosModule().get(awemeId);
+      owner = v && v.opsUid != null ? String(v.opsUid) : null;
+    } catch (e) {
+      // 查不到就当作"归属不明"（并入当前账号，宁可多算）。这里**不抛**：
+      // 归属查不动不该让整个 stats() 失败，那会让界面上一片空白，
+      // 而空白会被读成"今天还没写"——比多算危险得多。
+      logger.debug('[policy] 查视频归属账号失败: ' + e.message);
+    }
+    cache.set(awemeId, owner);
+    return owner;
+  }
+
+  /**
+   * 把写操作行按"执行账号"分区。
+   *
+   * ⚠️ 不在 SQL 里过滤，而是取全量在 JS 里分 —— 有一批行**查不到归属**
+   * （点赞不带 aweme_id、视频不在库里、ops_uid 为空，实测都出现过）。
+   * SQL 过滤会把它们整批丢掉，于是"按账号统计"变成"少算几条"= 配额被放松，
+   * 那是危险的方向。所以：**归属不明的行并入当前账号**（宁可多算），
+   * 只排除明确归属着别的账号的行。
+   *
+   * @param {Array<{awemeId?:string}>} rows
+   * @param {string|null} [accountUid] - 空 = 不分区（CLI 与未知账号时最严）
+   */
+  function scopeByAccount(rows, accountUid) {
+    if (!accountUid) return { mine: rows, unattributed: 0 };
+    const key = String(accountUid);
+    const mine = [];
+    let unattributed = 0;
+    const cache = new Map();
+    for (const r of rows) {
+      const owner = ownerOfRow(r, cache);
+      if (!owner) { unattributed++; mine.push(r); continue; }
+      if (owner === key) mine.push(r);
+    }
+    return { mine, unattributed };
+  }
+
+  /**
+   * 当前策略全景。界面与 IPC 都用它，保证只有一处算账。
+   *
+   * @param {object} [opts]
+   * @param {string|null} [opts.accountUid] - 执行账号。传了就只算这个号
+   *   （加上那些没登记账号的行），不传 = 全账号合算，是最严的方向。
+   */
+  function stats(opts = {}) {
+    const accountUid = opts.accountUid == null || opts.accountUid === '' ? null : String(opts.accountUid);
     const cfg = p();
     const t0 = todayStart();
     const ts = now();
@@ -177,9 +267,16 @@ function createPolicyEngine(opts = {}) {
 
     const todayRead = queryWritesSafe({ since: t0, status: 'success' });
     if (todayRead.failed) readError = readError || '今日写操作记录';
-    const todayWrites = todayRead.rows;
+    const scoped = scopeByAccount(todayRead.rows, accountUid);
+    const todayWrites = scoped.mine;
     const timeline = todayWrites.map(r => r.ts);
-    const rounds = summarizeRounds(timeline, cfg.roundCooldownSec * 1000);
+    // 轮 = 一批连续写操作：写满 roundMaxWrites 条这一轮就结束，冷却 roundCooldownSec
+    // 秒后的第一笔开启新一轮。空闲不断轮 —— 见 rounds.js 文件头那两次改错的记录。
+    const rounds = summarizeRounds(timeline, {
+      maxPerRound: cfg.roundMaxWrites,
+      cooldownMs: cfg.roundCooldownSec * 1000,
+      now: ts,
+    });
 
     // 熔断：窗口内失败的写操作次数
     const cb = cfg.circuitBreaker || {};
@@ -198,27 +295,36 @@ function createPolicyEngine(opts = {}) {
       readError = readError || '风控拦截记录';
     }
 
-    // 单轮触顶后的冷却剩余时间
-    const cooldownMs = cfg.roundCooldownSec * 1000;
-    const roundFull = rounds.currentSize >= cfg.roundMaxWrites;
-    const cooldownRemainingMs = roundFull && rounds.lastTs
-      ? Math.max(0, rounds.lastTs + cooldownMs - ts)
-      : 0;
+    // 单轮触顶后的冷却剩余时间 —— 由 rounds.js 一处算出（只有它知道"这一批写满没有"）
+    const cooldownRemainingMs = rounds.cooldownRemainingMs;
 
     // 节奏下限的剩余等待（来自 risk-control，与 intervals.write 同源）
     let nextWriteAllowedInMs = 0;
     try { nextWriteAllowedInMs = riskControl.msUntilNext('write'); } catch (e) { /* 忽略 */ }
 
     const roundsUsed = rounds.count;
-    const startingNewRound = roundFull || rounds.count === 0;
+    const startingNewRound = rounds.startingNewRound;
 
+    // 轮次是**告警**不是闸门：超过阈值只出黄条，不拦写操作。
+    // 真正硬拦量的是 dailyWriteQuota、触顶冷却，以及下面两道熔断。
     let warning = null;
     if (readError) {
       warning = `策略数据不可读（${readError}），已停止写操作`;
     } else if (roundsUsed > (cfg.riskEscalateAfterRounds || 2)) {
       warning = `本日已进行 ${roundsUsed} 轮，风控概率显著上升，建议今天不再写`;
-    } else if (roundFull && roundsUsed >= (cfg.dailyRounds || 3)) {
-      warning = `本日轮次已用尽（${roundsUsed}/${cfg.dailyRounds}）`;
+    } else if (roundsUsed >= (cfg.dailyRounds || 3)) {
+      // 这条只有在"风控升级"那条没先命中时才会走到（两条都只是提示）。
+      // 它让 dailyRounds 这个数字仍然有含义 —— 它是个提示阈值，不是上限闸门。
+      //
+      // 刻意**不**加 `startingNewRound` 这个条件（曾经加过）：那样只有"下一笔
+      // 恰好要开新一轮"时才提示，用户在一个批次中途反而看不到已达阈值的黄条。
+      // 提示要及时，闸门才需要精确。
+      warning = `本日轮次已达 ${roundsUsed}/${cfg.dailyRounds}，建议明天再继续`;
+    }
+    if (scoped.unattributed > 0) {
+      warning = warning
+        ? `${warning}（另有 ${scoped.unattributed} 条写操作查不到归属账号，已并入本账号统计）`
+        : `${scoped.unattributed} 条写操作查不到归属账号，已并入本账号统计（宁可多算，避免漏掉配额）`;
     }
 
     return {
@@ -231,18 +337,40 @@ function createPolicyEngine(opts = {}) {
       dailyWriteQuota: cfg.dailyWriteQuota,
       writesToday: todayWrites.length,
       writesRemaining: Math.max(0, cfg.dailyWriteQuota - todayWrites.length),
-      // 轮次
+      // 轮次（口径见 rounds.js：一轮 = 一批连续写操作，写满 roundMaxWrites 条即结束）
       dailyRounds: cfg.dailyRounds,
       roundsToday: roundsUsed,
       roundsRemaining: Math.max(0, cfg.dailyRounds - roundsUsed),
       roundMaxWrites: cfg.roundMaxWrites,
+      /**
+       * 「本轮已写几条」—— 当前这一批的条数。
+       *
+       * 写满 roundMaxWrites 条这一轮就结束，冷却 roundCooldownSec 秒后下一笔开启
+       * 新一轮。所以**冷却期间这个数会停在满值不归零**，那是对的：冷却结束前它仍是
+       * 本轮的第 N 条。界面别再把它当"近 N 分钟的滑窗"。
+       */
       roundWrites: rounds.currentSize,
       roundWritesRemaining: Math.max(0, cfg.roundMaxWrites - rounds.currentSize),
+      /** 本次统计的执行账号（null = 全账号合算） */
+      accountUid,
+      /** 今日有多少条写操作查不到归属账号（已被并入本账号统计，不静默丢） */
+      unattributedWrites: scoped.unattributed,
       roundCooldownSec: cfg.roundCooldownSec,
       /** 单轮触顶后还需冷却多久（毫秒，0 表示不需要） */
       cooldownRemainingMs,
+      /**
+       * 冷却结束的**绝对时刻**（epoch ms，0 = 不需要冷却）。
+       *
+       * 界面上的倒计时必须用"绝对时刻 - 本地 now"，不能用上面那个"还剩多久"：
+       * 后者是 stats() 被调用那一刻的快照，而主进程只在队列边界推一次
+       * （入队/开始/等待/恢复/结束），于是倒计时会冻在推送时的数字上 ——
+       * 队列页那个全页最大的数字曾经就是这样不动的。
+       */
+      cooldownUntil: cooldownRemainingMs > 0 ? ts + cooldownRemainingMs : 0,
       /** 距下次可写还需等待（毫秒，节奏下限，0 表示可立即写） */
       nextWriteAllowedInMs,
+      /** 同上：节奏下限到点的绝对时刻（epoch ms），给界面倒计时用 */
+      nextWriteAllowedAt: nextWriteAllowedInMs > 0 ? ts + nextWriteAllowedInMs : 0,
       /** 连过又断的轮次判定：是否即将开启新一轮 */
       startingNewRound,
       // 熔断
@@ -271,11 +399,13 @@ function createPolicyEngine(opts = {}) {
   /**
    * 判断现在能不能写。不等待、不抛错，只报告。
    *
-   * @param {object} [meta] - { uid?, awemeId?, text?, cid? }
+   * @param {object} [meta] - { uid?, awemeId?, text?, cid?, accountUid? }
+   *   ⚠️ `uid` 是**被回复的那个评论者**，`accountUid` 才是**本机正在执行的抖音账号** ——
+   *   两者搞混会让"按账号统计配额"变成"按陌生人统计"。
    * @returns {{ok:boolean, blockers:Array<{reason:string,action:'stop'|'wait'|'rewrite'}>, warnings:string[], waitMs:number, stats:object}}
    */
   function beforeWrite(meta = {}) {
-    const s = stats();
+    const s = stats({ accountUid: meta.accountUid });
     const cfg = p();
     const blockers = [];
     const warnings = [];
@@ -320,13 +450,12 @@ function createPolicyEngine(opts = {}) {
       });
     }
 
-    // ── 轮次与冷却 ──
-    if (s.startingNewRound && s.roundsToday >= s.dailyRounds) {
-      blockers.push({
-        reason: `今日轮次已用尽 ${s.roundsToday}/${s.dailyRounds}，且当前轮已满 — 明天再继续`,
-        action: 'stop',
-      });
-    } else if (s.cooldownRemainingMs > 0) {
+    // ── 单轮触顶与冷却 ──
+    // ⚠️ 这里**刻意没有**"每日轮次用尽就停写"这一条。`dailyRounds` 是告警不是闸门
+    // （见 stats() 的 warning 与 运营规则说明.md §1）。改造前它在这里硬拦，而拦的
+    // 依据（空闲断轮）本身就是错的 —— 结果是想干活的人被拦、想绕的人拦不住。
+    // 真正硬拦量的是 dailyWriteQuota、下面这条触顶冷却，以及两道熔断。
+    if (s.cooldownRemainingMs > 0) {
       // 分两个数记：cooldownWaitMs 是"轮次冷却"，cadenceWaitMs 是"写操作最小间隔"。
       // 两者由不同的层负责等待 —— 冷却由命令入口的 assertWritable 等，
       // 最小间隔由 risk-control.enforceDelay 等。混成一个数会让 assertWritable
@@ -355,14 +484,18 @@ function createPolicyEngine(opts = {}) {
     }
     waitMs = Math.max(cooldownWaitMs, cadenceWaitMs);
 
-    // ── 单轮内细分的配额 ──
+    // ── 单条对象上的细分配额 ──
+    //
+    // 窗口是**今日**，不是"本轮"。这两个上限曾经挂在"本轮起点"上，而"轮"的定义
+    // 改过两次（见 rounds.js 文件头）—— 上限的口径跟着轮一起漂，同一份数据能得出
+    // 三种不同的"本轮已回几条"。按天算之后它不再随轮的定义变化，行为可预测。
     if (!stateUnknown && meta.uid) {
-      const r = queryWritesSafe({ since: s.roundsToday ? currentRoundStart() : todayStart(), status: 'success', uid: meta.uid });
+      const r = queryWritesSafe({ since: todayStart(), status: 'success', uid: meta.uid });
       if (r.failed) {
-        blockers.push({ reason: '无法确认该用户本轮已被回复几次，已拒绝本次写入', action: 'stop' });
+        blockers.push({ reason: '无法确认该用户今日已被回复几次，已拒绝本次写入', action: 'stop' });
       } else if (r.rows.length >= cfg.maxPerUidPerRound) {
         blockers.push({
-          reason: `本轮已回复过该用户 ${r.rows.length} 次（上限 ${cfg.maxPerUidPerRound}）`,
+          reason: `今日已回复过该用户 ${r.rows.length} 次（上限 ${cfg.maxPerUidPerRound}）`,
           action: 'stop',
         });
       }
@@ -370,19 +503,19 @@ function createPolicyEngine(opts = {}) {
     if (!stateUnknown && meta.awemeId) {
       // 只数**回复类**写操作。改造前把整个写命令族（含 like/unlike/delete-comment）
       // 都算进来，而 like 也带 aweme_id —— 于是在同一个视频上反复点赞 30 次之后，
-      // 发任何一条回复都会被拦下，提示"本轮在该视频下已回复 30 条"，
+      // 发任何一条回复都会被拦下，提示"在该视频下已回复 30 条"，
       // 而实际上一条回复都没发过。
       const r = queryWritesSafe({
-        since: s.roundsToday ? currentRoundStart() : todayStart(),
+        since: todayStart(),
         status: 'success',
         awemeId: meta.awemeId,
         commands: REPLY_COMMANDS,
       });
       if (r.failed) {
-        blockers.push({ reason: '无法确认该视频本轮已被回复几条，已拒绝本次写入', action: 'stop' });
+        blockers.push({ reason: '无法确认该视频今日已被回复几条，已拒绝本次写入', action: 'stop' });
       } else if (r.rows.length >= cfg.maxPerVideoPerRound) {
         blockers.push({
-          reason: `本轮在该视频下已回复 ${r.rows.length} 条（上限 ${cfg.maxPerVideoPerRound}）`,
+          reason: `今日在该视频下已回复 ${r.rows.length} 条（上限 ${cfg.maxPerVideoPerRound}）`,
           action: 'stop',
         });
       }
@@ -426,8 +559,16 @@ function createPolicyEngine(opts = {}) {
       try {
         const hit = corpusModule().findByText(meta.text);
         if (hit) {
+          // ⚠️ 这里原本写的是 `hit.replyCid ? 'cid ' + hit.replyCid : '语料库去重'`，
+          // 而 findByText 只 SELECT 了 id / reply_text / posted_at / outcome / aweme_id，
+          // 返回对象里**没有 replyCid** —— 那个三元恒走右边，界面上看到的永远是
+          // "（语料库去重）"这句内部术语。与 §2.25 的 events.uid、§2.22 的闸门名单同源：
+          // 字段名看着像、实际没有，于是分支永远不成立而且不报错。
+          // 运营者真正需要的是"上次那句发于何时、发到哪个视频"，这两个字段是取得到的。
+          const where = hit.awemeId ? `视频 ····${String(hit.awemeId).slice(-6)}` : '另一个视频';
           blockers.push({
-            reason: `这句话之前已经发过（${hit.replyCid ? 'cid ' + hit.replyCid : '语料库去重'}），换一句`,
+            reason: `这句话之前已经发给过${where}（${agoWords(hit.postedAt) || '时间不详'}）`
+              + ' —— 同一句话只用一次，改几个字再发',
             action: 'rewrite',
           });
         }
@@ -465,17 +606,6 @@ function createPolicyEngine(opts = {}) {
       cadenceWaitMs,
       stats: s,
     };
-  }
-
-  /** 当前轮次的起始时间（无轮次时退化为今日零点） */
-  function currentRoundStart() {
-    const cfg = p();
-    // 读不到就退化成今日零点：窗口**变宽** → 数出来的条数只多不少 → 拦得更严。
-    // 反过来（退化成"刚才"、窗口近乎为空）会把配额判成 0，那是危险的方向。
-    const { rows, failed } = queryWritesSafe({ since: todayStart(), status: 'success' });
-    if (failed) return todayStart();
-    const rounds = summarizeRounds(rows.map(r => r.ts), cfg.roundCooldownSec * 1000);
-    return rounds.currentStartedAt || todayStart();
   }
 
   /**
@@ -637,7 +767,6 @@ function createPolicyEngine(opts = {}) {
     resetSession,
     // 测试用
     _todayStart: todayStart,
-    _currentRoundStart: currentRoundStart,
   };
 }
 

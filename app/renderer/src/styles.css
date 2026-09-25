@@ -539,6 +539,52 @@ code {
 /* 出问题的任务行：左侧一道状态色细条 */
 .row-problem { box-shadow: inset 2.5px 0 0 var(--bad); }
 
+/* ── 任务行内的明细：失败下一步 / 原始信息 / 进度 / 拦截原因 / 提醒 ──
+   下面这批类名（row-progress / row-blockers / row-blocker / row-warnings）
+   此前**一条规则都没有** —— 元素一直在渲染，只是挤在一起没有层次，
+   读起来像同一行小字的延长线（它们记在 tests/renderer-static.test.js
+   的欠债表里，这次一并修掉）。
+   刻意不上色："下一步"与"原始信息"不是状态，
+   屏幕上唯一的彩度留给能不能发（见 DESIGN.md The one rule）。 */
+.row-next {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  list-style: disc;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.row-next li { margin: 1px 0; }
+
+.row-raw { margin: 6px 0 0; }
+.row-raw summary {
+  font-size: var(--fs-xs);
+  color: var(--text-4);
+  cursor: pointer;
+}
+.row-raw pre {
+  margin: 5px 0 0;
+  padding: 7px 9px;
+  max-height: 120px; overflow: auto;
+  background: var(--sunken);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  color: var(--text-3);
+  white-space: pre-wrap; word-break: break-all;
+}
+
+.row-progress { margin-top: 7px; }
+.row-blockers { margin-top: 7px; display: flex; flex-direction: column; gap: 4px; }
+.row-blocker {
+  display: flex; align-items: center; gap: 7px;
+  font-size: var(--fs-sm); color: var(--text-2);
+}
+.row-warnings {
+  margin-top: 6px;
+  font-size: var(--fs-sm); line-height: 1.5;
+  color: var(--text-3);
+}
+
 /* ── 连接页：账号头像 ── */
 .avatar {
   width: 38px; height: 38px;
@@ -776,6 +822,17 @@ code {
 /* 输入框吃掉剩余宽度：搜索框窄了没法看清自己输的是什么 */
 .discover-input { flex: 1; min-width: 220px; }
 .discover-row { align-items: flex-start; }
+/* 勾选列：不给勾选的行（已经在运营的）也摆一个空占位，
+   否则那几行的封面会比其他行往左挪一格 */
+.discover-pick { display: flex; align-items: flex-start; padding: 2px 8px 0 2px; cursor: pointer; flex: none; min-width: 22px; }
+.discover-pick input {
+  width: 14px; height: 14px; margin: 2px 0 0;
+  accent-color: var(--text); cursor: pointer;
+}
+/* 本页计数 + 全选 + 去「运营对象」那一行。
+   批量操作条本身不另起一套长相：直接复用 .ws-bulkbar / .drafts-bulkbar-main
+   与小号按钮 .drafts-pickall —— 三处本来就是同一个东西 */
+.discover-tools { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
 /* 封面比作品列表的小一号：这里是"快速扫一眼认出来"，不是详细浏览 */
 .discover-cover { width: 44px; height: 58px; }
 .discover-sub { font-family: inherit; }
@@ -974,6 +1031,8 @@ code {
 /* 查重按钮贴着字数那一行：它是"写完之后顺手确认一下"的动作 */
 .reply-dupcheck { margin-left: 10px; padding: 1px 8px; font-size: var(--fs-sm); }
 .reply-dupresult { margin-top: 8px; }
+/* 编辑区的"现在生成不了"提示：与查重结果同一处、同一间距 */
+.reply-genblock { margin-top: 8px; }
 .reply-dupold { margin-top: 6px; color: var(--text-3); }
 /* AI 给的优先级：比标签轻，但比纯文字重 */
 .cmt-prio { color: var(--text-3); font-size: var(--fs-xs); }
@@ -1119,9 +1178,11 @@ textarea.input { line-height: 1.6; }
 .drafts-tools { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
 .drafts-pickall { font-size: var(--fs-xs); padding: 3px 10px; }
 
-/* 批量操作条：有勾选时才出现（与工作区那条同一长相） */
+/* 批量操作条：有勾选时才出现（与工作区那条同一长相）。
+   可以换行：这条现在有"发布所选 / 删除所选 / 取消选择"三颗按钮加一句说明，
+   不换行的话窄窗口下按钮会被挤出容器（挤出去的那颗用户根本看不见）。 */
 .drafts-bulkbar {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 9px 13px;
   border: 1px solid var(--line-2);
   border-radius: var(--r-md);
@@ -1129,6 +1190,20 @@ textarea.input { line-height: 1.6; }
   box-shadow: var(--sh-1);
 }
 .drafts-bulkbar-main { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-2); }
+
+/* 批量发布进度：进度条 + 一颗按钮并排，按钮不被长文案挤扁；
+   未完成明细换行独占一整行，长相沿用工作台批量结果的 .bulk-result。 */
+.drafts-bulkprogress {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 10px 14px; margin-bottom: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  box-shadow: var(--sh-1);
+}
+.drafts-bulkprogress .progress { flex: 1; min-width: 220px; }
+.drafts-bulkprogress .btn { flex: none; }
+.drafts-bulkprogress .bulk-result { flex: 0 0 100%; margin-top: 0; }
 
 /* 按视频分组：组头 + 一个 .list 卡片。
    分组的目的只是"同一视频的草稿挨在一起并可以收起"，

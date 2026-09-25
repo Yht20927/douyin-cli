@@ -7,6 +7,7 @@ import Spinner from '../components/Spinner.jsx';
 import ProgressBar from '../components/ProgressBar.jsx';
 import Notice from '../components/Notice.jsx';
 import { ago, fileNameOf } from '../format.js';
+import { failText } from '../errors.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
 /**
@@ -52,7 +53,14 @@ const TABS = [
   { key: 'replied', label: '已回复' },
 ];
 
-export default function WorkspaceView({ awemeId, queueState, actions, onBack }) {
+/**
+ * 工作台。
+ *
+ * `memo` / `onMemo`：这一页的浏览状态（标签 / 搜索 / 排序 / 勾选）存在 App 里、
+ * 按 awemeId 分份。理由是这个组件会被整个卸载（去草稿箱、回列表页），
+ * 全清的话运营者来回一趟就要重敲搜索词、重选排序、把评论一条条重新勾上。
+ */
+export default function WorkspaceView({ awemeId, queueState, actions, onBack, memo, onMemo }) {
   const [video, setVideo] = useState(null);
   const [stats, setStats] = useState(null);
   const [comments, setComments] = useState([]);
@@ -66,11 +74,11 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   const [loading, setLoading] = useState(false);
   /** 存草稿的进行中态（与列表刷新是两件事，分开） */
   const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState('pending');
-  const [search, setSearch] = useState('');
+  const [tab, setTab] = useState(() => (memo && memo.tab) || 'pending');
+  const [search, setSearch] = useState(() => (memo && memo.search) || '');
   /** 输入框的即时值；防抖后才写进 search 触发查询 */
-  const [searchInput, setSearchInput] = useState('');
-  const [order, setOrder] = useState('priority');
+  const [searchInput, setSearchInput] = useState(() => (memo && memo.searchInput) || '');
+  const [order, setOrder] = useState(() => (memo && memo.order) || 'priority');
   const [orders, setOrders] = useState([]);
   /** 列表的元信息：截断前的真实条数、是否被截断 */
   const [listMeta, setListMeta] = useState(null);
@@ -107,12 +115,26 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   const [liked, setLiked] = useState(null);
   /** 当前的回复来源配置（模式 / 固定内容条数 / 图片开关），用于在按钮旁讲清楚会怎么生成 */
   const [replyDesc, setReplyDesc] = useState(null);
+  /**
+   * 固定回复的复用间隔（「同一条至少隔几条才再用」）。
+   *
+   * reply:describe 不带这个数，而它恰好决定"勾了 30 条、列表只有 3 条"时
+   * 后面那些取不取得到 —— 提示要说准，不能笼统写"会循环使用"。
+   */
+  const [fixedMinGap, setFixedMinGap] = useState(0);
 
   // ── 批量 ──
   /** 勾选的评论 cid（Set，用新对象替换触发重渲染） */
-  const [picked, setPicked] = useState(() => new Set());
+  const [picked, setPicked] = useState(() => new Set((memo && memo.picked) || []));
   /** 正在跑的批量生成任务 id */
   const [bulkTaskId, setBulkTaskId] = useState(null);
+  /**
+   * 这个批量任务走的是哪条来源：
+   *   'setting' —— 按全局 reply.mode 生成（可能是 AI，可能要等十几分钟）
+   *   'fixed'   —— 只这一批用固定回复列表（--mode 覆盖，不调 AI）
+   * 结果面板要按它措辞，否则那句"批量生成完成"永远在说另一条链路的话。
+   */
+  const [bulkKind, setBulkKind] = useState('setting');
   /** 批量生成的结果摘要（生成/跳过/失败各多少条 + 明细） */
   const [bulk, setBulk] = useState(null);
   const bulkHandled = useRef(null);
@@ -172,12 +194,24 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
     if (c.ok) {
       setComments(c.data.items || []);
       setListMeta(c.data);
+      // 勾选以列表为准，看不见的一条都不留 —— 换筛选、切页回来（从 App 恢复）、
+      // 以及别的任务改过本地数据，三种情况共用这一条规则。
+      // 以前是 effect 里无脑清空，代价是"去草稿箱看一眼回来，20 条勾选全没了"。
+      setPicked((prev) => {
+        if (prev.size === 0) return prev;
+        const visible = new Set((c.data.items || []).map(i => i.cid));
+        const kept = [...prev].filter(cid => visible.has(cid));
+        return kept.length === prev.size ? prev : new Set(kept);
+      });
     } else {
+      setNotice(`读取本地数据失败：${failText(c.error, '未知错误')}`);
       setComments([]);
       setListMeta(null);
-      setNotice(`读取本地数据失败：${c.error || '未知错误'}`);
+      // 「勾选 ⊆ 当前列表」这条不变量两个分支都要守：列表都空了还留着
+      // "已勾选 N 条"，那颗批量按钮就是在处理屏幕上不存在的评论
+      setPicked(new Set());
     }
-    if (!v.ok || !s.ok) setNotice(`读取失败：${(v.error || s.error || '未知错误')}`);
+    if (!v.ok || !s.ok) setNotice(`读取失败：${failText(v.error || s.error, '未知错误')}`);
   }
 
   // 搜索防抖：改造前 search 一变就跑 reload()，而 reload 会取 5000 行跑判定树
@@ -201,18 +235,24 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   useEffect(() => { selectedCidRef.current = selectedCid; }, [selectedCid]);
   useEffect(() => { draftTextRef.current = draftText; }, [draftText]);
 
-  // 换筛选 / 换排序 / 换视频之后，之前勾的 cid 可能已经不在眼前这个列表里了。
-  // 留着的话"已选 8 条"与屏幕上看到的东西对不上，点下去还会处理看不见的评论。
+  // 换筛选 / 换排序之后，上一批明细里说的评论可能已经不在眼前这个列表里了 ——
+  // 面板继续挂着就是给看不见的东西背书。勾选不在这里清，doReload 会与列表求交集。
+  useEffect(() => { setBulk(null); }, [tab, search, order]);
+
+  // 浏览状态交回 App（按 awemeId 存）。onMemo 每次渲染都是新函数，所以不进依赖：
+  // 它只是把当前值写进 App 里的一张表，晚一帧没有影响。
   useEffect(() => {
-    setPicked(new Set());
-    setBulk(null);
-    // 全量拉取的结果是"这个作品这次拉到多少条"，换视频还留着就是错的
-    setFull(null);
-  }, [awemeId, tab, search, order]);
+    if (onMemo) onMemo({ tab, search, searchInput, order, picked: [...picked] });
+  }, [tab, search, searchInput, order, picked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 回复来源配置随设置页改动而变，进工作台时取一次就够（切视频会重新挂载）
   useEffect(() => {
     window.dy.reply.describe().then(r => { if (r && r.ok) setReplyDesc(r.data); });
+    window.dy.config.describe().then((r) => {
+      const gap = r && r.ok && r.data.config && r.data.config.reply
+        && r.data.config.reply.fixed && r.data.config.reply.fixed.minGapBetweenReuse;
+      if (Number.isInteger(gap) && gap > 0) setFixedMinGap(gap);
+    });
   }, [awemeId]);
 
   // 队列变化 → 完成自己关心的事情
@@ -241,15 +281,16 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           // 用户手写的一段回复不该因为一次队列失败就消失。
           // 只在编辑框是空的时候放回，免得覆盖用户后来输入的内容。
           if (p.text && !draftTextRef.current.trim()) setDraftText(p.text);
-          setNotice(`发布未完成：${t.error || '未知原因'} —— 内容已放回编辑框`);
+          setNotice(`发布未完成：${failText(t.error, '未知原因')} —— 内容已放回编辑框`);
         } else if (p.kind === 'analyze') {
-          setNotice(`分析未完成：${t.error || '未知原因'}`);
+          setNotice(`分析未完成：${failText(t.error, '未知原因')}`);
         } else if (p.kind === 'delete') {
-          // 删除失败最常见的原因是策略闸门（写间隔没到、当日额度用完、
-          // 或账号不一致），t.error 里已经写清楚了，原样转达
-          setNotice(`删除未完成：${t.error || '未知原因'}`);
+          // 删除失败最常见的原因是策略闸门（写间隔没到、当日额度用完、或账号不一致），
+          // 这些理由本身就写在 t.error 里、已经是人话 —— failText 认不出来的串原样过。
+          // 走它是因为剩下的那一类（桥接没连上、超时）是英文工程串，不该直接端上屏。
+          setNotice(`删除未完成：${failText(t.error, '未知原因')}`);
         } else {
-          setNotice(t.error || '拉取未完成');
+          setNotice(failText(t.error, '拉取未完成'));
         }
       }
     }
@@ -272,7 +313,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           // 拉到的新评论要出现在列表里 —— 本地库才是这一页的数据源
           reload();
         } else {
-          setFull({ error: t.error || '全量拉取未完成' });
+          setFull({ error: failText(t.error, '全量拉取未完成') });
         }
       }
     }
@@ -292,7 +333,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
             if (actions.refreshDrafts) actions.refreshDrafts();
           });
         } else {
-          setBulk({ error: t.error || '批量生成失败' });
+          setBulk({ error: failText(t.error, '批量生成失败') });
         }
       }
     }
@@ -327,7 +368,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
             }
           });
         } else {
-          setNotice(t.error || '生成失败');
+          setNotice(failText(t.error, '生成失败'));
           setGenInfo(null);
         }
       }
@@ -396,7 +437,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
     try {
       const r = await window.dy.data.checkDup(text);
       if (r && r.ok) setDup({ ...r.data, forText: text });
-      else setDup({ error: (r && r.error) || '查重失败', forText: text });
+      else setDup({ error: failText(r && r.error, '查重失败'), forText: text });
     } finally {
       setDupChecking(false);
     }
@@ -419,7 +460,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
       if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
         un();
         if (t.status === 'done') setLiked(unlike ? 'unliked' : 'liked');
-        else setNotice(`${unlike ? '取消点赞' : '点赞'}未完成：${t.error || '未知原因'}`);
+        else setNotice(`${unlike ? '取消点赞' : '点赞'}未完成：${failText(t.error, '未知原因')}`);
       }
     });
   }
@@ -494,29 +535,40 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
   }
 
   /**
-   * 批量生成。
+   * 批量把选中的评论做成草稿。两种来源共用这一条链路：
    *
-   * 走 getReply 的 --cids + --to-draft：**逐条**按 reply.mode 生成（AI / 固定内容 /
-   * 随机循环都生效），每条结果单独存进草稿箱。发布不在这里做 ——
-   * 生成的产物全部进草稿箱，由人逐条确认后发布（D7）。
+   *   startBulk('setting')  按全局 reply.mode 生成（AI / 固定 / 混合都生效）
+   *   startBulk('fixed')    **只这一批**用固定回复列表 —— 用 getReply 的 `--mode fixed`
+   *                         覆盖，不改全局设置。用户平时要 AI 逐条写、此刻只想给
+   *                         一堆评论统一回一句准备好的话，这是常态而不是例外。
+   *
+   * 都走 getReply 的 --cids + --to-draft：每条结果单独存进草稿箱，
+   * 发布不在这里做 —— 生成的产物全部进草稿箱，由人逐条确认后发布（D7）。
    *
    * 之所以不在界面上循环入队 N 个单条任务：那样队列里会多出 N 条互不相干的任务，
    * 而且每条都要自己传 cid、自己认领结果，进度也只能看到"1 条正在跑"。
    * 一条任务内部逐条处理，界面上就是干净的一条进度。
+   *
+   * @param {'setting'|'fixed'} kind
    */
-  async function bulkGenerate() {
+  async function startBulk(kind) {
     const cids = [...picked];
-    if (!cids.length) return;
+    if (!cids.length || bulkTaskId) return;
+    const argv = [awemeId, '--cids', cids.join(','), '--to-draft'];
+    if (kind === 'fixed') argv.push('--mode', 'fixed');
     const id = await actions.enqueue({
       command: 'getReply',
-      argv: [awemeId, '--cids', cids.join(','), '--to-draft'],
-      label: `批量生成 ${cids.length} 条回复`,
+      argv,
+      label: `${kind === 'fixed' ? '固定回复存草稿' : '批量生成'} ${cids.length} 条回复`,
     });
     if (!id) return;
     bulkHandled.current = null;
+    setBulkKind(kind);
     setBulkTaskId(id);
     setBulk(null);
-    setNotice(`已加入队列 —— ${cids.length} 条逐条生成，完成后全部进草稿箱`);
+    setNotice(kind === 'fixed'
+      ? `已加入队列 —— ${cids.length} 条各取一条固定回复存进草稿箱（不调 AI，只用当前这个按钮这一次）`
+      : `已加入队列 —— ${cids.length} 条逐条生成，完成后全部进草稿箱`);
   }
 
   /** 勾选/取消一条 */
@@ -567,7 +619,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
     } finally {
       setSaving(false);
     }
-    setNotice(r.ok ? `已存入草稿箱（#${r.data.id}）` : `保存失败：${r.error}`);
+    setNotice(r.ok ? `已存入草稿箱（#${r.data.id}）` : `保存失败：${failText(r.error, '未知原因')}`);
     // 刷新侧栏的草稿角标 —— 不刷新的话"已存入草稿箱"的提示与角标数字对不上，
     // 用户会怀疑到底存没存进去
     if (r.ok && actions.refreshDrafts) actions.refreshDrafts();
@@ -598,6 +650,36 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
 
   // 纯图回复没有文字，发布按钮不能按"有没有文字"来禁用
   const canPublish = !!(draftText.trim() || (genInfo && genInfo.imagePath));
+
+  /**
+   * 固定回复列表里有几条真的能用。core 判的（被禁用、正文空白、weighted 下权重 0
+   * 都不算），界面不重复这套规则。replyDesc 还没回来时先当作可用 ——
+   * 一个"还在读"的中间态不该把按钮灰掉。
+   */
+  const fixedUsable = (replyDesc && replyDesc.fixed && replyDesc.fixed.usable) || 0;
+  const fixedReady = !replyDesc || fixedUsable > 0;
+  const FIXED_EMPTY = '固定回复列表里还没有可用内容 —— 先到设置页的「回复策略」添加几条，'
+    + '或把被禁用的启用起来';
+  const fixedHint = fixedReady
+    ? '只这一批用固定回复列表：不改全局「回复模式」，也不调 AI，秒完成。'
+      + '结果同样进草稿箱，发布仍由你在草稿箱里确认。'
+    : FIXED_EMPTY;
+
+  /** AI 那条腿通不通（判据在 core/reply-source，界面只读结果）。还在读时先别灰按钮。 */
+  const aiOk = !replyDesc || !replyDesc.ai || replyDesc.ai.ok;
+  /**
+   * 按全局「回复模式」走的那两颗按钮（「生成回复」「批量生成」）现在点下去有没有结果。
+   *
+   * 不拦的话 core 也会拒（llm.complete() 里刚补了同样的检查），但那是入队之后 ——
+   * 占掉一个任务位、等过一轮间隔，才换回一句报错。混合模式不拦：固定列表还能兜底，
+   * 降级这件事由结果里的来源标签说。
+   */
+  const genBlock = !replyDesc ? null
+    : replyDesc.mode === 'fixed' ? (fixedReady ? null : FIXED_EMPTY)
+      : aiOk ? null
+        : (replyDesc.mode === 'hybrid' && fixedUsable > 0) ? null
+          : `${(replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还生成不了'}`
+            + '；把「回复模式」改成「固定内容」不需要它';
 
   return (
     <div className="workspace">
@@ -644,10 +726,11 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           >
             {liked === 'liked' ? '♥ 已点赞' : '♡ 点赞'}
           </button>
-          <button className="btn" onClick={analyzeComments} disabled={!actions.canQueue}
+          <button className="btn" onClick={analyzeComments} disabled={!actions.canQueue || !aiOk}
             title={!actions.canQueue
               ? '浏览器未连接 —— 先到「连接」页接上抖音'
-              : '用 AI 逐条分析本视频的评论（情绪 / 优先级），跑完列表会按优先级重排。要调用 AI，会花时间与 token'}>
+              : !aiOk ? ((replyDesc && replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还调用不了')
+                : '用 AI 逐条分析本视频的评论（情绪 / 优先级），跑完列表会按优先级重排。要调用 AI，会花时间与 token'}>
             用 AI 分析
           </button>
         </div>
@@ -721,7 +804,9 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
           className="input tab-sort"
           value={order}
           onChange={e => setOrder(e.target.value)}
-          title="排序方式"
+          title={order === 'priority' && listMeta && !listMeta.priorityReady
+            ? '排序方式 —— 「优先级」要用 AI 分析写回的那一列，而这个视频的评论还没分析过：现在它等同「点赞最多 + 最新」'
+            : '排序方式'}
         >
           {orders.map(o => <option key={o.name} value={o.name}>{o.label}</option>)}
         </select>
@@ -739,6 +824,14 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
             {listMeta.truncated && ' · 已截断，缩小筛选范围可看到其余'}
             {listMeta.scanCapped && ' · ⚠ 数据量超出统计上限，计数可能偏小'}
             {listMeta.unknownFilter && ` · ⚠ 未知筛选「${listMeta.unknownFilter}」，已按「全部」显示`}
+            {/* 排序说"优先级"而那一列全是 NULL，是一件会说谎的事：
+                列表看起来真的按某种顺序排着，没人会怀疑。悬停提示没人找，所以这句必须可见。 */}
+            {order === 'priority' && listMeta.priorityReady === false && comments.length > 0 && (
+              <span className="text-bad">
+                · 「优先级」现在没有数据（这些评论还没跑过 AI 分析），实际是按点赞与时间排的
+                —— 用页头的「用 AI 分析」补上
+              </span>
+            )}
           </>
         )}
         {comments.some(c => !c.replied && c.decision
@@ -758,14 +851,35 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
       {picked.size > 0 && (
         <div className="ws-bulkbar">
           <span className="ws-bulkbar-main">
-            已勾选 <b className="text-strong num">{picked.size}</b> 条
+            已勾选 <b className="text-strong num">{picked.size}</b>
+            {/* 上限要在动手前就看得见。以前只有勾到第 51 条才会蹦出一句话，
+                而那之前用户以为自己是随便勾的 */}
+            <span className="muted num"> / {MAX_PICK}</span> 条
+            {picked.size >= MAX_PICK && <span className="text-bad">（已到一次能生成的上限，先取消几条或分两批）</span>}
             {replyDesc && (
               <span className="muted">
-                　·　生成方式：
+                　·　「批量生成」按当前设置走（
                 {replyDesc.mode === 'ai' ? 'AI 生成'
                   : replyDesc.mode === 'fixed' ? '固定内容'
-                    : `混合（AI 占 ${Math.round(replyDesc.hybridRatio * 100)}%）`}
-                。生成结果全部进草稿箱，发布仍由你逐条确认。
+                    : `混合，AI 占 ${Math.round(replyDesc.hybridRatio * 100)}%`}
+                ）；「用固定回复存草稿」只这一批用固定列表
+                {fixedUsable > 0 && `（${fixedUsable} 条可用${fixedMinGap > 0 ? `，同一条至少隔 ${fixedMinGap} 条才再用` : ''}）`}
+                。两者都只进草稿箱，发布由你在草稿箱里确认。
+                {!fixedReady && (
+                  <b className="text-bad">　{FIXED_EMPTY}。</b>
+                )}
+                {/* 拦下生成这件事必须写在明面上：灰掉的按钮配一句悬停提示，
+                    对不懂技术的人等于没有 —— 他不会去悬停一颗他不敢点的按钮 */}
+                {!aiOk && replyDesc.mode !== 'fixed' && (
+                  <b className="text-bad">
+                    　{(replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还生成不了'}。
+                  </b>
+                )}
+                {genBlock && (
+                  <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('settings')}>
+                    去「设置」
+                  </button>
+                )}
               </span>
             )}
           </span>
@@ -782,7 +896,13 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
               取消
             </button>
           )}
-          <button className="btn btn-primary" onClick={bulkGenerate} disabled={!!bulkTaskId}>
+          <button className="btn" onClick={() => startBulk('fixed')}
+            disabled={!!bulkTaskId || !fixedReady} title={fixedHint}>
+            用固定回复存草稿
+          </button>
+          <button className="btn btn-primary" onClick={() => startBulk('setting')}
+            disabled={!!bulkTaskId || !!genBlock}
+            title={genBlock || '按当前「回复模式」逐条生成，结果进草稿箱，发布由你确认'}>
             {bulkTaskId
               ? <><Spinner size={12} />生成中…</>
               : `批量生成 ${picked.size} 条`}
@@ -809,22 +929,31 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
         <div className={`notice ${bulk.error || (bulk.failed && bulk.failed.length) ? 'notice-warn' : ''}`}>
           <div>
             {bulk.error
-              ? `批量生成没做成：${bulk.error}`
+              ? `${bulkKind === 'fixed' ? '固定回复没能存进草稿箱' : '批量生成没做成'}：${bulk.error}`
               : (
                 <>
                   <b>
-                    批量生成完成：生成 {bulk.generated.length} 条
+                    {bulkKind === 'fixed' ? '固定回复已批量存好' : '批量生成完成'}：生成 {bulk.generated.length} 条
                     （存入草稿箱 {bulk.saved} 条）
                     {bulk.skipped.length > 0 && `、跳过 ${bulk.skipped.length} 条`}
                     {bulk.failed.length > 0 && `、失败 ${bulk.failed.length} 条`}
                   </b>
-                  {bulk.saved > 0 && ' —— 到「草稿箱」里逐条确认后发布。'}
+                  {bulk.saved > 0 && (
+                    <>
+                      —— 可以勾选多条一次发完。
+                      {/* 光说"到草稿箱里确认"等于没说：用户还得自己想起侧栏里有这么一页。
+                          与「找视频」页的「去「运营对象」」同一个道理。 */}
+                      <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('drafts')}>
+                        去「草稿箱」
+                      </button>
+                    </>
+                  )}
                   <div className="bulk-result">
                     {bulk.generated.map(g => (
                       <div className="bulk-result-row" key={g.cid}>
                         <b className="text-ok">{g.draftId ? '已存草稿' : '未存草稿'}</b>
                         <span>{g.text || '（无文字，纯图）'}</span>
-                        {g.draftError && <span className="text-bad">{g.draftError}</span>}
+                        {g.draftError && <span className="text-bad">{failText(g.draftError, '存草稿失败')}</span>}
                       </div>
                     ))}
                     {bulk.skipped.map(s => (
@@ -834,7 +963,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                     ))}
                     {bulk.failed.map(f => (
                       <div className="bulk-result-row" key={`f-${f.cid}`}>
-                        <b className="text-bad">失败</b><span>{f.error}</span>
+                        <b className="text-bad">失败</b><span>{failText(f.error, '未知原因')}</span>
                       </div>
                     ))}
                   </div>
@@ -1034,6 +1163,19 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                   </div>
                 )}
 
+                {/* 生成被前置条件拦住时，理由要落在这一页上：批量条那句只有勾了评论
+                    才出现，而单条「生成回复」根本不需要勾选 */}
+                {genBlock && (
+                  <div className="notice notice-warn reply-genblock">
+                    <div>
+                      现在生成不了：{genBlock}。
+                      <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('settings')}>
+                        去「设置」
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* 删除入口。只在对得上的时候出现：
                       · 这条评论我回过 → 删**我发的那条回复**（最常用：发错了要撤）
                       · 这条评论是我自己发的 → 删这条评论
@@ -1062,7 +1204,9 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack }) 
                       删除这条评论
                     </button>
                   ) : null}
-                  <button className="btn" onClick={generate} disabled={genRunning || selected.replied}>
+                  <button className="btn" onClick={generate}
+                    disabled={genRunning || selected.replied || !!genBlock}
+                    title={genBlock || '按当前「回复模式」给这一条生成回复'}>
                     {genRunning ? '生成中…' : '生成回复'}
                   </button>
                   <button className="btn" onClick={saveDraft} disabled={!canPublish || saving}>

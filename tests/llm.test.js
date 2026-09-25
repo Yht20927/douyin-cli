@@ -1,6 +1,11 @@
-// tests/llm.test.js — LLM JSON 提取和 sanitizeComment 测试
+// tests/llm.test.js — LLM JSON 提取、sanitizeComment，以及"没配 Key"的前置拒绝
 
-const { LLMClient } = require('../core/llm');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const config = require('../core/config');
+const { LLMClient, aiReady } = require('../core/llm');
 
 // 通过反射测试私有方法
 const client = new LLMClient({ apiKey: 'test' });
@@ -73,5 +78,67 @@ describe('LLMClient constructor', () => {
     const c = new LLMClient();
     expect(c.model).toBe('env-model');
     delete process.env.OPENAI_MODEL;
+  });
+});
+
+describe('aiReady —— 没配 Key 时不发那趟注定 401 的请求', () => {
+  /**
+   * 在一份临时 config.json 上跑。
+   *
+   * 必须给临时文件：作者机器上的真实配置里是有 Key 的，
+   * 拿真实配置断言"没就绪"会得到一个只在别人机器上通过的测试。
+   */
+  function withLlmConfig(llm, fn) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'douyin-llm-cfg-'));
+    const file = path.join(tmp, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ llm }));
+    const origFile = process.env.DOUYIN_CONFIG;
+    const origKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    process.env.DOUYIN_CONFIG = file;
+    config.reset();
+    try {
+      return fn();
+    } finally {
+      config.reset();
+      if (origFile == null) delete process.env.DOUYIN_CONFIG;
+      else process.env.DOUYIN_CONFIG = origFile;
+      if (origKey != null) process.env.OPENAI_API_KEY = origKey;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  it('空 Key：不成立，且理由说清该去哪填', () => withLlmConfig({ api_key: '' }, () => {
+    const r = aiReady();
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('API Key');
+  }));
+
+  it('config.json 里有 Key 就算就绪（不必依赖环境变量）', () => withLlmConfig({ api_key: 'sk-x' }, () => {
+    expect(aiReady()).toEqual({ ok: true, reason: '' });
+  }));
+
+  it('OPENAI_API_KEY 环境变量也算就绪', () => withLlmConfig({ api_key: '' }, () => {
+    process.env.OPENAI_API_KEY = 'from-env';
+    try {
+      expect(aiReady().ok).toBe(true);
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  }));
+
+  it('complete() 当场拒绝，一次 fetch 都不发', async () => {
+    await withLlmConfig({ api_key: '' }, async () => {
+      const origFetch = global.fetch;
+      let calls = 0;
+      global.fetch = () => { calls += 1; return Promise.reject(new Error('不该发请求')); };
+      try {
+        const c = new LLMClient();
+        await expect(c.complete([{ role: 'user', content: 'hi' }])).rejects.toThrow(/API Key/);
+        expect(calls).toBe(0);
+      } finally {
+        global.fetch = origFetch;
+      }
+    });
   });
 });

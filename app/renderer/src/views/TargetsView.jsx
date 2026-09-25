@@ -4,6 +4,7 @@ import LoadingState from '../components/LoadingState.jsx';
 import Notice from '../components/Notice.jsx';
 import Spinner from '../components/Spinner.jsx';
 import { ago } from '../format.js';
+import { failText } from '../errors.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
 /**
@@ -42,7 +43,10 @@ function describeEnrich(res) {
   const failed = Number(res.failedCount) || 0;
   if (!requested) return { text: '没有需要补全的视频 —— 本地这些作品的标题与封面已经齐了', warn: false };
   if (failed) {
-    const first = Array.isArray(res.failed) && res.failed[0] ? res.failed[0].error : '';
+    // 逐条失败原因里最常见的是"桥接超时"与"服务没起来"那两句英文串，
+    // 运营者从中读不出该做什么，所以先过一遍翻译层再举例。
+    const one = Array.isArray(res.failed) ? res.failed[0] : null;
+    const first = one && one.error ? failText(one.error, '未知原因') : '';
     return {
       text: `补全 ${done}/${requested} 条，${failed} 条没取到${first ? `（例如：${first}）` : ''}`,
       warn: done === 0,
@@ -67,7 +71,7 @@ export default function TargetsView({ actions }) {
     try {
       const r = await window.dy.data.targets({ order, limit: nextLimit || limit });
       if (r.ok) { setData(r.data); setError(null); }
-      else setError(r.error || '未知错误');
+      else setError(failText(r.error, '未知错误'));
     } finally {
       setLoading(false);
     }
@@ -85,7 +89,7 @@ export default function TargetsView({ actions }) {
       argv: ['--missing', '--limit', '200'],
       label: '补全视频信息',
     });
-    if (!r.ok) { setError(r.error || '入队失败'); return; }
+    if (!r.ok) { setError(failText(r.error, '入队失败')); return; }
     setEnriching(r.id);
   }
 
@@ -104,7 +108,7 @@ export default function TargetsView({ actions }) {
           // 那时取回 null，**不能**报成"补全 0 条"，那是在说一件没发生的事。
           window.dy.queue.result(id).then((r) => setEnrichResult(describeEnrich(r && r.result)));
         } else {
-          setEnrichResult({ text: `补全未完成：${t.error || '未知原因'}`, warn: true });
+          setEnrichResult({ text: `补全未完成：${failText(t.error, '未知原因')}`, warn: true });
         }
         reload();
       }
@@ -133,7 +137,7 @@ export default function TargetsView({ actions }) {
     );
   }
 
-  const { items, total, shown, truncated, scanCapped, scanLimit, missingInfoCount, orders } = data;
+  const { items, total, shown, truncated, scanCapped, scanLimit, missingInfoCount, orders, accountCertain } = data;
 
   return (
     <div className="main-col">
@@ -157,22 +161,46 @@ export default function TargetsView({ actions }) {
         </button>
         {/* 只在真的缺标题时才出现 —— 一个永远没用的按钮比没有按钮更糟 */}
         {missingInfoCount > 0 && (
-          <button
-            className="btn"
-            onClick={enrich}
-            disabled={!!enriching || !actions.canQueue}
-            title={!actions.canQueue
-              ? '浏览器未连接 —— 先到「连接」页接上抖音'
-              : `这些视频在库里没有标题与封面（拉评论的接口不返回视频信息），补全会逐个取一次视频详情，顺便带上播放/点赞`}
-          >
-            {enriching ? <><Spinner size={12} />补全中…</> : `补全视频信息（${missingInfoCount} 个）`}
-          </button>
+          <>
+            <button
+              className="btn"
+              onClick={enrich}
+              disabled={!!enriching || !actions.canQueue}
+              title={!actions.canQueue
+                ? '浏览器未连接 —— 先到「连接」页接上抖音'
+                : `这个数数的是库里所有还缺标题与封面的作品（${missingInfoCount} 个），点下去补的就是这一整批 ——`
+                + '它和右下角的「共 N 个对象」不是一个口径：这里还包括「我的作品」，以及拉过评论但已经不在本列表里的历史对象。'
+                + '补全会逐个取一次视频详情，顺便带上播放与点赞。'}
+            >
+              {enriching ? <><Spinner size={12} />补全中…</> : `补全视频信息（${missingInfoCount} 个）`}
+            </button>
+            {/* 两个数字对不上时必须在明面上讲一句 —— 悬停提示没人找，而"按钮说 200、
+                页面说 5"看起来就像一个坏掉的计数。 */}
+            {missingInfoCount > total && (
+              <span className="muted" style={{ fontSize: 12 }}>
+                （{missingInfoCount - total} 个不在本列表里 —— 含「我的作品」与历史对象）
+              </span>
+            )}
+          </>
         )}
         <span className="muted targets-count num">
           共 {total} 个对象
           {truncated && ` · 当前显示 ${shown} 个`}
         </span>
       </div>
+
+      {/* views.js 一直随数据返回 accountUid / accountCertain，注释写着"界面必须显示它"，
+          而此前整个渲染层没有任何一处读它 —— 于是"换了号数据没变"这个用户报过的问题
+          在屏幕上完全没有痕迹。accountCertain=false 意味着当前没确认到登录账号，
+          列表**没有**按账号过滤（不是过滤不到），显示的是所有账号拉过评论的作品。 */}
+      {!accountCertain && (
+        <div className="notice notice-warn">
+          <div>
+            现在没确认到登录账号 —— 下面列出的是<b>所有账号</b>拉过评论的作品，不是某一个号的清单。
+            到「连接」页把抖音接上（或在左下角切换账号），这份列表就会按当前账号分开显示。
+          </div>
+        </div>
+      )}
 
       {scanCapped && (
         <div className="notice notice-warn">
@@ -188,40 +216,47 @@ export default function TargetsView({ actions }) {
         ? (
           <EmptyState
             title="还没有可运营的对象。"
-            hint="运营对象 = 在别人的视频下拉取过评论的作品。目前往这里添加对象的入口只有命令行（node cli.js get <视频ID>）；在某个视频上拉过一次评论之后，它就会出现在这里。"
+            hint={<>运营对象 = 你在别人视频的评论区里互动过的作品。这里添加它的唯一入口是<b>「找视频」</b>：
+              搜到作品、打开它拉一次评论，这个作品就会出现在下面。</>}
+            action={<button className="btn btn-primary" onClick={() => actions.goto('discover')}>去「找视频」</button>}
           />
         )
         : (
           <div className="list">
-            {items.map(t => (
-              <button
-                className="row-item target-row"
-                key={t.awemeId}
-                onClick={() => actions.openWorkspace(t.awemeId)}
-              >
-                <div className="row-main">
-                  <div className="row-title">
-                    {/* 标题可能为空：拉评论的接口不返回视频信息，而这类视频行
-                        是 get/post 顺手建出来的壳。与其显示"（无标题）"让人
-                        以为是解析失败，不如直接给能锚定身份的视频号。 */}
-                    {t.title || <span className="muted">视频 <span className="num">····{String(t.awemeId).slice(-6)}</span></span>}
+            {items.map(t => {
+              // 主标签首先要能认出"这是哪个视频"。标题为空的常见原因是拉评论的接口
+              // 不返回视频信息（这类视频行是 get/post 顺手建出来的壳），此时作者昵称
+              // 是唯一读得出身份的信息 —— 只给尾号数字，一排壳对象长得一模一样，
+              // 只能逐个点进去看。
+              const titled = !!t.title;
+              const label = t.title || (t.authorNickname ? `${t.authorNickname} 的作品` : '');
+              return (
+                <button
+                  className="row-item target-row"
+                  key={t.awemeId}
+                  onClick={() => actions.openWorkspace(t.awemeId)}
+                >
+                  <div className="row-main">
+                    <div className="row-title">
+                      {label || <span className="muted">视频 <span className="num">····{String(t.awemeId).slice(-6)}</span></span>}
+                    </div>
+                    <div className="row-sub target-sub">
+                      <span className="num">{t.commentStats.total}</span> 条评论
+                      {' · '}已回 <span className="num">{t.commentStats.replied}</span>
+                      {t.commentStats.mine > 0 && <>（其中我发的 <span className="num">{t.commentStats.mine}</span>）</>}
+                      {titled && t.authorNickname && <> · 作者 {t.authorNickname}</>}
+                    </div>
                   </div>
-                  <div className="row-sub target-sub">
-                    <span className="num">{t.commentStats.total}</span> 条评论
-                    {' · '}已回 <span className="num">{t.commentStats.replied}</span>
-                    {t.commentStats.mine > 0 && <>（其中我发的 <span className="num">{t.commentStats.mine}</span>）</>}
-                    {t.authorNickname && <> · 作者 {t.authorNickname}</>}
-                  </div>
-                </div>
-                {/* 待回复是这个页面的主指标 —— 它是"还没干完的活"，
-                    所以给最大的一档字重，而不是混在说明文字里 */}
-                {t.commentStats.pending > 0
-                  ? <div className="target-pending"><b className="num">{t.commentStats.pending}</b> 待回复</div>
-                  : <div className="target-pending target-done muted">没有待回复</div>}
-                <div className="row-meta num">{ago(Math.max(t.lastPostTs || 0, t.lastGetTs || 0))}</div>
-                <div className="chev">›</div>
-              </button>
-            ))}
+                  {/* 待回复是这个页面的主指标 —— 它是"还没干完的活"，
+                      所以给最大的一档字重，而不是混在说明文字里 */}
+                  {t.commentStats.pending > 0
+                    ? <div className="target-pending"><b className="num">{t.commentStats.pending}</b> 待回复</div>
+                    : <div className="target-pending target-done muted">没有待回复</div>}
+                  <div className="row-meta num">{ago(Math.max(t.lastPostTs || 0, t.lastGetTs || 0))}</div>
+                  <div className="chev">›</div>
+                </button>
+              );
+            })}
           </div>
         )}
 

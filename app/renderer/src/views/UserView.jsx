@@ -4,6 +4,7 @@ import LoadingState from '../components/LoadingState.jsx';
 import Notice from '../components/Notice.jsx';
 import Spinner from '../components/Spinner.jsx';
 import { ago } from '../format.js';
+import { failText } from '../errors.js';
 
 /**
  * 用户详情 —— 某个评论者的全部留痕。
@@ -57,7 +58,7 @@ export default function UserView({ uid, actions, onBack }) {
       });
       setError(null);
     } else {
-      setError((p && p.error) || '未知错误');
+      setError(failText(p && p.error, '未知错误'));
     }
     setEvents(e && e.ok ? e.data : []);
   }, [uid]);
@@ -129,7 +130,7 @@ export default function UserView({ uid, actions, onBack }) {
               : '抖音已接收这条私信 —— 会话号没取回来，请到抖音的聊天里确认');
           });
         } else {
-          setNotice({ text: `私信未发出：${t.error || '未知原因'}`, warn: true });
+          setNotice({ text: `私信未发出：${failText(t.error, '未知原因')}`, warn: true });
         }
       }
     });

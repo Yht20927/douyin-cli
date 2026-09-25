@@ -35,12 +35,41 @@ function chunk(arr, size) {
   return out;
 }
 
+/**
+ * 真正会用的 Key：环境变量优先，其次 config.json。
+ *
+ * 构造函数与 aiReady() 共用这一个函数 —— "配没配 Key"的判定和实际发请求时
+ * 用的取值必须是同一条规则，否则界面说没配而调用照样成功（或反过来）。
+ */
+function resolveApiKey() {
+  const cfg = config.get('llm') || {};
+  return process.env.OPENAI_API_KEY || cfg.api_key || '';
+}
+
+/**
+ * AI 生成这条链路就绪没有。
+ *
+ * 桌面应用在工作台上就按它决定「批量生成」能不能点 —— 以前没有这一步，
+ * 开箱默认 reply.mode=ai 而 Key 是空的，第一次生成必定是一趟真请求换回
+ * 一句 `LLM API 请求失败 (HTTP 401)`：要等、要花队列位、还看不懂该改哪。
+ */
+function aiReady() {
+  if (resolveApiKey()) return { ok: true, reason: '' };
+  return {
+    ok: false,
+    // 只说"缺什么、去哪补"。「改成固定内容就不需要它」这类话是生成链路自己的
+    // 出路，由界面按场景加 —— 「用 AI 分析」读的是同一句，对它并没有这条退路。
+    reason: '还没有配置模型 API Key —— 到「设置」页的「AI 模型」分组填，'
+      + '或设环境变量 OPENAI_API_KEY',
+  };
+}
+
 class LLMClient {
   constructor(opts = {}) {
-    // 优先级：显式 opts > 环境变量 > config.json（经 config 单一真源，含默认值）
+    // 优先级：显式 opts > 环境变量 > config.json（见 resolveApiKey）
     // 注意这里每次构造都重新取值，不用模块级缓存 —— 保证设置页改完立即生效
-    const cfg = config.get('llm');
-    this.apiKey = opts.apiKey || process.env.OPENAI_API_KEY || cfg.api_key || '';
+    const cfg = config.get('llm') || {};
+    this.apiKey = opts.apiKey || resolveApiKey();
     this.baseUrl = opts.baseUrl || process.env.OPENAI_BASE_URL || cfg.base_url || 'https://api.openai.com/v1';
     this.model = opts.model || process.env.OPENAI_MODEL || cfg.model || 'gpt-4o-mini';
     this.maxRetries = opts.maxRetries || cfg.max_retries || 3;
@@ -86,6 +115,9 @@ class LLMClient {
     if (!messages || !messages.length) {
       throw new Error('[llm] messages 数组为空，无法调用 LLM');
     }
+    // 不发这趟注定 401 的请求：以前没配 Key 也要等一次网络往返加三轮重试，
+    // 最后拿回来的那句英文状态码报错，运营者既看不懂也不知道该改哪里。
+    if (!this.apiKey) throw new Error(aiReady().reason);
     if (this._isAnthropicProvider()) {
       return this._callAnthropic(messages, temperature, opts);
     }
@@ -547,4 +579,4 @@ class LLMClient {
   }
 }
 
-module.exports = { LLMClient, sanitizeComment };
+module.exports = { LLMClient, sanitizeComment, aiReady, resolveApiKey };

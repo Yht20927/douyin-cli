@@ -286,9 +286,10 @@ const TARGET_SCAN_LIMIT = 1000;
  */
 function listTargets(opts = {}) {
   const wanted = opts.order || 'pending';
-  const known = TARGET_ORDERS.some(o => o.name === wanted);
-  const order = known ? wanted : 'pending';
-  const unknownOrder = known ? null : wanted;
+  // 认不出的排序回落成待回复。这里刻意**不**额外返回一个"你给的排序不认识"字段：
+  // 界面上的下拉选项就来自下面的 orders，递不进不认识的值，那个字段只会成为
+  // 又一个人人以为在用、其实没人读的返回字段。
+  const order = TARGET_ORDERS.some(o => o.name === wanted) ? wanted : 'pending';
   const limit = Math.max(1, Number(opts.limit) || 200);
 
   const actor = resolveActor(opts);
@@ -345,17 +346,16 @@ function listTargets(opts = {}) {
     scanned: rows.length,
     scanLimit: TARGET_SCAN_LIMIT,
     scanCapped: rows.length >= TARGET_SCAN_LIMIT,
-    // 多少个视频还没标题（`get`/`post` 建出来的壳）。界面靠它决定要不要显示
-    // 「补全视频信息」那个入口 —— 全都有标题时摆一个按钮只会让人问"这是干嘛的"
     // 本页数据属于哪个账号。界面必须显示它 —— 用户报的正是"换了号数据没变"，
     // 而只要把"当前是哪个号"摆出来，这件事立刻可验证
     accountUid: actor.uid,
     accountCertain: actor.certain,
     // 多少个视频还没标题（`get`/`post` 建出来的壳）。界面靠它决定要不要显示
     // 「补全视频信息」那个入口 —— 全都有标题时摆一个按钮只会让人问"这是干嘛的"
+    // 注意口径：它是**补全命令实际会处理的条数**（含「我的作品」与不在本列表的
+    // 历史对象），所以会大于上面的 total。界面必须把这句话讲出来，否则看起来像计数坏了
     missingInfoCount: videos.countMissingInfo({ accountUid: actor.scopedUid }),
     order,
-    unknownOrder,
     orders: TARGET_ORDERS,
   };
 }
@@ -482,6 +482,10 @@ function listComments(awemeId, opts = {}) {
     // 比的是**实际生效**的上限：listByVideo 会把 limit 夹到 MAX_LIMIT，
     // 拿"我要的数"去比就会永远不相等，这个提示因此从来没显示过。
     scanCapped: needsMemoryFilter && rows.length >= comments.clampLimit(SCAN_LIMIT),
+    // 「优先级」这一排序靠 analyze 写回的 priority 列。没跑过分析时它全是 NULL，
+    // 而 ORDER 里是 COALESCE(priority, 0) —— 每一档都相等，顺序**悄悄**退化成
+    // "点赞最多 + 最新"。界面靠这个标志决定要不要说出这件事。
+    priorityReady: rows.some(r => r.priority != null),
     order,
     filter,
     unknownFilter,
@@ -638,8 +642,15 @@ function listDrafts(opts = {}) {
   const total = q
     ? drafts.count({ posted: false, accountUid: actor.scopedUid })
     : matched;
+  // 按账号过滤时，account_uid 为 NULL 的草稿不会出现在上面这个集合里
+  // （无法判断归属的草稿不该被当成自己的发出去）。它们必须被说出来，
+  // 否则就是"生成明明成功了但草稿箱空空如也"。
+  // 不与 accountUid 一起传：两个条件相加恒为 0。
+  const unattributed = actor.scopedUid
+    ? drafts.count({ posted: false, unattributed: true })
+    : 0;
   return {
-    items, total, matched,
+    items, total, matched, unattributed,
     truncated: matched > items.length,
     q,
     accountUid: actor.uid,

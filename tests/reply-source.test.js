@@ -593,3 +593,26 @@ describe('reply-source / 配置校验', () => {
     expect(config.REPLY_MODES).toContain(d.mode);
   }));
 });
+
+describe('reply-source / describe() 里的 AI 就绪情况', () => {
+  // 工作台的「生成回复」「批量生成」按这个字段决定能不能点。
+  // 判据只有一处（core/llm.js 的 aiReady），界面只读结果 —— 这里钉的是字段真的在、
+  // 且与那个唯一判据同源：否则又会长出第二套"按钮能点、调用必失败"的规则。
+  it('describe().ai 与 llm.aiReady() 同源，并随 llm.api_key 变化', withTempEnv(async ({ config }) => {
+    const origKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const replySource = require('../core/reply-source');
+      const { aiReady } = require('../core/llm');
+
+      config.set({ llm: { api_key: '' } });
+      expect(replySource.describe().ai).toEqual(aiReady());
+      expect(replySource.describe().ai.ok).toBe(false);
+
+      config.set({ llm: { api_key: 'sk-x' } });
+      expect(replySource.describe().ai.ok).toBe(true);
+    } finally {
+      if (origKey != null) process.env.OPENAI_API_KEY = origKey;
+    }
+  }));
+});

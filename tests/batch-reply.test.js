@@ -180,6 +180,73 @@ describe('批量生成 / --cids 指定评论', () => {
   }));
 });
 
+describe('批量生成 / --mode 覆盖（界面那颗「用固定回复存草稿」）', () => {
+  // 界面不能靠"把 reply.mode 改成 fixed"来实现这颗按钮 —— 那是全局设置，
+  // 会把用户后面所有批量的行为一起改掉。它走的是 --mode 这个**本次**覆盖。
+  // 真实配置里 reply.mode 就是 'ai'（新库压根没有 reply 段），所以这个用例
+  // 断言两件事：这一批用的是固定内容，以及一次 AI 都没调。
+  it('--mode fixed 覆盖配置里的 reply.mode="ai"，且不调用 LLM', withTempEnv(async ({ comments, views }) => {
+    seed(comments, 'c1', '怎么做的？');
+    seed(comments, 'c2', '求教程');
+    config.set({
+      reply: {
+        mode: 'ai',
+        fixed: { cycle: 'sequential', items: [{ text: '回复甲' }, { text: '回复乙' }] },
+      },
+    });
+
+    // 间谍打在原型上：reply-engine 在模块顶层就解构了 LLMClient，
+    // 换 llmModule.LLMClient 对它无效（p3-corpus 那种写法只对**命令内部才 require**
+    // 的调用方管用）。原型是所有实例共享的，怎么加载都拦得住。
+    const { LLMClient } = require('../core/llm');
+    const origComplete = LLMClient.prototype.complete;
+    let aiCalls = 0;
+    LLMClient.prototype.complete = async () => {
+      aiCalls++;
+      throw new Error('这条用例里不该出现 AI 调用');
+    };
+
+    try {
+      const { ctx } = makeCtx();
+      const cmdGetReply = require('../core/commands/getReply');
+      const r = await cmdGetReply(ctx, ['v1', '--cids', 'c1,c2', '--to-draft', '--mode', 'fixed']);
+
+      expect(r.mode).toBe('fixed');
+      expect(r.failed).toEqual([]);
+      expect(r.generated.map(g => g.text)).toEqual(['回复甲', '回复乙']);
+      expect(r.generated.every(g => g.source === 'fixed' && g.draftId > 0)).toBe(true);
+      expect(views.listDrafts().items).toHaveLength(2);
+      expect(aiCalls).toBe(0);
+    } finally {
+      LLMClient.prototype.complete = origComplete;
+    }
+  }));
+
+  it('--mode 拼错时不静默变成 AI 批量，回退到配置值', withTempEnv(async ({ comments }) => {
+    seed(comments, 'c1', 'x');
+    config.set({ reply: { mode: 'fixed', fixed: { items: [{ text: '回复甲' }] } } });
+
+    const { ctx } = makeCtx();
+    const cmdGetReply = require('../core/commands/getReply');
+    const r = await cmdGetReply(ctx, ['v1', '--cids', 'c1', '--mode', 'fixd']);
+
+    expect(r.mode).toBe('fixed');
+    expect(r.generated.map(g => g.text)).toEqual(['回复甲']);
+  }));
+
+  it('固定内容为空 + --mode fixed 时，不再建议一件没用的事', withTempEnv(async ({ comments }) => {
+    seed(comments, 'c1', 'x');
+    // 这颗按钮的处境：全局模式是 ai，这一批用 --mode 强制走固定内容，而列表是空的。
+    // 此时"把回复模式改回 AI"完全没用 —— 它已经是 ai 了，改回去也不会影响这一批。
+    config.set({ reply: { mode: 'ai', fixed: { items: [] } } });
+
+    const { ctx } = makeCtx();
+    const cmdGetReply = require('../core/commands/getReply');
+    await expect(cmdGetReply(ctx, ['v1', '--cids', 'c1', '--to-draft', '--mode', 'fixed']))
+      .rejects.toThrow(/固定回复列表里没有可用内容[\s\S]*改用「批量生成」/);
+  }));
+});
+
 describe('批量生成 / --batch', () => {
   it('不传 --to-draft 时只生成，不碰草稿箱', withTempEnv(async ({ comments, views }) => {
     seed(comments, 'c1', 'a');

@@ -305,15 +305,20 @@ async function cmdGetReply(ctx, args) {
       return { awemeId, requested: 0, toDraft, generated: [], skipped: [], failed: [] };
     }
 
-    const mode = replySource.resolveMode(getFlag(args, '--mode', null));
+    const modeFlag = getFlag(args, '--mode', null);
+    const mode = replySource.resolveMode(modeFlag);
 
     // 固定内容模式下如果一条可用的都没有，下面会逐条报同一个错 —— 20 条刷 20 行
     // 一样的日志，真正的原因反而被淹掉。开工前就说清楚。
     if (mode === 'fixed') {
       const d = replySource.describe();
       if (!d.fixed.usable) {
-        const err = `固定回复列表里没有可用内容（共 ${d.fixed.total} 条），批量生成无法进行。`
-          + '请到设置页的「回复策略」里添加内容，或把回复模式改回 AI。';
+        // 建议要说这次是**怎么**走到固定内容的：--mode 指定的那一次，把全局模式
+        // 改回 AI 起不了任何作用（界面那颗按钮就是这么传的，而全局模式本来就是 ai）
+        const fix = modeFlag
+          ? '请到设置页的「回复策略」里添加可用内容，或改用「批量生成」让 AI 来写。'
+          : '请到设置页的「回复策略」里添加内容，或把回复模式改回 AI。';
+        const err = `固定回复列表里没有可用内容（共 ${d.fixed.total} 条），批量生成无法进行。` + fix;
         ctx.audit.endOperation('error', { awemeId, batch: true }, null, err);
         throw new Error(err);
       }
@@ -367,7 +372,7 @@ async function cmdGetReply(ctx, args) {
           awemeId,
           comment: replyOpts.comment,
           persona,
-          mode: getFlag(args, '--mode', null),
+          mode: modeFlag,
           generateAI: () => engine.generateReply(replyOpts),
         });
       } catch (e) {
@@ -402,6 +407,10 @@ async function cmdGetReply(ctx, args) {
           replyToCid: cid,
           personaId: picked.personaId,
           imagePath: picked.imagePath || null,
+          // 归属账号。草稿箱按账号隔离列表，不带这一列的草稿会被列表过滤掉 ——
+          // 也就是"生成成功了但界面上一条都找不到"。用的是执行者而不是界面选的号，
+          // 与 ops_uid 同一口径。拿不到执行者时留 NULL，由界面如实报"未标明账号"。
+          accountUid,
         });
         if (id) item.draftId = id;
         else {

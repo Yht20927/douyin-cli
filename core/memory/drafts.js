@@ -161,6 +161,9 @@ function count(opts = {}) {
     const params = [];
     if (opts.posted != null) { where.push('posted = ?'); params.push(opts.posted ? 1 : 0); }
     if (opts.accountUid) { where.push('account_uid = ?'); params.push(String(opts.accountUid)); }
+    // 只服务于这个统计：没有标明归属账号的草稿。列表按账号过滤时它们不会出现，
+    // 界面必须能说出"还有 N 条藏在这里"，否则就又是"数据在库里但界面找不到"
+    if (opts.unattributed) where.push('account_uid IS NULL');
     // 与 list 同一份条件：否则"共 N 条"与列表内容说的不是同一个集合
     const search = searchWhere(opts.q);
     if (search.sql) { where.push(search.sql); params.push(...search.params); }

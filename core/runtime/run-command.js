@@ -85,10 +85,20 @@ function describeError(e) {
     return [msg, '运行 "node cli.js help" 查看用法。'];
   }
   if (msg.includes('ECONNREFUSED') || msg.includes('Bridge Server 未启动')) {
-    return ['错误: Bridge Server 未启动，请先运行:', '  node server.js'];
+    // 桌面版的桥接服务是随应用启动的，这里只给 `node server.js` 的话，
+    // 界面用户会被指向一个他根本没有的终端（同一类问题见 问题.md §三 的空态）。
+    return [
+      '错误: Bridge Server 未启动，命令发不出去',
+      '  桌面应用：重启本工具即可（服务随应用启动）；仍不行看「诊断」页有没有端口冲突',
+      '  命令行：先运行 node server.js',
+    ];
   }
   if (msg.includes('Unauthorized')) {
-    return ['错误: 认证失败 — 请检查 config.json 中的 bridge.token'];
+    return [
+      '错误: 认证失败 —— 浏览器里的脚本和本工具之间的凭证对不上',
+      '  桌面应用：到「连接」页重新安装一次脚本（安装地址里带着当前凭证）',
+      '  命令行：检查 config.json 中的 bridge.token 是否与脚本一致',
+    ];
   }
   // 油猴端 bridgeFetchJson 抛出的两类友好错误（scripts/douyin.user.js）：
   //   「抖音返回了 HTML 页面（可能登录态失效/被风控/账号校验中）...」

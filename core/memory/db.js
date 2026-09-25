@@ -34,7 +34,7 @@ const paths = require('../paths');
 const { Database: SqliteDatabase } = require('./sqlite-driver');
 
 // 当前 schema 版本（每次新增 migration → 自增）
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 let _db = null;
 
@@ -407,6 +407,42 @@ function migrate(db) {
         const uid = owners[0];
         db.prepare(`UPDATE videos SET ops_uid = ? WHERE platform = ? AND ops_uid IS NULL`).run(uid, 'douyin');
         db.prepare(`UPDATE drafts SET account_uid = ? WHERE account_uid IS NULL`).run(uid);
+      }
+    },
+    // v13 → v14：把 drafts.account_uid 漏标的那批补回来
+    //
+    // 为什么 v13 的回填没解决问题：那次回填只在建列时跑一遍。而三个写草稿的入口
+    // （getReply --to-draft / 界面 draft:save / CLI draft save）当时都没带 accountUid，
+    // 于是**升级之后新存的草稿仍然是 NULL**。草稿箱列表按账号过滤时会排除 NULL
+    // （无法判断归属的草稿不该被当成自己的发出去），症状就是
+    // "批量生成明明成功了，草稿箱却一条都找不到"——数据在库里，只有 CLI 能列出来。
+    // 写入侧已经修好（三处都补了归属），这里负责把存量捞回来。
+    () => {
+      // ① 按行取证：这条草稿所属的视频，库里有 ops_uid 就用它。
+      //    ops_uid 是"本机以哪个号拉取/运营过这个视频"，比任何全局猜测都准。
+      db.prepare(`
+        UPDATE drafts SET account_uid = (
+          SELECT v.ops_uid FROM videos v
+          WHERE v.aweme_id = drafts.aweme_id AND v.ops_uid IS NOT NULL
+          LIMIT 1
+        )
+        WHERE account_uid IS NULL
+          AND EXISTS (
+            SELECT 1 FROM videos v
+            WHERE v.aweme_id = drafts.aweme_id AND v.ops_uid IS NOT NULL
+          )
+      `).run();
+
+      // ② 仍然没有归属的，沿用 v13 那条纪律：只有本机只运营过一个号时才回填，
+      //    多于一个就不猜 —— 猜错的代价是"以另一个号的身份把话发出去"。
+      const stillNull = db.prepare(`SELECT count(*) n FROM drafts WHERE account_uid IS NULL`).get().n;
+      if (stillNull > 0) {
+        const owners = db.prepare(
+          `SELECT DISTINCT author_uid FROM videos WHERE platform = ? AND is_mine = 1 AND author_uid IS NOT NULL`
+        ).all('douyin').map(r => r.author_uid);
+        if (owners.length === 1) {
+          db.prepare(`UPDATE drafts SET account_uid = ? WHERE account_uid IS NULL`).run(owners[0]);
+        }
       }
     },
   ];

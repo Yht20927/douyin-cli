@@ -1,27 +1,54 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import PublishDialog from '../components/PublishDialog.jsx';
+import ProgressBar from '../components/ProgressBar.jsx';
 import Spinner from '../components/Spinner.jsx';
 import LoadingState from '../components/LoadingState.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Modal from '../components/Modal.jsx';
 import { ago, fileNameOf } from '../format.js';
+import { failText } from '../errors.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
 /** 输入停止多久后才去查库。太短会每敲一个字查一次，太长会觉得卡 */
 const SEARCH_DEBOUNCE_MS = 260;
 
+/** 确认框里最多预览几条草稿，其余用一行"还有 M 条"说明 */
+const PUBLISH_PREVIEW_ROWS = 8;
+
+/**
+ * 批量发布大概要等多久。
+ *
+ * 每条草稿是一次独立的写任务，串行队列 + 每两条之间都要等设置的写间隔，
+ * 所以 N 条要等 N-1 个间隔（第一条还要看离上次发布过了多久 —— 那个不由这里决定）。
+ * 报的是一个区间而不是精确值：间隔本身就是随机的，给一个准数反而是假承诺。
+ *
+ * @param {number} n - 要发的条数
+ * @param {[number, number]|null} interval - 写间隔秒数区间，读不到时返回 null
+ */
+function estimatePublishSpan(n, interval) {
+  if (!(n > 1) || !Array.isArray(interval)) return null;
+  const [lo, hi] = interval.map(Number);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  const fmt = (sec) => (sec >= 90 ? `${Math.round(sec / 60)} 分钟` : `${Math.max(1, Math.round(sec))} 秒`);
+  return `${fmt((n - 1) * lo)} ~ ${fmt((n - 1) * hi)}`;
+}
+
 /**
  * 草稿箱。
  *
  * 存在这里的都是"准备好了但还没发"的内容 —— 包括定时拉取自动生成的 AI 草稿。
- * 每条都要人工点发布，这是 D7 定的半自动化边界：准备工作自动做，发布由人决定。
+ * 发不发始终由人决定（D7 的半自动化边界），但"由人决定"不该等于"由人逐条点"：
+ * 一次勾选、一次确认、发一批，是同一件事的两种做法，后者才做得完活。
  *
  * @param {object} props
  * @param {Array} props.drafts - 已加载的草稿（最多 core 的 MAX_LIMIT 条）
  * @param {number} props.total - 当前账号待发布的**全部**条数（不受搜索影响，侧栏角标同源）
  * @param {number} props.matched - 当前搜索条件命中的条数
+ * @param {number} props.unattributed - 没有标明归属账号、因此不在这个列表里的草稿条数
+ * @param {object|null} props.bulkPublish - 批量发布的进度快照（没有批量在跑/刚跑完时为 null）。
+ *   记在 App 层：这一页会被卸载，而进度必须活着回来。
  */
-export default function DraftsView({ drafts, total, matched, loading, actions, reload }) {
+export default function DraftsView({ drafts, total, matched, unattributed = 0, bulkPublish, loading, actions, reload }) {
   // 注：「发布成功后把草稿标记为已发布」的跟踪**不在这个组件里** ——
   // 它只在草稿箱页面挂载，用户一点发布就切到队列页的话组件卸载，
   // 标记永远不会执行（草稿留在箱里 → 用户再点一次 → 被重复回复策略拦下）。
@@ -66,10 +93,25 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
 
   // 只承认当前看得见的勾选：搜索、刷新、换号之后，选中集合里可能留着
   // 界面上已经不存在的 id —— 那是不属于这个账号的草稿，不能被这批删除带走
-  const pickedIds = useMemo(
-    () => list.filter(d => picked.has(d.id)).map(d => d.id),
+  const pickedItems = useMemo(
+    () => list.filter(d => picked.has(d.id)),
     [list, picked]
   );
+  const pickedIds = useMemo(() => pickedItems.map(d => d.id), [pickedItems]);
+
+  /**
+   * 待确认批量发布的草稿（点按钮那一刻拍的快照）。
+   *
+   * 存整份而不是只存 id：确认框要在用户读的时候一直保持同一批内容，
+   * 而期间自动刷新可能把某条换掉 —— 那用户确认的就不是他看到的那批。
+   * 快照里已经被发掉/删掉的条目，App 层入队前会再核一遍并如实报条数。
+   */
+  const [publishConfirm, setPublishConfirm] = useState(null);
+  /** 设置的写间隔区间（秒），确认框用它估算"这批发完要等多久" */
+  const [writeInterval, setWriteInterval] = useState(null);
+  const [publishBusy, setPublishBusy] = useState(false);
+  /** 这一批大概要发多久（只选了 1 条时没有"条与条之间"，返回 null） */
+  const span = publishConfirm ? estimatePublishSpan(publishConfirm.length, writeInterval) : null;
 
   // 组始终算出来，哪怕当前是平铺：那个「平铺显示 / 按视频分组」的开关挂在
   // `groups.length > 1` 上，早先版本在平铺时直接 return null，于是切到平铺以后
@@ -116,7 +158,7 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
   async function remove(id) {
     const r = await window.dy.draft.remove(id);
     if (r.ok) { setNotice('已删除'); reload(); }
-    else setNotice(`删除失败：${r.error}`);
+    else setNotice(`删除失败：${failText(r.error, '未知原因')}`);
   }
 
   async function deletePicked() {
@@ -127,7 +169,7 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
       const r = await window.dy.draft.removeMany(ids);
       if (!r.ok) {
         // 一条都没删掉时不能说"已删除"：草稿还在，而用户已经相信它不在了
-        setNotice(`批量删除失败：${r.error} —— 一条都没删，草稿都还在`);
+        setNotice(`批量删除失败：${failText(r.error, '未知原因')} —— 一条都没删，草稿都还在`);
         return;
       }
       const deleted = (r.data && r.data.deleted) || 0;
@@ -143,10 +185,50 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
     }
   }
 
+  /** 打开批量发布确认框。写间隔是本地读一次就够的设置，用它估时长 */
+  async function openPublishConfirm() {
+    const items = pickedItems;
+    if (!items.length) return;
+    try {
+      const r = await window.dy.config.describe();
+      const iv = r && r.ok && r.data.config && r.data.config.intervals
+        && r.data.config.intervals.write;
+      setWriteInterval(Array.isArray(iv) ? iv : null);
+    } catch (e) {
+      // 读不到就不报具体分钟数，改成"要等设置的写间隔"—— 编一个数字比没有数字更糟
+      setWriteInterval(null);
+    }
+    setPublishConfirm(items);
+  }
+
+  async function confirmPublish() {
+    const snapshot = publishConfirm || [];
+    // 按当前列表重核一遍：确认框开着的那段时间里自动刷新可能已经把某条换掉
+    // （在别处发掉了、或删了）。那些不该照样发出去。
+    const stillThere = snapshot.filter(d => list.some(x => x.id === d.id));
+    const gone = snapshot.length - stillThere.length;
+    if (!stillThere.length) {
+      setPublishConfirm(null);
+      setNotice('这些草稿已经不在这个箱里了（可能被删掉或已经发出去），一条都没发');
+      return;
+    }
+    setPublishBusy(true);
+    try {
+      const ok = await actions.publishDrafts(stillThere);
+      if (ok) {
+        setPicked(new Set());
+        setPublishConfirm(null);
+        if (gone) setNotice(`已排入 ${stillThere.length} 条；另有 ${gone} 条在确认期间已不在箱里，没有发它们`);
+      }
+    } finally {
+      setPublishBusy(false);
+    }
+  }
+
   function renderDraft(d, inGroup) {
     return (
       <div className="draft-row" key={d.id}>
-        <label className="draft-pick" title="勾选后可以一次删掉多条">
+        <label className="draft-pick" title="勾选后可以一次发布或一次删掉多条">
           <input type="checkbox" checked={picked.has(d.id)} onChange={() => togglePick(d.id)} />
         </label>
         <div className="draft-main">
@@ -196,7 +278,7 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
                           personaId: d.personaId, imagePath: d.imagePath,
                         });
                         if (!r.ok) {
-                          setNotice(`保存失败：${r.error} —— 原草稿未改动`);
+                          setNotice(`保存失败：${failText(r.error, '未知原因')} —— 原草稿未改动`);
                           return;
                         }
                         const rm = await window.dy.draft.remove(d.id);
@@ -302,6 +384,46 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
 
       {notice && <div className="notice"><div>{notice}</div></div>}
 
+      {/* 批量发布的进度与结果。数据在 App 层（见 App.jsx 的 bulkPublish）：
+          这个组件会在用户切去「队列」页看倒计时时卸载，进度不能跟着一起没了。 */}
+      {bulkPublish && (
+        <div className="drafts-bulkprogress">
+          <ProgressBar
+            current={bulkPublish.done}
+            total={bulkPublish.total}
+            label={bulkPublish.finished
+              ? <>批量发布结束：发出 <b className="text-ok num">{bulkPublish.ok}</b> 条
+                {bulkPublish.failed.length > 0 && <>、没发出去 <b className="text-bad num">{bulkPublish.failed.length}</b> 条</>}
+                {bulkPublish.cancelled > 0 && <>、按你的取消撤下 <b className="num">{bulkPublish.cancelled}</b> 条</>}</>
+              : `批量发布中：已完成 ${bulkPublish.done}/${bulkPublish.total} 条（每条之间要等写间隔）`}
+            tone={bulkPublish.finished
+              ? (bulkPublish.failed.length ? 'bad' : 'ok')
+              : (bulkPublish.cancelledByUser ? 'wait' : 'neutral')}
+          />
+          {!bulkPublish.finished && (
+            <button className="btn btn-quiet" onClick={() => actions.cancelBulkPublish()}>
+              取消剩下的
+            </button>
+          )}
+          {bulkPublish.finished && (
+            <button className="btn btn-quiet" onClick={() => actions.clearBulkPublish()}>知道了</button>
+          )}
+          {bulkPublish.failed.length > 0 && (
+            <div className="bulk-result">
+              {bulkPublish.failed.map(f => (
+                <div className="bulk-result-row" key={`bp-${f.draftId}-${f.error}`}>
+                  <b className="text-bad">没发出</b>
+                  <span>{f.label} —— {failText(f.error, '未知原因')}</span>
+                </div>
+              ))}
+              <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                这些草稿还在箱子里，一条都没丢 —— 修好原因（额度、重复回复、连接）后可以再发一次。
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="row" style={{ marginBottom: 12 }}>
         <button className="btn" onClick={() => reload()} disabled={loading}>
           {loading && <Spinner size={12} />}刷新
@@ -327,8 +449,22 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
                 <span className="drafts-bulkbar-main">
                   已选 {pickedIds.length} 条
                   {query && `（搜索中的 ${list.length} 条里）`}
+                  <span className="muted">　·　发布后这些草稿会自动移出箱子；没发出去的会留着</span>
                 </span>
-                <button className="btn btn-quiet text-bad" onClick={() => setConfirmingBatch(true)}>
+                {/* 批量发布进行中先把"删除所选"灰掉：删掉一条已经排进队列的草稿
+                    并不会取消那次发布（任务里带着自己的正文），
+                    一次几十条时这个坑不能留给用户踩。要撤先取消剩下的。 */}
+                <button className="btn btn-primary" onClick={openPublishConfirm}
+                  disabled={!actions.canQueue || !!(bulkPublish && !bulkPublish.finished)}
+                  title={!actions.canQueue
+                    ? '浏览器未连接 —— 先到「连接」页接上抖音，发布要经过它'
+                    : '把这批草稿逐条发到抖音：一次确认，每条仍然按设置的写间隔排队'}>
+                  发布所选 {pickedIds.length} 条
+                </button>
+                <button className="btn btn-quiet text-bad" onClick={() => setConfirmingBatch(true)}
+                  disabled={!!(bulkPublish && !bulkPublish.finished)}
+                  title={bulkPublish && !bulkPublish.finished
+                    ? '批量发布进行中 —— 先等它结束或取消剩下的，再删（删掉不会取消已排队的发布）' : undefined}>
                   删除所选
                 </button>
                 <button className="btn btn-quiet" onClick={() => setPicked(new Set())}>取消选择</button>
@@ -345,6 +481,17 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
               {grouped ? '平铺显示' : '按视频分组'}
             </button>
           )}
+        </div>
+      )}
+
+      {unattributed > 0 && (
+        // 这些草稿确实在库里，只是按账号过滤时不会露出来。不写出来的话，
+        // 用户看到的就只是"我生成了 7 条，草稿箱是空的"，只能猜。
+        <div className="notice notice-warn" style={{ marginBottom: 12 }}>
+          <div>
+            有 <b>{unattributed}</b> 条草稿没有标明是哪个账号的，为了不把别的号准备的话错发出去，
+            它们没有列在下面。到「连接」页确认浏览器里登录着抖音，再重新生成一次就会正常归属。
+          </div>
         </div>
       )}
 
@@ -367,7 +514,7 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
                 // 要么把用户送到一个他本来就不想去的地方。写清去哪儿做就够了。
                 <EmptyState
                   title="草稿箱是空的。"
-                  hint="在「我的作品」里点进任意作品就是评论工作台，对某条评论点「存草稿」即可；工作台的批量生成结果也会落到这里。"
+                  hint="在「我的作品」里点进任意作品就是评论工作台，对某条评论点「存草稿」即可；工作台批量条上的「批量生成」和「用固定回复存草稿」，结果也落到这里。"
                 />
               )
           )
@@ -379,6 +526,68 @@ export default function DraftsView({ drafts, total, matched, loading, actions, r
                 : <div className="list">{list.map(d => renderDraft(d, false))}</div>}
             </>
           )}
+
+      {publishConfirm && (
+        <Modal
+          title={`发布选中的 ${publishConfirm.length} 条草稿？`}
+          onClose={() => setPublishConfirm(null)}
+          busy={publishBusy}
+          width={620}
+          footer={
+            <>
+              <button className="btn btn-quiet" onClick={() => setPublishConfirm(null)} disabled={publishBusy}>
+                取消
+              </button>
+              <button className="btn btn-primary" onClick={confirmPublish} disabled={publishBusy}>
+                {publishBusy && <Spinner size={12} />}
+                {publishBusy ? '排队中…' : `确认发布 ${publishConfirm.length} 条`}
+              </button>
+            </>
+          }
+        >
+          <div className="notice notice-warn" style={{ marginBottom: 12 }}>
+            <div>
+              这会<b>真的以当前账号把它们发到抖音</b>，不是存到别处。发出去的内容要逐条撤，
+              位置在评论工作台的那条评论下面（「删除我的回复」）。
+            </div>
+          </div>
+
+          <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
+            {publishConfirm.length > 1 ? (
+              <>一条一次发布，<b>串行</b>进行：每两条之间都要等设置的写间隔
+                {span
+                  ? <>，这 {publishConfirm.length} 条大概要 <b className="num">{span}</b>（第一条还要看离上一次发布过了多久）</>
+                  : '，所以一整批要等的时间远比一次点击长'}
+                。
+              </>
+            ) : '这一条要等的是距上一次发布过了多久（设置里的写间隔）。'}
+            期间可以随时「取消剩下的」，正在发的那一条会先结束。
+          </div>
+          <div className="muted" style={{ fontSize: 12.5, marginBottom: 12 }}>
+            被策略拦下的（当日额度用完、这条评论已经回复过、内容重复）不会发出去，
+            草稿留在箱里，进度面板会逐条写出原因。
+          </div>
+
+          {/* 确认的是这一批内容，不是"发不发"这个抽象动作 ——
+              不把要发的东西摆出来，用户点的其实是运气 */}
+          <div className="bulk-result">
+            {publishConfirm.slice(0, PUBLISH_PREVIEW_ROWS).map(d => (
+              <div className="bulk-result-row" key={d.id}>
+                <b className="muted">#{d.id}</b>
+                <span>
+                  <span className="muted">{d.videoTitle || `视频 ····${String(d.awemeId).slice(-6)}`}：</span>
+                  {d.text || '（纯图片草稿，无文字）'}
+                </span>
+              </div>
+            ))}
+            {publishConfirm.length > PUBLISH_PREVIEW_ROWS && (
+              <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                另外 {publishConfirm.length - PUBLISH_PREVIEW_ROWS} 条没有列出，确认后会一起发。
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {confirmingBatch && (
         <Modal

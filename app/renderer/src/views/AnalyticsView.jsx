@@ -3,7 +3,8 @@ import { BarList, DayBars, Donut, TrendChart } from '../components/charts.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import LoadingState from '../components/LoadingState.jsx';
 import Spinner from '../components/Spinner.jsx';
-import { ago, abbrNum as short } from '../format.js';
+import { ago, abbrNum as short, commandLabel, purposeLabel } from '../format.js';
+import { describeError, failText } from '../errors.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
 /** 作品对比可切换的指标 */
@@ -48,7 +49,7 @@ export default function AnalyticsView({ actions }) {
     try {
       const r = await window.dy.data.analytics({ scope, dayWindow: range });
       if (r.ok) { setData(r.data); setError(null); }
-      else setError(r.error || '未知错误');
+      else setError(failText(r.error, '未知错误'));
     } finally {
       setLoading(false);
     }
@@ -110,6 +111,18 @@ export default function AnalyticsView({ actions }) {
 
   // 播放增长（schema v12 起才有）。升级前的库里是空的，所以每一处都要能显示空态
   const growth = data.growth || { daily: [], perVideo: [], covered: 0, totalDays: 0 };
+  // 点赞增量榜。与上面播放增量榜同一套筛选口径：只有一条快照的视频算不出增量，
+  // 增量为 0 的也不列（列出来是一根空柱子，只会让人以为图坏了）
+  const likeGrowth = growth.perVideo
+    .filter(p => p.likesDelta != null && p.likesDelta > 0)
+    .sort((a, b) => b.likesDelta - a.likesDelta)
+    .slice(0, 8)
+    .map(p => ({
+      key: p.awemeId,
+      label: p.title || `视频 ····${String(p.awemeId).slice(-6)}`,
+      value: p.likesDelta,
+      sub: `${p.fromDay.slice(5)} → ${p.toDay.slice(5)}`,
+    }));
 
   /** 打开某个评论者的详情（`whois` 的视图版）。缺 actions 时优雅降级成不可点 */
   const onOpenUser = (uid) => { if (actions && actions.openUser && uid) actions.openUser(uid); };
@@ -287,6 +300,14 @@ export default function AnalyticsView({ actions }) {
                     只有一条快照的视频给不出增量，不列在这里。
                   </p>
                 </div>
+                {likeGrowth.length > 0 && (
+                  <div className="chart-card" style={{ marginTop: 12 }}>
+                    <BarList items={likeGrowth} unit=" 赞" />
+                    <p className="muted chart-note">
+                      同窗口内的点赞增量 —— 播放高但点赞少的内容，问题通常在结尾那几秒。
+                    </p>
+                  </div>
+                )}
               </>
             )}
           </section>
@@ -405,7 +426,7 @@ export default function AnalyticsView({ actions }) {
                   <BarList
                     items={data.llm.byPurpose.map(p => ({
                       key: p.purpose,
-                      label: p.purpose,
+                      label: purposeLabel(p.purpose),
                       // 条形按"单次耗时"排 —— 用户真正关心的是"哪一种最慢"，
                       // 而成本条目的绝对金额太小（几厘钱），画出来全是一样长的短线。
                       // 单位换算成**秒**：AI 调用是十几秒的量级，"12000 ms"要心算一下
@@ -427,7 +448,7 @@ export default function AnalyticsView({ actions }) {
                   <BarList
                     items={data.ops.byCommand.slice(0, 8).map(c => ({
                       key: c.command,
-                      label: c.command,
+                      label: commandLabel(c.command),
                       // 与上面那张卡统一用秒，免得同一个页面上两种时间单位
                       value: (c.avgMs || 0) / 1000,
                       sub: `${c.total} 次${c.errors > 0 ? ` · 失败 ${c.errors}` : ''}`,
@@ -453,8 +474,14 @@ export default function AnalyticsView({ actions }) {
                 {data.failures.map(f => (
                   <div className="row-item" key={f.signature}>
                     <div className="row-main">
-                      <div className="row-title num">{f.signature}</div>
-                      {f.exampleText && <div className="row-sub">{f.exampleText}</div>}
+                      {/* signature 是 core 归一化出来的**机器键**（status_code=8 /
+                          bridge_offline / msg:…），以前直接当标题上屏，
+                          这张表等于一本没人读得懂的账。 */}
+                      <div className="row-title">{describeError(f.signature).text}</div>
+                      <div className="row-sub">
+                        <span className="num">{f.signature}</span>
+                        {f.exampleText && <> · 例如：{f.exampleText}</>}
+                      </div>
                     </div>
                     <div className="row-meta num">
                       {f.hitCount} 次

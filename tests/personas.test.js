@@ -2,6 +2,7 @@
 
 const {
   pickPersona, buildSystemPrompt, buildUserPrefix,
+  effectiveLengthRange,
   getTemperature, listPersonas, findPersona, resetState, PERSONAS,
 } = require('../core/personas');
 
@@ -34,12 +35,21 @@ describe('personas', () => {
     }
   });
 
-  it('buildSystemPrompt 含长度区间与 AI 特征词禁令', () => {
+  it('buildSystemPrompt 含长度区间与禁用词清单', () => {
     const p = findPersona('casual_friend');
     const s = buildSystemPrompt(p, '自然亲切');
     expect(s).toContain(p.promptPrefix);
-    expect(s).toContain(`${p.lengthRange[0]}-${p.lengthRange[1]}`);
-    expect(s).toContain('绝对禁止出现以下 AI 特征词');
+    // 区间断言必须走 effectiveLengthRange，**不能**直接用人格的 lengthRange：
+    // 最终写进 prompt 的是"设置页的期望 ∩ 人格风格 ∩ validateReply 的上下限"，
+    // 人格自带的那个数只在三者恰好相容时才等于它 —— 直接断言人格区间会随
+    // 操作者改设置页而假红（或更糟：写进去的不是校验会用的那个数）。
+    const [lo, hi] = effectiveLengthRange(p);
+    expect(s).toContain(`回复长度控制在 ${lo}-${hi} 字之间`);
+    // 措辞从「AI 特征词」改成「词」：现在这份清单还把操作者维护的
+    // forbiddenPhrases / forbiddenClaims 并了进来，它们不都是"AI 特征词"，
+    // 而是 validateReply 发布前真正会拦的那些
+    expect(s).toContain('绝对禁止出现以下词');
+    for (const w of p.forbiddenWords) expect(s).toContain(w);
     expect(s).toContain('自然亲切');
   });
 

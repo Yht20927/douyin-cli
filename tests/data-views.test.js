@@ -703,13 +703,15 @@ describe('运营对象 listTargets', () => {
     expect(views.listTargets({ order: 'comments' }).items.map(i => i.awemeId)).toEqual(['b', 'a']);
   }));
 
-  it('未知排序退回默认并如实告知，而不是返回空列表', withTempEnv({}, async ({ views, vids, cmts }) => {
+  it('未知排序退回默认，而不是返回空列表', withTempEnv({}, async ({ views, vids, cmts }) => {
     vids.upsert({ awemeId: 'a' });
     addComment(cmts, 'a', 'a1', '问题');
     const t = views.listTargets({ order: 'typo' });
     expect(t.order).toBe('pending');
-    expect(t.unknownOrder).toBe('typo');
     expect(t.items).toHaveLength(1);
+    // 退回之外不再多给一个 unknownOrder 字段：排序下拉的取值全部来自下面的 orders，
+    // 那个字段既递不上去也没人显示，留着只会让人以为界面说明了这件事
+    expect(t).not.toHaveProperty('unknownOrder');
   }));
 
   it('头部信息给全：扫描上限、缺标题的数量、可选排序由 core 提供', withTempEnv({}, async ({ views, vids, cmts }) => {

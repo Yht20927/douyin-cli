@@ -284,6 +284,44 @@ function pickPersona(opts = {}) {
   return candidates[candidates.length - 1];
 }
 
+/**
+ * 给模型看的长度范围 —— 和发布前硬校验读同一份 filters.replyLength。
+ *
+ * 三个来源夹在一起：操作者在设置页定的期望（prefer）、人格自带的风格区间
+ * （lengthRange）、以及 validateReply 真正会用来判过短/过长的上下限（hardMin/hardMax）。
+ *
+ * 之所以要夹：prompt 让模型写 100 字、校验按 hardMax 55 判"过长"，运营者只会看到
+ * 一条自己看不懂的拒绝；而 prefer 完全没人读的话，设置页那个滑块就是假的。
+ * 区间不相交时**以操作者的期望为准** —— 人格区间是出厂风格，人是来调的。
+ *
+ * @param {object} [persona] - 可省，没有人格时只看 prefer
+ * @param {object} [filters] - 覆盖用（测试）；默认读 config 单一真源
+ * @returns {[number, number]|null} 一个数都取不到时返回 null，让调用方别瞎编数字
+ */
+function effectiveLengthRange(persona, filters) {
+  const f = filters || config.get('filters') || {};
+  const rl = f.replyLength || {};
+  const norm = (arr) => (
+    Array.isArray(arr) && arr.length === 2 && arr.every(Number.isFinite)
+      ? [Math.min(arr[0], arr[1]), Math.max(arr[0], arr[1])]
+      : null
+  );
+  const prefer = norm(rl.prefer);
+  const style = norm(persona && persona.lengthRange);
+
+  let range = prefer || style;
+  if (prefer && style) {
+    const overlap = [Math.max(prefer[0], style[0]), Math.min(prefer[1], style[1])];
+    if (overlap[0] <= overlap[1]) range = overlap;
+  }
+  if (!range) return null;
+
+  let [lo, hi] = range;
+  if (Number.isInteger(rl.hardMin)) lo = Math.max(lo, rl.hardMin);
+  if (Number.isInteger(rl.hardMax)) hi = Math.min(hi, rl.hardMax);
+  return [lo, Math.max(lo, hi)];
+}
+
 function buildSystemPrompt(persona, baseStrategy) {
   const parts = [persona.promptPrefix];
 
@@ -296,7 +334,21 @@ function buildSystemPrompt(persona, baseStrategy) {
     parts.push(`\n账号背景（只影响你看问题的视角，不要直接复述）：\n${roleProfile.trim()}`);
   }
 
-  parts.push(`\n通用约束：\n- 回复长度控制在 ${persona.lengthRange[0]}-${persona.lengthRange[1]} 字之间\n- 绝对禁止出现以下 AI 特征词：${persona.forbiddenWords.join('、')}\n- 不要写完整段落，用短句或换行\n- 不要过度礼貌或正式\n- 必须为每条传入的评论都生成一条回复（不要跳过任何一条）`);
+  // 禁用词把操作者维护的两份清单并进来：发布前 validateReply 正是拿
+  // forbiddenPhrases / forbiddenClaims 判的，事先不说等于让它写完再被程序丢掉。
+  const f = config.get('filters') || {};
+  const banned = Array.from(new Set([
+    ...(persona.forbiddenWords || []),
+    ...(Array.isArray(f.forbiddenPhrases) ? f.forbiddenPhrases : []),
+    ...(Array.isArray(f.forbiddenClaims) ? f.forbiddenClaims : []),
+  ]));
+  const range = effectiveLengthRange(persona, f);
+
+  const rules = [];
+  if (range) rules.push(`回复长度控制在 ${range[0]}-${range[1]} 字之间`);
+  if (banned.length) rules.push(`绝对禁止出现以下词：${banned.join('、')}`);
+  rules.push('不要写完整段落，用短句或换行', '不要过度礼貌或正式', '必须为每条传入的评论都生成一条回复（不要跳过任何一条）');
+  parts.push(`\n通用约束：\n${rules.map(r => `- ${r}`).join('\n')}`);
   // 注：改造前这里对策略文本做 .slice(0, 300) 截断，会从句子中间切断策略内容
   // （实测截到"### B. 赞美型 / 好看/厉害/喜欢/绝了"），导致后半部分策略从未生效。
   // 现在策略统一由单一真源经 {{STRATEGY_BLOCK}} 注入，此处仅作可选的调用方补充，
@@ -339,6 +391,7 @@ module.exports = {
   pickPersona,
   buildSystemPrompt,
   buildUserPrefix,
+  effectiveLengthRange,
   getTemperature,
   listPersonas,
   findPersona,

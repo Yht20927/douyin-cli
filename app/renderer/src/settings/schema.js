@@ -248,14 +248,28 @@ export const GROUPS = [
     desc: '这些是改造前只写在 markdown 里、靠自觉遵守的规则，现在由代码强制拦截。',
     fields: [
       { path: 'policy.dailyWriteQuota', type: T.INT, label: '每日写操作上限' },
-      { path: 'policy.dailyRounds', type: T.INT, label: '每日轮次上限' },
+      {
+        path: 'policy.dailyRounds',
+        type: T.INT,
+        label: '每日轮次提示阈值',
+        status: 'advisory',
+        statusNote: '只提示、不拦截 —— 达到后界面上出现黄条「建议明天再继续」，但不会阻止你继续发。'
+          + '真正管量的是上面的「每日写操作上限」与下一项的触顶冷却',
+      },
       {
         path: 'policy.roundMaxWrites',
         type: T.INT,
         label: '单轮连续写操作上限',
-        hint: '达到后强制冷却，冷却时长在下一项。',
+        hint: '一轮 = 一批连续写操作：写满这个条数这一轮就结束，强制冷却（时长在下一项），'
+          + '冷却后的第一条开启新一轮。中间隔多久不写都算同一轮。',
       },
-      { path: 'policy.roundCooldownSec', type: T.INT, label: '单轮触顶后的冷却时长（秒）' },
+      {
+        path: 'policy.roundCooldownSec',
+        type: T.INT,
+        label: '单轮触顶后的冷却时长（秒）',
+        hint: '它同时是「轮」的唯一边界：冷却结束后写下的第一条才算新一轮。设成 0 = 关闭单轮上限'
+          + '（写满即可继续，不再强制休息）。',
+      },
       {
         path: 'policy.riskEscalateAfterRounds',
         type: T.INT,
@@ -266,8 +280,11 @@ export const GROUPS = [
       { path: 'policy.riskCooldownMin', type: T.INT, label: '命中风控后全局停写（分钟）' },
       { path: 'policy.circuitBreaker.failThreshold', type: T.INT, label: '连续失败几次后暂停发布' },
       { path: 'policy.circuitBreaker.windowMs', type: T.INT, label: '失败统计窗口（毫秒）' },
-      { path: 'policy.maxPerVideoPerRound', type: T.INT, label: '单个作品每轮最多回复几条' },
-      { path: 'policy.maxPerUidPerRound', type: T.INT, label: '同一个用户每轮最多回复几条' },
+      // 下面两项的窗口是**今日**，不是"本轮" —— 口径曾经跟着"轮"的定义漂移，
+      // 同一份数据能算出三种"本轮已回几条"（见 core/policy/rounds.js 文件头）。
+      // 配置键名保留 maxPerXxxPerRound 以免重置你已设的值，标签以界面为准。
+      { path: 'policy.maxPerVideoPerRound', type: T.INT, label: '单个作品每天最多回复几条' },
+      { path: 'policy.maxPerUidPerRound', type: T.INT, label: '同一个用户每天最多回复几条' },
       {
         path: 'policy.stopAfterConsecutiveSkips',
         type: T.INT,
@@ -405,7 +422,9 @@ export const GROUPS = [
         path: 'llm.api_key',
         type: T.PASSWORD,
         label: 'API Key',
-        hint: '留空表示不修改。已设置时显示为打码值，界面上不会回显真实内容。',
+        hint: '留空表示不修改 —— 所以这一格也清不掉已设置的 Key（要换就填新的）。'
+          + '从没填过就是没有 Key：「回复模式」留在「AI 生成」时生成会做不了。'
+          + '已设置时显示为打码值，界面上不会回显真实内容。',
       },
       {
         path: 'llm.base_url',

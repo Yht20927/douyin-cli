@@ -220,9 +220,19 @@ const DEFAULTS = {
   // ═══════════════════════════════════════════════════════════
   policy: {
     // ── 总量与轮次 ──
-    /** 每日写操作上限 */
+    /** 每日写操作上限。**这是真正管量的那一个** */
     dailyWriteQuota: 30,
-    /** 每日轮次上限 */
+    /**
+     * 每日轮次上限 ——
+     *
+     * ⚠️ **只提示，不拦写操作**（见 运营规则说明.md §1）。它现在是个提示阈值：
+     * 达到后界面上出黄条说"建议明天再继续"，但不会挡住你。真正管量的是上面的
+     * `dailyWriteQuota` 与下面的触顶冷却。
+     *
+     * 曾经它是硬拦，而拦的依据是"空闲断轮"—— 那个依据本身是错的，于是拦的是
+     * 想干活的人（散写一天反而更容易被拦下），绕得开的人照样绕。判定"轮"的规则
+     * 与切"轮"的规则必须是同一条，见 `core/policy/rounds.js` 文件头。
+     */
     dailyRounds: 3,
     /** 单轮连续写操作上限，达到后强制冷却 */
     roundMaxWrites: 10,
@@ -621,6 +631,15 @@ function validate(cfg) {
     const v = getByPath(cfg, `policy.${k}`);
     if (!Number.isInteger(v) || v < 0) {
       fail(`policy.${k}`, `需为不小于 0 的整数，实际为 ${JSON.stringify(v)}`, DEFAULTS.policy[k]);
+    }
+  }
+  // 「单轮 ≤N 条」的 N 不能是 0 —— 它会让每一笔写操作落地即成满轮、笔笔都要冷却 5 分钟。
+  // 这不是"关闭单轮上限"（那要靠把 roundCooldownSec 设成 0），而是一个纯粹的脚枪，
+  // 所以这里单独收紧。0 与 1 在判定上本来就等价（见 rounds.js 的 normOpts）。
+  {
+    const v = getByPath(cfg, 'policy.roundMaxWrites');
+    if (Number.isInteger(v) && v < 1) {
+      fail('policy.roundMaxWrites', `需为不小于 1 的整数，实际为 ${v}`, DEFAULTS.policy.roundMaxWrites);
     }
   }
   for (const k of ['windowMs', 'failThreshold']) {

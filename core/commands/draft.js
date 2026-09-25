@@ -34,11 +34,19 @@ async function cmdDraft(ctx, args) {
       const awemeId = args[1];
       const text = args[2];
       if (!awemeId || !text) throw new Error('用法: node cli.js draft save <aweme_id> "文本" [--reply-to <cid>] [--persona <id>]');
+      // 归属账号：不标的话，这条草稿在按账号过滤的草稿箱列表里是看不见的。
+      // 取不到 currentUid 时退回这个视频在库里的 ops_uid —— 那是"本机以哪个号
+      // 运营过它"的直接证据。两个模块都在调用时 require（见 §2.4 顶层 require 钉死实例）
+      const accounts = require('../memory/accounts');
+      const videos = require('../memory/videos');
+      const video = videos.get(awemeId);
+      const ownerUid = accounts.currentUid() || (video && video.opsUid) || null;
       const id = drafts.save({
         awemeId,
         text,
         replyToCid: getFlag(args, '--reply-to', null),
         personaId: getFlag(args, '--persona', null),
+        accountUid: ownerUid,
       });
       logger.info(`草稿已保存 #${id}`);
       return { id };

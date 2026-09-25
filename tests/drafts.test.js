@@ -206,4 +206,63 @@ describe('drafts memory module', () => {
       expect(drafts.removeMany([99999998, 99999999], { accountUid: 'uidA' })).toBe(0);
     });
   });
+
+  // ═════════════════════════════════════════════════════════
+  // 写入必须标明归属账号
+  //
+  // 真实事故：批量 AI 生成回复后草稿箱是空的。数据其实进库了（CLI `draft list`
+  // 能列出来），看不见是因为三个写草稿的入口都没带 accountUid，而本文件上面
+  // 「指定账号时 account_uid 为 NULL 的草稿不得出现」那条用例把存储层行为
+  // 钉成了设计如此 —— 隔离规则是对的，漏的是写入侧。这类"两半各自都对、
+  // 拼起来什么都看不见"的缺陷，只测其中一半永远抓不到。
+  // ═════════════════════════════════════════════════════════
+  describe('写入必须标明归属账号', () => {
+    it('带归属存进去的草稿，按该账号能列出来', () => {
+      drafts.save({ awemeId: 'v-attr', text: '甲号准备好的回复', accountUid: 'attrA' });
+      const items = drafts.list({ posted: false, accountUid: 'attrA' });
+      expect(items.map(d => d.text)).toContain('甲号准备好的回复');
+    });
+
+    it('没标归属的草稿不许静默消失：count 的 unattributed 数得到', () => {
+      const before = drafts.count({ posted: false, unattributed: true });
+      drafts.save({ awemeId: 'v-attr', text: '没标归属的一条' });
+      expect(drafts.count({ posted: false, unattributed: true })).toBe(before + 1);
+      // 它与"按某个账号过滤"是两回事：两个条件相加恒为 0，所以视图层分开查
+      expect(drafts.count({ posted: false, accountUid: 'attrA', unattributed: true })).toBe(0);
+    });
+
+    it('listDrafts 把未标明归属的条数报给界面', () => {
+      for (const m of ['../core/data/views']) delete require.cache[require.resolve(m)];
+      const views = require('../core/data/views');
+      drafts.save({ awemeId: 'v-attr', text: '报给界面的孤儿草稿' });
+      const box = views.listDrafts({ accountUid: 'attrA' });
+      expect(box.items.map(d => d.text)).toContain('甲号准备好的回复');
+      expect(box.items.map(d => d.text)).not.toContain('报给界面的孤儿草稿');
+      expect(box.unattributed).toBeGreaterThanOrEqual(1);
+    });
+
+    it('每一个写草稿的调用点都必须显式带 accountUid', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const files = [
+        'core/commands/getReply.js',
+        'core/commands/draft.js',
+        'app/main/ipc.js',
+      ];
+      let seen = 0;
+      for (const rel of files) {
+        const src = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
+          // 注释里出现 drafts.save 不算调用点（本文件系列的护栏都踩过这个坑）
+          .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        const calls = src.match(/\.save\(\{[^}]*\}\)/g) || [];
+        for (const call of calls) {
+          expect(call).toMatch(/accountUid/);
+          seen += 1;
+        }
+      }
+      // 少于 3 个说明有调用点没被扫到（比如对象里出现了嵌套花括号，
+      // [^}]* 会提前收尾）—— 那这条护栏就只是看着在起作用
+      expect(seen).toBeGreaterThanOrEqual(3);
+    });
+  });
 });

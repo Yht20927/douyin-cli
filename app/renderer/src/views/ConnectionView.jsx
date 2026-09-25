@@ -1,6 +1,7 @@
 import React from 'react';
 import StatusBand from '../components/StatusBand.jsx';
 import { abbrNum } from '../format.js';
+import { describeError } from '../errors.js';
 
 /** 把时间戳转成"多久之前" */
 function ago(iso) {
@@ -147,6 +148,11 @@ export default function ConnectionView({ status, actions, busy }) {
   const connections = all.filter(c => c.alive);
   const stale = all.filter(c => !c.alive);
 
+  // status.error 是主进程读桥接状态失败时的原始串（EADDRINUSE、
+  // "Bridge Server 未启动 (127.0.0.1:19422) …"）。这一页就是给"连不上"的人看的，
+  // 把英文串原样摆在这里等于让人自己去搜索那行字。
+  const fail = status && status.error ? describeError(status.error) : null;
+
   return (
     <div className="main-col">
       <h1 className="page-title">连接</h1>
@@ -157,9 +163,14 @@ export default function ConnectionView({ status, actions, busy }) {
 
       <StatusBand status={status} actions={actions} busy={busy} />
 
-      {status && status.error && (
+      {fail && (
         <div className="notice notice-bad">
-          最近一次检测失败：<b>{status.error}</b>
+          最近一次检测失败：{fail.text}
+          {fail.next.length > 0 && (
+            <ul className="row-next">
+              {fail.next.map(x => <li key={x}>{x}</li>)}
+            </ul>
+          )}
         </div>
       )}
 

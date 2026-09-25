@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
 import { abbrNum } from '../format.js';
+import { failText } from '../errors.js';
 
 /**
  * 找视频 —— 运营对象的**入口**。
@@ -33,11 +34,22 @@ export default function DiscoverView({ actions }) {
   const [pending, setPending] = useState(null);
   /** 已加入过队列、正在等结果的那几条视频 id */
   const [adding, setAdding] = useState(() => new Set());
+  /** 勾选要批量加入的视频 id */
+  const [picked, setPicked] = useState(() => new Set());
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
 
   /** 这次等的是哪个命令的结果（'search' | 'user'）—— normalize 要按它分派 */
   const kindRef = useRef('search');
+  /** 视频 id → 正在为它拉评论的任务 id。批量时靠它把完成的任务落回行上 */
+  const addingRef = useRef(new Map());
+  /** 只订阅一次队列，避免"点了 8 次就挂 8 个监听" */
+  const watchRef = useRef(null);
+
+  useEffect(() => () => {
+    // 组件卸载（切页）时队列还在跑 —— 不取消订阅的话监听会一直握着已卸载组件的 setState
+    if (watchRef.current) watchRef.current();
+  }, []);
 
   /** 问一次这批视频在库里的状态（已收录 / 可加入） */
   const refreshStatus = useCallback(async (ids) => {
@@ -54,7 +66,7 @@ export default function DiscoverView({ actions }) {
       if (!t || !['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) return;
       setPending(null);
       if (t.status !== 'done') {
-        setError(t.error || '未完成');
+        setError(failText(t.error, '未完成'));
         return;
       }
       const r = await window.dy.queue.result(pending);
@@ -63,10 +75,13 @@ export default function DiscoverView({ actions }) {
       // 表现是"搜索结果永远是空的" —— 而错误本身不抛，只是没结果。
       const items = normalize(kindRef.current, r && r.result);
       setResults(items);
+      // 换了一批结果就把勾选清掉：留着上一批的 id，批量按钮上的数字就和眼前这页对不上
+      setPicked(new Set());
       setError(null);
       setNotice(items.length === 0
         ? '没有结果。换个关键词，或者确认浏览器里已登录、页面开着。'
-        : `找到 ${items.length} 个视频 —— 点「加入运营对象」会去拉它的评论（读操作，要等间隔）。`);
+        : `找到 ${items.length} 个视频 —— 逐条点「加入运营对象」，或勾几条一次排进队列。`
+          + '加入就是去拉它的评论（读操作，要等间隔）。');
       refreshStatus(items.map(i => i.awemeId));
     });
     return un;
@@ -88,25 +103,69 @@ export default function DiscoverView({ actions }) {
   }
 
   /** 加入运营对象 = 拉这条视频的评论。列表的判据就是"本地存到过评论"。 */
-  async function addTarget(v) {
-    const id = await actions.enqueue({
-      command: 'get',
-      argv: [v.awemeId, '--new', '--depth', '1', '--count', '20'],
-      label: `拉取评论（${(v.title || v.awemeId).slice(0, 18)}）`,
-    });
-    if (!id) return;
-    setAdding(prev => new Set(prev).add(v.awemeId));
-    setNotice('已加入队列 —— 拉完评论它就会出现在「运营对象」里。读操作要等间隔。');
-    // 拉完刷新这条的状态（顺便把"待回复 N"带出来）
-    const un = window.dy.queue.onChanged((payload) => {
-      const t = (payload.tasks || []).find(x => x.id === id);
-      if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) {
-        un();
-        setAdding(prev => { const n = new Set(prev); n.delete(v.awemeId); return n; });
-        refreshStatus([v.awemeId]);
+  async function addTargets(vids) {
+    const queueIn = [];
+    for (const v of vids) {
+      // 已经在拉的先跳过：重复入队就是重复拉同一批评论，
+      // 而每条都要占一次读间隔 —— 白等的那几十秒是实打实的。
+      if (addingRef.current.has(v.awemeId)) continue;
+      const id = await actions.enqueue({
+        command: 'get',
+        argv: [v.awemeId, '--new', '--depth', '1', '--count', '20'],
+        label: `拉取评论（${(v.title || v.awemeId).slice(0, 18)}）`,
+      });
+      // enqueue 失败时它自己已经弹过原因（未连接 / 被策略拦下），这里只数成功的
+      if (id) queueIn.push({ id, awemeId: v.awemeId });
+    }
+    if (!queueIn.length) return;
+
+    for (const q of queueIn) addingRef.current.set(q.awemeId, q.id);
+    setAdding(new Set(addingRef.current.keys()));
+    setPicked(new Set());
+    setNotice(`已排入 ${queueIn.length} 条。队列是一条条走的，每条之间要等一次读间隔`
+      + ` —— ${queueIn.length} 条不是"一会儿全部好"，而是按间隔依次完成。`
+      + '可以放着让它跑，拉完的行会自己变成「去工作台」。');
+    watchQueue();
+  }
+
+  /**
+   * 回收完成的任务，把行上的"拉取中…"撤掉并刷新它的状态。
+   *
+   * 只订阅一次：批量 20 条若逐条挂监听，就是 20 个 onChanged
+   * 在同一次推送里各扫一遍任务表，而且谁都不负责取消。
+   */
+  function watchQueue() {
+    if (watchRef.current) return;
+    watchRef.current = window.dy.queue.onChanged((payload) => {
+      const tasks = payload.tasks || [];
+      const finished = [];
+      for (const [awemeId, id] of addingRef.current) {
+        const t = tasks.find(x => x.id === id);
+        if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) finished.push(awemeId);
+      }
+      if (!finished.length) return;
+      for (const a of finished) addingRef.current.delete(a);
+      setAdding(new Set(addingRef.current.keys()));
+      refreshStatus(finished);
+      if (!addingRef.current.size && watchRef.current) {
+        watchRef.current();
+        watchRef.current = null;
       }
     });
   }
+
+  function togglePick(awemeId) {
+    setPicked(prev => {
+      const n = new Set(prev);
+      if (n.has(awemeId)) n.delete(awemeId); else n.add(awemeId);
+      return n;
+    });
+  }
+
+  // 可以加入的 = 结果减去"当前账号已经在运营的"（那些只剩去工作台，勾选没有意义）
+  const addable = results.filter(v => !(status[v.awemeId] && status[v.awemeId].mineOfCurrent));
+  const pickedAddable = addable.filter(v => picked.has(v.awemeId));
+  const allPicked = addable.length > 0 && pickedAddable.length === addable.length;
 
   const searching = results.length === 0 && pending;
 
@@ -179,18 +238,63 @@ export default function DiscoverView({ actions }) {
             : '粘一个抖音用户主页的链接（或 MS4wLjAB 开头的那串 sec_uid），看他的作品列表。'}
         />
       ) : (
-        <div className="list">
-          {results.map(v => (
-            <DiscoverRow
-              key={v.awemeId}
-              v={v}
-              st={status[v.awemeId]}
-              adding={adding.has(v.awemeId)}
-              onAdd={() => addTarget(v)}
-              onOpen={actions.openWorkspace}
-            />
-          ))}
-        </div>
+        <>
+          <div className="row discover-tools">
+            <span className="muted">
+              本页 <span className="num">{results.length}</span> 个，
+              可加入 <span className="num">{addable.length}</span> 个
+            </span>
+            {addable.length > 0 && (
+              <button
+                className="btn btn-quiet drafts-pickall"
+                onClick={() => setPicked(allPicked
+                  ? new Set()
+                  : new Set(addable.map(v => v.awemeId)))}
+              >
+                {allPicked ? '取消全选' : `全选可加入的 ${addable.length} 个`}
+              </button>
+            )}
+            {/* 加完要有地方看。以前这句只能靠用户自己想起侧栏里还有一个「运营对象」 */}
+            <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('targets')}>
+              去「运营对象」
+            </button>
+          </div>
+
+          {pickedAddable.length > 0 && (
+            <div className="row ws-bulkbar" style={{ marginBottom: 10 }}>
+              <span className="drafts-bulkbar-main">
+                已选 {pickedAddable.length} 个 —— 加入就是逐个拉它们的评论
+                <span className="muted">　·　队列串行，每两条之间要等一次读间隔</span>
+              </span>
+              <button
+                className="btn btn-primary"
+                disabled={!actions.canQueue}
+                title={!actions.canQueue
+                  ? '浏览器未连接 —— 先到「连接」页接上抖音，拉评论要经过它'
+                  : `把这 ${pickedAddable.length} 个视频逐条排进队列拉评论`}
+                onClick={() => addTargets(pickedAddable)}
+              >
+                加入运营对象 {pickedAddable.length} 个
+              </button>
+              <button className="btn btn-quiet" onClick={() => setPicked(new Set())}>取消选择</button>
+            </div>
+          )}
+
+          <div className="list">
+            {results.map(v => (
+              <DiscoverRow
+                key={v.awemeId}
+                v={v}
+                st={status[v.awemeId]}
+                adding={adding.has(v.awemeId)}
+                picked={picked.has(v.awemeId)}
+                onPick={() => togglePick(v.awemeId)}
+                onAdd={() => addTargets([v])}
+                onOpen={actions.openWorkspace}
+              />
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -200,14 +304,22 @@ export default function DiscoverView({ actions }) {
  * 一条搜索结果。
  *
  * 三种状态各自给一个明确的动作，不让用户猜：
- *   库里没有 / 有但不是当前账号的 → 「加入运营对象」
+ *   库里没有 / 有但不是当前账号的 → 勾选框 + 「加入运营对象」
  *   已经是当前账号在运营的        → 显示待回复数 + 「去工作台」
+ * 已经在运营的不给勾选：它没有"加入"这个动作，勾上了也只能排一条注定重复的任务。
  */
-function DiscoverRow({ v, st, adding, onAdd, onOpen }) {
+function DiscoverRow({ v, st, adding, picked, onPick, onAdd, onOpen }) {
   const inLib = st && st.inLibrary;
   const mine = st && st.mineOfCurrent;
   return (
     <div className="row-item discover-row">
+      {mine
+        ? <span className="discover-pick" />
+        : (
+          <label className="discover-pick" title="勾选后可以一次加入多个">
+            <input type="checkbox" checked={picked} onChange={onPick} />
+          </label>
+        )}
       {v.cover
         ? <img className="cover discover-cover" src={v.cover} alt="" loading="lazy" />
         : <div className="cover cover-fallback discover-cover" />}

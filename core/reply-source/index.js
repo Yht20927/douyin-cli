@@ -246,6 +246,13 @@ function describe() {
     // 界面要能说清"这次会不会真的调 AI"，比例得让它看得到
     hybridRatio: Number.isFinite(cfg.hybrid && cfg.hybrid.aiRatio) ? cfg.hybrid.aiRatio : 0,
     fixed: { ...fixed, cycle },
+    /**
+     * AI 那条腿通不通（Key 配没配）。
+     *
+     * 判据放在 core：界面自己读配置的话就要重抄一遍"环境变量 > config.json"的
+     * 优先级，而抄错的方向恰好是"按钮能点、调用必失败"。
+     */
+    ai: require('../llm').aiReady(),
     image: {
       enabled: !!(cfg.image && cfg.image.enabled),
       mode: (cfg.image && cfg.image.mode) || null,

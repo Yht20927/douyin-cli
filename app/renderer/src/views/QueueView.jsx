@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ProgressBar from '../components/ProgressBar.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
+import { describeError } from '../errors.js';
 
 /** 秒 → mm:ss */
 function mmss(ms) {
@@ -112,8 +113,12 @@ function WriteGate({ policy, status, onGotoConnection }) {
 
   if (!policy) return null;
 
-  const blocked = policy.risk.blocked || policy.circuit.open;
-  const remainingMs = Math.max(policy.nextWriteAllowedInMs || 0, policy.cooldownRemainingMs || 0);
+  // 倒计时一律"绝对时刻 - 本地 now"。policy 里那两个 *InMs 是 stats() 那一刻的
+  // 快照，而主进程只在队列边界（入队/开始/等待/恢复/结束）推一次 —— 拿快照做倒计时
+  // 的结果就是数字冻住：上面那个 500ms 的定时器白跑，状态词也永远停在「等待中」。
+  const cadenceLeft = Math.max(0, (policy.nextWriteAllowedAt || 0) - now);
+  const cooldownLeft = Math.max(0, (policy.cooldownUntil || 0) - now);
+  const remainingMs = Math.max(cadenceLeft, cooldownLeft);
   const quotaFull = policy.writesToday >= policy.dailyWriteQuota;
 
   let state, word, note;
@@ -132,7 +137,7 @@ function WriteGate({ policy, status, onGotoConnection }) {
   } else if (remainingMs > 0) {
     state = 'waiting';
     word = '等待中';
-    note = policy.cooldownRemainingMs > 0
+    note = cooldownLeft > 0
       ? `本轮已发 ${policy.roundWrites}/${policy.roundMaxWrites} 条，冷却后开启新一轮`
       : '距上次发布不足最小间隔';
   } else {
@@ -166,8 +171,12 @@ function QuotaRow({ policy }) {
   if (!policy) return null;
   const cells = [
     { label: '今日发布', used: policy.writesToday, max: policy.dailyWriteQuota },
+    // 「本轮」= 当前这一批（写满 roundMaxWrites 条即结束、冷却后开新一轮）。冷却期间
+    // 它会停在满值，那是**对的** —— 冷却结束前你确实还在本轮的第 10 条上。
     { label: '本 轮', used: policy.roundWrites, max: policy.roundMaxWrites },
-    { label: '轮 次', used: policy.roundsToday, max: policy.dailyRounds },
+    // 轮次到顶是**提示**不是"用尽"（见 core/policy/index.js 的 beforeWrite），
+    // 所以它满格时用暖色而不是红色 —— 红色会谎称"已经发不出去了"。
+    { label: '轮 次', used: policy.roundsToday, max: policy.dailyRounds, advisory: true },
   ];
   return (
     <div className="quota-row">
@@ -185,7 +194,10 @@ function QuotaRow({ policy }) {
             <div className="quota-bar">
               <div
                 className="quota-fill"
-                style={{ width: `${pct}%`, background: full ? 'var(--bad)' : 'var(--text-2)' }}
+                style={{
+                  width: `${pct}%`,
+                  background: full ? (c.advisory ? 'var(--wait)' : 'var(--bad)') : 'var(--text-2)',
+                }}
               />
             </div>
           </div>
@@ -226,7 +238,9 @@ export default function QueueView({ state, status, actions, busy }) {
         <div className="section-head">
           <h2 className="section-title">配额</h2>
           <span className="section-meta">
-            {policy ? `每日上限 ${policy.dailyWriteQuota} 条 · ${policy.dailyRounds} 轮` : ''}
+            {policy
+              ? `每日上限 ${policy.dailyWriteQuota} 条 · 满 ${policy.dailyRounds} 轮后提示风控风险（只提示，不拦）`
+              : ''}
           </span>
         </div>
         {/* 这里原本有一行「连续 N 条评论未匹配回复条件（达到 M 条建议停止本轮）」。
@@ -352,14 +366,21 @@ function ResultPeek({ task }) {
 
 function TaskRow({ task, onCancel }) {
   const [now, setNow] = useState(Date.now());
-  // 只在有等待任务时才开定时器，避免空闲时也在跑
+  // 只在需要走表的行开定时器：waiting 数倒计时，running 数已经跑了多久。
+  // 启动前先同步一次 now —— 这行第一次渲染时可能还是 pending，攒下的旧值会先
+  // 显示出一个错得离谱的"已跑"。
   useEffect(() => {
-    if (task.status !== 'waiting') return undefined;
+    if (task.status !== 'waiting' && task.status !== 'running') return undefined;
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(t);
   }, [task.status]);
 
   const problem = PROBLEM.has(task.status);
+  // 失败原因翻译成人话 + 下一步（这一页是用户唯一能看到明细的地方）。
+  // ⚠️ 只翻 task.error：**blockers 的 reason 原样保留** —— 那是 policy 已经
+  // 写好的具体中文理由（"本日写入额度已用尽"之类），翻成通用句子反而是丢信息。
+  const note = problem && task.error ? describeError(task.error) : null;
   // 「排队中」也要能取消：队列排了十几条想收手时，此前只能等每条真正开始跑
   // （中间还隔着几十秒的写间隔）才能一条条取消。queue.cancel 本来就支持 pending。
   const cancellable = ['pending', 'running', 'waiting'].includes(task.status);
@@ -383,10 +404,29 @@ function TaskRow({ task, onCancel }) {
           {task.status === 'pending' && ' · 前面的任务做完才会开始'}
           {task.status === 'waiting' && task.wait && ` · ${task.wait.reason}`}
           {/* 进度不再拼进这行小字 —— 见下面的进度条 */}
-          {problem && task.error && ` · ${task.error}`}
+          {note && ` · ${note.text}`}
           {/* 跑完的任务显示用了多久。"这条到底卡了还是在跑"靠它才看得出来 */}
           {task.endedAt && task.startedAt && ` · 用时 ${duration(task.endedAt - task.startedAt)}`}
+          {/* 正在跑的那条走表数已耗时 —— 静止的「执行中」没法区分在跑还是卡住 */}
+          {!task.endedAt && task.status === 'running' && task.startedAt
+            && ` · 已跑 ${duration(now - task.startedAt)}`}
         </div>
+
+        {/* 下一步。翻译层存在的意义就在这几行：只说"失败了"的报错，
+            用户能做的只有截图问人；说清该等 / 该改 / 该放弃才叫可操作。 */}
+        {note && note.next.length > 0 && (
+          <ul className="row-next">
+            {note.next.map((n, i) => <li key={i}>{n}</li>)}
+          </ul>
+        )}
+
+        {/* 原始信息折叠着留着：翻译不保证覆盖所有情况，而排查与截图都要靠原文 */}
+        {note && note.detail && note.detail !== note.text && (
+          <details className="row-raw">
+            <summary>原始信息</summary>
+            <pre>{note.detail}</pre>
+          </details>
+        )}
 
         {/* 任务进度条。
             `current` / `total` 一直在 `task.progress` 里（core 的 logger.progress
@@ -428,7 +468,9 @@ function TaskRow({ task, onCancel }) {
 
         <ResultPeek task={task} />
       </div>
-      {task.status === 'waiting' && task.wait && (
+      {/* 与页首倒计时同一条规则：截止时刻一过就不显示数字。停在 00:00 的读数
+          和"数字冻住"在屏幕上完全同形，运营者分不出"马上开始"还是"没人走表"。 */}
+      {task.status === 'waiting' && task.wait && task.wait.until > now && (
         <div className="row-meta num">{mmss(task.wait.until - now)}</div>
       )}
       {cancellable && (

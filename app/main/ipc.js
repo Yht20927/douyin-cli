@@ -252,7 +252,10 @@ function registerIpc(opts) {
 
   // ── 策略与队列 ──
   // 策略统计每次现算：它读 events 表，数据随时在变，缓存只会带来"界面显示的是旧的"。
-  ipcMain.handle('policy:stats', () => getPolicy().stats());
+  //
+  // 必须带上执行账号：配额与轮次都是"这个号今天干了多少"。不带账号统计时
+  // A 号用掉的轮次会算到刚切过来的 B 号头上（实测今日 5 条写操作分属 3 个账号）。
+  ipcMain.handle('policy:stats', () => getPolicy().stats({ accountUid: currentAccountUid() }));
 
   // 发布前预检：界面在确认弹窗里展示"能不能发、为什么不能、还要等多久"。
   // 只报告不等待 —— 与队列执行时的判定是同一个 beforeWrite，口径一致。
@@ -263,7 +266,10 @@ function registerIpc(opts) {
   // 弹窗在点击之前就会说清楚。
   ipcMain.handle('policy:check', (_e, meta) => {
     try {
-      const r = getPolicy().beforeWrite(meta && typeof meta === 'object' ? meta : {});
+      const given = meta && typeof meta === 'object' ? meta : {};
+      // 执行账号由主进程定，渲染层传来的同名字段一律覆盖 ——
+      // 否则被注入的渲染层可以挑一个"配额还没用完的号"把闸门绕过去。
+      const r = getPolicy().beforeWrite({ ...given, accountUid: currentAccountUid() });
       const online = !!(bridge.getStatus() && bridge.getStatus().online);
       const check = online
         ? r
@@ -285,18 +291,21 @@ function registerIpc(opts) {
   ipcMain.handle('queue:state', () => ({
     tasks: opts.queue.list(),
     stats: opts.queue.stats(),
-    policy: getPolicy().stats(),
+    policy: getPolicy().stats({ accountUid: currentAccountUid() }),
   }));
 
   ipcMain.handle('queue:enqueue', (_e, spec) => {
     // 只接受普通对象，避免渲染层被注入后塞进奇怪的东西
     if (!spec || typeof spec !== 'object') return { ok: false, error: '参数不合法' };
     try {
+      const givenMeta = spec.meta && typeof spec.meta === 'object' ? spec.meta : {};
       const id = opts.queue.enqueue({
         command: String(spec.command || ''),
         argv: Array.isArray(spec.argv) ? spec.argv.map(String) : [],
         label: spec.label ? String(spec.label) : undefined,
-        meta: spec.meta && typeof spec.meta === 'object' ? spec.meta : {},
+        // 执行账号由主进程盖：队列执行时 beforeWrite(task.meta) 据此统计配额与轮次，
+        // 让渲染层自带的话它可以挑一个"今天还没用过的号"把闸门绕过去。
+        meta: { ...givenMeta, accountUid: currentAccountUid() },
         // 插队只对发布类命令开放：批量生成/拉取不允许借它加塞读请求，
         // 发布才需要跳过排在前面的大批量任务
         front: spec.front === true && String(spec.command) === 'post',
@@ -370,8 +379,9 @@ function registerIpc(opts) {
   // 「我的作品」进，于是 96% 的运营数据在界面上不可达。
   //
   // 返回 { items, total, shown, truncated, scanned, scanLimit, scanCapped,
-  //        order, unknownOrder, orders } —— orders 由 core 提供，
+  //        order, orders, accountUid, accountCertain } —— orders 由 core 提供，
   // 界面不自己写一份排序清单（同 commentOrders 的做法）。
+  // accountCertain 现在由「运营对象」页用来声明"这一页到底有没有按账号过滤"。
   ipcMain.handle('data:targets', safe((o) => views.listTargets({
     order: o && o.order,
     limit: o && o.limit,
@@ -479,6 +489,9 @@ function registerIpc(opts) {
       personaId: spec.personaId || null,
       // 图片回复的本地路径：不带上它，"存草稿→稍后发布"会静默丢掉附图
       imagePath: spec.imagePath || null,
+      // 归属账号。必须与 data:drafts 过滤用的是同一个解析，否则刚存进去的草稿
+      // 会因为"没标明账号"被列表整个藏掉
+      accountUid: currentAccountUid(),
     });
     if (id == null) throw new Error('草稿内容为空（文字与图片至少要有一个）');
     return { id };
@@ -590,9 +603,12 @@ function registerIpc(opts) {
  * @param {import('electron').BrowserWindow} win
  * @param {object} bridge
  * @param {object} queue
+ * @param {() => string|null} [getAccountUid] - 当前执行账号。推给界面的策略快照
+ *   必须与 `policy:stats` 用同一个账号口径，否则两处数字不是一套；
+ *   不传时退回"全账号合算"（更严的方向）。
  * @returns {() => void} 取消订阅（两个订阅一起撤）
  */
-function forwardStatusToWindow(win, bridge, queue) {
+function forwardStatusToWindow(win, bridge, queue, getAccountUid) {
   const un1 = bridge.subscribe((status) => {
     if (!win || win.isDestroyed()) return;
     win.webContents.send('bridge:status-changed', status);
@@ -601,7 +617,9 @@ function forwardStatusToWindow(win, bridge, queue) {
     if (!win || win.isDestroyed()) return;
     // 队列变化时把策略一并推过去 —— 配额会随任务完成而变化，
     // 分两条消息推容易让界面短暂显示不一致的组合
-    win.webContents.send('queue:changed', { ...payload, policy: getPolicy().stats() });
+    let accountUid = null;
+    try { accountUid = typeof getAccountUid === 'function' ? getAccountUid() : null; } catch (e) { /* 退回全账号合算 */ }
+    win.webContents.send('queue:changed', { ...payload, policy: getPolicy().stats({ accountUid }) });
   });
   return () => { un1(); un2(); };
 }

@@ -369,7 +369,7 @@ function buildGenerateCommentPrompt(opts) {
     persona = null, count = 1, strategyText = '',
   } = opts;
 
-  const { buildSystemPrompt, buildUserPrefix } = require('../personas');
+  const { buildSystemPrompt, buildUserPrefix, effectiveLengthRange } = require('../personas');
   const personaPrompt = persona
     ? buildSystemPrompt(persona, strategyText)
     : `你是一个刷抖音的普通用户。策略：${strategyText || '自然口语化，有观点，不套话'}`;
@@ -377,9 +377,12 @@ function buildGenerateCommentPrompt(opts) {
 
   const videoBlock = formatVideoBlock(vctx);
   const imageHint = buildImageHint(vctx, mode);
+  // 长度只在 effectiveLengthRange 一处算，与通用约束、发布前硬校验同源
+  const range = effectiveLengthRange(persona);
+  const lengthHint = range ? `长度 ${range[0]}-${range[1]} 字` : '长度按日常口语，别写长';
   const countHint = count > 1
-    ? `请生成 ${count} 条不同的评论，每条风格/角度不同，长度 5-50 字。返回 JSON 字符串数组：["评论1", "评论2", ...]`
-    : '生成 1 条评论，长度 5-50 字。返回 JSON 字符串数组：["评论内容"]。不要换行、不要分段、不要长篇。';
+    ? `请生成 ${count} 条不同的评论，每条风格/角度不同，${lengthHint}。返回 JSON 字符串数组：["评论1", "评论2", ...]`
+    : `生成 1 条评论，${lengthHint}。返回 JSON 字符串数组：["评论内容"]。不要换行、不要分段、不要长篇。`;
 
   const tpl = loadTemplate('comment.md');
 
@@ -416,7 +419,7 @@ ${imageHint}
 - 像真实用户随手评论（不是"回复"，是"评论"）
 - 可以表达观点、提问题、分享经验、玩梗、简短感叹
 - 口语化，允许不完整句子，允许碎片化表达
-- 长度 5-50 字为主，偶尔可以 3-5 字的极简评论
+- ${lengthHint}为主，允许更短的极简评论
 - 避免 AI 特征词
 
 ${personaExamples}

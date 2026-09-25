@@ -18,6 +18,8 @@ downloads/
 *.log
 *.bak
 .tray-hint-shown
+# 循环游标与牌堆。正常落在数据目录，只有在仓库根直接跑脚本/测试才会生成在这一层
+reply-state.json
 
 # 抓包样本（含真实用户数据，不入库）
 请求.txt

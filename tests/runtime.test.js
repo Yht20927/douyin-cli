@@ -447,19 +447,24 @@ describe('run-command: describeError 文案归一化', () => {
     expect(lines[1]).toContain('help');
   });
 
-  it('ECONNREFUSED → 提示先启动 server', () => {
-    expect(describeError(new Error('connect ECONNREFUSED 127.0.0.1:19422'))).toEqual([
-      '错误: Bridge Server 未启动，请先运行:',
-      '  node server.js',
-    ]);
+  it('ECONNREFUSED → 分别给桌面与命令行两种用法该怎么做', () => {
+    const lines = describeError(new Error('connect ECONNREFUSED 127.0.0.1:19422'));
+    expect(lines[0]).toContain('Bridge Server 未启动');
+    // 界面用户没有终端：只给 `node server.js` 会把他指向一个不存在的地方
+    expect(lines.some(l => l.includes('桌面应用') && l.includes('重启'))).toBe(true);
+    expect(lines.some(l => l.includes('命令行') && l.includes('node server.js'))).toBe(true);
   });
 
   it('“Bridge Server 未启动”中文文案也走同一分支', () => {
-    expect(describeError(new Error('Bridge Server 未启动 (127.0.0.1:19422)'))[0]).toContain('请先运行');
+    const lines = describeError(new Error('Bridge Server 未启动 (127.0.0.1:19422)'));
+    expect(lines[0]).toContain('Bridge Server 未启动');
+    expect(lines.some(l => l.includes('node server.js'))).toBe(true);
   });
 
-  it('Unauthorized → 提示检查 token', () => {
-    expect(describeError(new Error('Unauthorized — 无效的 access token'))[0]).toContain('bridge.token');
+  it('Unauthorized → 桌面重装脚本，命令行查 bridge.token', () => {
+    const lines = describeError(new Error('Unauthorized — 无效的 access token'));
+    expect(lines.some(l => l.includes('桌面应用') && l.includes('重新安装'))).toBe(true);
+    expect(lines.some(l => l.includes('命令行') && l.includes('bridge.token'))).toBe(true);
   });
 
   it('风控 HTML 页面 → 附带登录态/风控提示', () => {
