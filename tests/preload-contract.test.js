@@ -396,3 +396,144 @@ describe('队列交给主进程的每个通道，都必须被接进 ctx', () => 
     expect(channels.filter(c => !wired.has(c))).toEqual([]);
   });
 });
+
+describe('策略闸门的等待：每个调用点都必须把 ctx.onWait 递下去', () => {
+  // 回归背景
+  // --------
+  // assertWritable 里"单轮写满后冷却 300 秒"那一段，此前在四条写命令里各抄了一遍上报：
+  //   { signal: ctx.signal, onWait: ({ waitMs, reason }) => logger.info('[post] …') }
+  // 这个内联回调把 **ctx.onWait 整个顶掉了** —— 队列好容易把倒计时通道接到 ctx 上，
+  // 命令入口一伸手就把它换成只会打印日志的那个。于是界面上任务挂在「执行中」、
+  // 没有倒计时也没有截止时刻，看着像卡死。第二十轮接上的是 enforceDelay 与 pace
+  // 两段，唯独闸门这段漏了（同一根线的三处里最容易漏的一处：它离 logger 最近）。
+  //
+  // 为什么只能静态钉：四条命令的行为测试都是"给它一个 ctx，看它调没调 assertWritable"，
+  // 传进去的是不是 ctx.onWait 那一根线在行为上完全等价 —— 少一根线什么都不抛。
+  // 与本文件上面那几条"通道名 / 参数键"的比对是同一类护栏：两端都对，中间断线。
+  //
+  // ⚠️ 扫的是**整个 core/commands 目录**，不是点名那四个文件（§2.47 同一条教训：
+  // 只核对已知位置，新增的调用点就永远在名单外）。
+  const CMDS_DIR = path.join(ROOT, 'core', 'commands');
+  const cmdFiles = () => fs.readdirSync(CMDS_DIR).filter(n => /\.js$/.test(n)).sort();
+  const readCmd = (f) => fs.readFileSync(path.join(CMDS_DIR, f), 'utf8');
+
+  /**
+   * 抽出 `name(...)` 的每处调用，按**顶层逗号**切成实参数组。
+   *
+   * 必须真解析，不能只找子串（§2.42：`false &&` 那种写法能骗过任何 includes 断言）：
+   * 括号不闭合就直接红，免得解析器哪天悄悄退化成"什么都没找到"。
+   */
+  function callArgs(code, name) {
+    const out = [];
+    let at = code.indexOf(name);
+    while (at >= 0) {
+      const open = at + name.length - 1;          // name 末尾的那个 '('
+      let depth = 0, close = -1;
+      for (let i = open; i < code.length; i++) {
+        if (code[i] === '(') depth++;
+        else if (code[i] === ')' && --depth === 0) { close = i; break; }
+      }
+      expect(close, `${name} 的括号没有闭合`).toBeGreaterThan(open);
+      out.push(splitTopLevel(code.slice(open + 1, close)));
+      at = code.indexOf(name, at + name.length);
+    }
+    return out;
+  }
+
+  /** 按深度 0 处的逗号切分；括号/方括号/花括号/引号内部的逗号不算分隔 */
+  function splitTopLevel(inner) {
+    const parts = [];
+    let depth = 0, start = 0, q = null;
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (q) { if (ch === '\\') i++; else if (ch === q) q = null; continue; }
+      if (ch === '"' || ch === "'" || ch === '`') { q = ch; continue; }
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) depth--;
+      else if (ch === ',' && depth === 0) { parts.push(inner.slice(start, i)); start = i + 1; }
+    }
+    parts.push(inner.slice(start));
+    return parts.map(s => s.trim());
+  }
+
+  /** 取 `onWait:` 后面那个值表达式的源码：深度 0 处遇 , ; ) } 或文件尾结束 */
+  function valueAfter(src) {
+    let i = 0, depth = 0, q = null;
+    while (i < src.length && /\s/.test(src[i])) i++;
+    const start = i;
+    for (; i < src.length; i++) {
+      const ch = src[i];
+      if (q) { if (ch === '\\') i++; else if (ch === q) q = null; continue; }
+      if (ch === '"' || ch === "'" || ch === '`') { q = ch; continue; }
+      if ('([{'.includes(ch)) { depth++; continue; }
+      if (')]}'.includes(ch)) { if (depth === 0) break; depth--; continue; }
+      if ((ch === ',' || ch === ';') && depth === 0) break;
+    }
+    return src.slice(start, i);
+  }
+
+  /**
+   * 这一处命中是不是注释。注释里抄着旧写法是有意的（helpers.js 文件头那段就是
+   * 写给下一个改这里的人看的），所以扫描必须只认代码 —— 否则护栏会因为**文档**而红，
+   * 而那恰好是"把文档改成假样子来骗过测试"的邀请函。
+   */
+  function isComment(code, idx) {
+    const lineStart = code.lastIndexOf('\n', idx) + 1;
+    const head = code.slice(lineStart, idx).trimStart();
+    return head.startsWith('*') || head.startsWith('//') || head.startsWith('/*');
+  }
+
+  const sites = [];
+  for (const f of cmdFiles()) {
+    for (const args of callArgs(readCmd(f), 'policy.assertWritable(')) {
+      sites.push({ file: f, opts: (args[1] || '').replace(/\s+/g, ' ') });
+    }
+  }
+
+  it('解析器找得出四条写命令的闸门调用（护栏自己先要有效）', () => {
+    expect(sites.length).toBeGreaterThanOrEqual(4);
+    expect([...new Set(sites.map(s => s.file))]).toEqual(
+      expect.arrayContaining(['post.js', 'like.js', 'delete-comment.js', 'dm.js']),
+    );
+  });
+
+  it('每一处的第二个实参都是那份共用的 policyWaitOpts（不许退回各写一遍的内联回调）', () => {
+    const bad = sites.filter(s => !/^policyWaitOpts\('[\w.-]+',\s*ctx\)$/.test(s.opts));
+    expect(bad, JSON.stringify(bad)).toEqual([]);
+  });
+
+  it('core/commands 里每一处 onWait: 收到的都是 ctx.onWait', () => {
+    // 这条管的是**其余**等待点（pace / enforceDelay 的调用处）：同一个错法换个地方
+    // 再犯一次，不该要人重新想一遍怎么写断言。
+    const orphans = [];
+    let seen = 0;
+    for (const f of cmdFiles()) {
+      const code = readCmd(f);
+      let at = code.indexOf('onWait:');
+      while (at >= 0) {
+        if (!isComment(code, at)) {
+          seen++;
+          const value = valueAfter(code.slice(at + 'onWait:'.length));
+          if (!/ctx\.onWait/.test(value)) {
+            orphans.push({ file: f, line: code.slice(0, at).split('\n').length, value: value.slice(0, 70) });
+          }
+        }
+        at = code.indexOf('onWait:', at + 7);
+      }
+    }
+    // 先确认这个扫描不是空转：helpers 的两处 + get/enrich 各一处
+    expect(seen).toBeGreaterThanOrEqual(4);
+    expect(orphans, JSON.stringify(orphans)).toEqual([]);
+  });
+
+  it('helpers 那份 policyWaitOpts 同时透传 signal 与 ctx.onWait，并且确实导出了', () => {
+    const code = readCmd('helpers.js');
+    const at = code.indexOf('function policyWaitOpts(');
+    expect(at, 'helpers.js 里找不到 policyWaitOpts').toBeGreaterThan(-1);
+    const body = code.slice(at, code.indexOf('\n}', at));
+    expect(body).toMatch(/signal:\s*ctx\s*\?\s*ctx\.signal/);   // 漏了就等于界面上取消不掉
+    expect(body).toMatch(/ctx\.onWait\(/);                      // 漏了就回到"只打印、不报队列"
+    const exports = (code.match(/module\.exports\s*=\s*\{([\s\S]*?)\}/) || [, ''])[1];
+    expect(/\bpolicyWaitOpts\b/.test(exports), 'policyWaitOpts 没导出').toBe(true);
+  });
+});

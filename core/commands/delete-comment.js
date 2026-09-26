@@ -8,7 +8,7 @@
 //   - 删掉**我们发出的回复**：本地要移除那行回复，并把被回复的父评论放回未回复
 //   - 删掉**我们自己发的一条顶级评论**：本地移除那行即可（没人指着它）
 
-const { escapeExpression, throttleOpts } = require('./helpers');
+const { escapeExpression, throttleOpts, policyWaitOpts } = require('./helpers');
 const corpus = require('../memory/corpus');
 const comments = require('../memory/comments');
 const accounts = require('../memory/accounts');
@@ -43,7 +43,7 @@ async function cmdDeleteComment(ctx, args) {
 
   // 策略闸门在前、节奏等待在后（见 post.js 的说明）。
   // 删除是撤销类操作，不该被"该 cid 是否已回复过"拦下，故不传 cid 做去重判定。
-  await policy.assertWritable({}, { signal: ctx.signal, onWait: ({ waitMs, reason }) => logger.info(`[delete-comment] ${reason}，等待 ${Math.ceil(waitMs / 1000)}s…`) });
+  await policy.assertWritable({}, policyWaitOpts('delete-comment', ctx));
 
   // 请求节奏守卫（--no-throttle 旁路）
   await riskControl.enforceDelay('write', throttleOpts(ctx, args));

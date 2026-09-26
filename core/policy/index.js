@@ -635,7 +635,9 @@ function createPolicyEngine(opts = {}) {
    * @param {object} meta
    * @param {object} [opts]
    * @param {AbortSignal} [opts.signal]
-   * @param {(info:object)=>void} [opts.onWait] - 等待开始时的回调（CLI 打日志 / GUI 画倒计时）
+   * @param {(info:object)=>void} [opts.onWait] - 等待上报，契约与 `risk-control.enforceDelay`、
+   *   `commands/helpers.pace` 完全一致：`{phase, waitMs, deadline, reason, type}`，
+   *   冷却那段报 `phase:'cooldown'`，睡完补报一次 `phase:'end'`（CLI 打日志 / GUI 画倒计时）
    */
   async function assertWritable(meta = {}, opts = {}) {
     // 可能要多轮：等完冷却之后策略会随时间变化（比如刚好跨到新一轮）
@@ -654,9 +656,20 @@ function createPolicyEngine(opts = {}) {
 
       const reason = (r.blockers.find(b => b.action === 'wait') || {}).reason
         || `轮次冷却 ${Math.ceil(r.cooldownWaitMs / 1000)}s`;
-      if (opts.onWait) opts.onWait({ waitMs: r.cooldownWaitMs, reason });
+      const waitMs = r.cooldownWaitMs;
+      // ⚠️ 这里的上报必须与 risk-control.enforceDelay、helpers.pace **同一个契约**：
+      // `{phase, waitMs, deadline, reason, type}`，并且睡完要补报一次 `phase:'end'`。
+      // 缺 `deadline` 界面起不了倒计时表（队列只能现算一次，之后没人告诉它截止在哪），
+      // 缺补报的 `end` 更糟：00:00 之后屏幕还在往下数（见 §2.35 同一条教训）。
+      if (opts.onWait) {
+        opts.onWait({ phase: 'cooldown', waitMs, deadline: Date.now() + waitMs, reason, type: 'write' });
+      }
       const { sleepAbortable } = require('../runtime/abort');
-      await sleepAbortable(r.cooldownWaitMs, opts.signal);
+      await sleepAbortable(waitMs, opts.signal);
+      // 被打断时不补报 end：AbortError 会一路出命令入口，队列的 finally 负责清 task.wait
+      if (opts.onWait) {
+        opts.onWait({ phase: 'end', waitMs: 0, deadline: Date.now(), reason: '', type: 'write' });
+      }
     }
     const err = new Error('运营策略反复要求等待，已放弃本次操作');
     err.code = 'POLICY_BLOCKED';

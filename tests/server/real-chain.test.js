@@ -229,8 +229,20 @@ describe('三条链路的端到端验证（补全 / 删除回复 / 私信）', (
       ctxMod: require('../../core/runtime/context'),
     };
 
+    let pubSeq = 0;
     fake = startFakeBrowser(port, {
       getDetail: async (id) => bridgeState.detailFor(id),
+      // 发表评论：字段名保持抖音原样（status_code / comment.cid / comment.user.uid
+      // 都是 post.js 直接读的）。cid 递增，免得与前面用例留下的语料撞去重。
+      publish: async (awemeId, text) => ({
+        status_code: 0,
+        comment: {
+          cid: `pub-${++pubSeq}`,
+          text,
+          create_time: Math.floor(Date.now() / 1000),
+          user: { uid: MY_UID, nickname: '我的号', sec_uid: 'sec-me' },
+        },
+      }),
       // 字段名保持抖音原样（下划线、嵌套 user）—— 落库那侧的解析依赖它们
       getComments: async () => ({
         comments: [{
@@ -427,6 +439,64 @@ describe('三条链路的端到端验证（补全 / 删除回复 / 私信）', (
     expect(queue.get(id2).wait).toBeNull();
     expect(snaps[snaps.length - 1].wait).toBeNull();
     expect(snaps.findIndex(s => !s.wait)).toBeLessThan(snaps.findIndex(s => s.wait));
+  }, 60000);
+
+  // ═══════════════════════════════════════════════════════
+  // 写侧的冷却。上面那条只管读侧（enforceDelay + pace）；写侧的等待有两处：
+  // 队列入口的 awaitTurn，和命令入口的 assertWritable。后者**跳不掉** ——
+  // `--no-throttle` 与界面上那个「跳过本次等待」都只跳过节奏，不跳过规则，
+  // 所以「勾了跳过之后那 300 秒到底在不等」的唯一可见路径就是命令入口这一段。
+  // 而它此前是**静默的**：四条写命令各自传了一个只会 logger.info 的 onWait，
+  // 把 ctx.onWait 顶掉了 —— 任务挂在「执行中」却没有任何倒计时依据。
+  it('本轮写满后的冷却：命令入口那段等待真的报出截止时刻，等完自己收掉', async () => {
+    // 起点是一条**真写操作记录**（不是手搓的 task.wait）：本轮已按默认口径写满
+    m.events.append({ ts: Date.now() - 1000, command: 'post', status: 'success', uid: 'c_cool', awemeId: 'v_cool_0' });
+
+    // 只把两个数值改小（默认 10 条 / 300 秒），其余全是真的；等满 300 秒没有额外收益
+    m.config.setRuntimeOverrides({ policy: { roundMaxWrites: 1, roundCooldownSec: 2 } });
+
+    const snaps = [];
+    let un = null;
+    let id = null;
+    try {
+      un = queue.subscribe((p) => {
+        const t = (p.tasks || []).find(x => x.id === id);
+        if (t) snaps.push({ status: t.status, wait: t.wait ? { ...t.wait } : null, at: Date.now() });
+      });
+      id = queue.enqueue({
+        // 发在 v_shell 上：它前面已经补全过标题。换成一个全新的 aweme_id 会留下
+        // 一个没有标题的视频壳，把后面那条"待补全角标 = 1"的断言顶成 2。
+        command: 'post', argv: ['v_shell', '冷却期间发出去的这一条'], label: '发布评论',
+        meta: { skipWait: true },
+      });
+      const t = await waitTask(queue, id);
+      expect({ status: t.status, error: t.error }).toMatchObject({ status: 'done', error: null });
+    } finally {
+      if (un) un();
+      m.config.setRuntimeOverrides(null);
+    }
+
+    const waits = snaps.filter(s => s.wait);
+    expect(waits.length, '闸门那段冷却一次都没报出来').toBeGreaterThan(0);
+    // 措辞是闸门的原话（"本轮已写 1/1 条…"），不是队列那句通用兜底「节奏等待」
+    expect(waits.every(s => /本轮已写/.test(s.wait.reason))).toBe(true);
+    expect(waits.every(s => s.status === 'running')).toBe(true);
+    // type 决定界面上那句是"写"还是"读"的等待；缺了就成"未知"
+    expect(waits.every(s => s.wait.type === 'write')).toBe(true);
+    for (const s of waits) {
+      expect(s.wait.until).toBeGreaterThan(s.at);
+      expect(s.wait.until - s.at).toBeLessThanOrEqual(s.wait.waitMs + 100);
+    }
+    // ⚠️ 这条才是"补报了 end"的证据：终态那一次 finished 也会把 wait 清成 null，
+    // 只断言"最后没有 wait"的话，删掉 end 上报照样绿（§2.28 的假护栏）。
+    // 必须要求**还在 running 的时候**倒计时就被收掉。
+    const marks = snaps.map(s => `${s.status}|${s.wait ? 'wait' : 'nowait'}`);
+    expect(marks).toContain('running|wait');
+    expect(marks.lastIndexOf('running|nowait')).toBeGreaterThan(marks.indexOf('running|wait'));
+
+    // 不是"等完就失败"：桥接真收到一次发布，结果里带着 cid
+    expect(fake.seen.filter(c => c.name === 'publish').length).toBe(1);
+    expect(queue.getResult(id)).toMatchObject({ status: 'published' });
   }, 60000);
 
   // ═══════════════════════════════════════════════════════

@@ -1,6 +1,7 @@
 // lib/commands/helpers.js — 命令共享的辅助函数和上下文
 
 const { sleepAbortable } = require('../runtime/abort');
+const logger = require('../runtime/logger');
 
 const SITE = 'douyin.com';
 
@@ -149,6 +150,35 @@ function throttleOpts(ctx, args) {
 }
 
 /**
+ * `policy.assertWritable`（轮次冷却那一段）的等待参数，四条写命令共用。
+ *
+ * ⚠️ 此前这里不是一个函数，而是四条命令各写一遍：
+ *   `onWait: ({ waitMs, reason }) => logger.info('[post] …')`
+ * 那句把 **`ctx.onWait` 整个顶掉了** —— 于是写满一轮之后那 300 秒冷却，
+ * 界面上任务显示「执行中」却没有倒计时、也没有取消的依据，看起来像卡死
+ * （`enforceDelay` 与 `pace` 两段在第二十轮已经接上了，唯独闸门这段漏了）。
+ * 一份写法两件事都要做：命令行照旧打一行，桌面队列拿到同一个 info。
+ *
+ * `phase:'end'` 那一次不打印：CLI 的输出必须与改造前**逐字节一致**
+ * （改造前只有"开始等"那一行），而队列需要这一用来清 task.wait。
+ *
+ * @param {string} label - 日志前缀，与各命令原有的 `[post]` / `[like]` / … 一致
+ * @param {object} ctx - 命令上下文（CLI 下 `ctx.onWait` 为空，只剩 logger）
+ * @returns {{signal:(AbortSignal|null|undefined), onWait:(function)}}
+ */
+function policyWaitOpts(label, ctx) {
+  return {
+    signal: ctx ? ctx.signal : undefined,
+    onWait: (info) => {
+      if (info && info.phase !== 'end') {
+        logger.info(`[${label}] ${info.reason}，等待 ${Math.ceil(info.waitMs / 1000)}s…`);
+      }
+      if (ctx && ctx.onWait) ctx.onWait(info);
+    },
+  };
+}
+
+/**
  * 一条命令**内部**重复请求之间的等待（区间单位是秒，取自 config.intervals）。
  *
  * 为什么需要它、而不是直接用 riskControl.enforceDelay：
@@ -197,5 +227,6 @@ module.exports = {
   weightedRandom,
   withAudit,
   throttleOpts,
+  policyWaitOpts,
   pace,
 };

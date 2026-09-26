@@ -623,12 +623,44 @@ describe('assertWritable：命令入口的强制闸门', () => {
     expect(checked.ok).toBe(true);          // 不是"不能发"
     expect(checked.waitMs).toBeGreaterThan(0);  // 而是"要等"
 
-    // assertWritable 必须真的等，而不是像改造前那样直接返回
-    let waited = 0;
+    // assertWritable 必须真的等，而不是像改造前那样直接返回。
+    // ⚠️ 收集**全部**上报而不是只记最后一个：睡完补报的那一次 `phase:'end'`
+    // 带的是 waitMs=0（用来清倒计时），只记最后一个就变成"没等"。
+    const reports = [];
     const t0 = Date.now();
-    await engine.assertWritable({}, { onWait: (i) => { waited = i.waitMs; } });
-    expect(waited).toBeGreaterThan(0);
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(waited - 50);
+    await engine.assertWritable({}, { onWait: (i) => reports.push({ ...i, at: Date.now() }) });
+
+    const start = reports.find(r => r.phase === 'cooldown');
+    expect(start, '开始等待必须报一次').toBeDefined();
+    expect(start.waitMs).toBeGreaterThan(0);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(start.waitMs - 50);
+
+    // 契约与 enforceDelay / pace 同一份 —— 界面只认这一份，缺一个字段就起不了表
+    expect(start.type).toBe('write');
+    expect(typeof start.deadline).toBe('number');
+    expect(start.deadline - start.at).toBeGreaterThanOrEqual(start.waitMs - 50);
+    expect(start.reason).toMatch(/本轮已写/);
+
+    const end = reports.find(r => r.phase === 'end');
+    expect(end, '等完必须补报一次 end，否则倒计时停在 00:00 之后还在数').toBeDefined();
+    expect(end.waitMs).toBe(0);
+    expect(end.at).toBeGreaterThanOrEqual(start.deadline - 50);
+  }));
+
+  it('等待期间被 abort：不许补报 end（task.wait 由队列的 finally 清）', withTempEnv({
+    policy: { roundMaxWrites: 1, roundCooldownSec: 30 },
+  }, async ({ events, engine }) => {
+    events.append({ ts: Date.now(), command: 'post', status: 'success' });
+    const ac = new AbortController();
+    const reports = [];
+    const p = engine.assertWritable({}, { signal: ac.signal, onWait: (i) => reports.push(i) });
+    // 等它真的进入等待（报了开始），再取消
+    for (let i = 0; i < 200 && !reports.length; i++) await new Promise(r => setTimeout(r, 10));
+    expect(reports.some(r => r.phase === 'cooldown')).toBe(true);
+    ac.abort();
+    await expect(p).rejects.toThrow();
+    expect(reports.some(r => r.phase === 'end'), '打断后补报 end 会把队列清成"没在等"，'
+      + '而此刻抛错正一路出命令入口 —— 清 task.wait 是 finally 的活').toBe(false);
   }));
 });
 

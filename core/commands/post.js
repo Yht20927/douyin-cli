@@ -1,6 +1,6 @@
 // lib/commands/post.js — 发表评论/回复
 
-const { escapeExpression, getFlag, throttleOpts } = require('./helpers');
+const { escapeExpression, getFlag, throttleOpts, policyWaitOpts } = require('./helpers');
 const users = require('../memory/users');
 const comments = require('../memory/comments');
 const videos = require('../memory/videos');
@@ -65,10 +65,12 @@ async function cmdPost(ctx, args) {
   //    --no-throttle 只跳过节奏等待，**跳过不了策略闸门**（否则规则形同虚设）。
   //    纯图回复 text 为空串，闸门里的 `if (meta.text)` 自然跳过文本校验。
   // await：冷却类的拦截（单轮触顶 300s、每日轮次）以前被静默忽略，
-  // 现在会真的等。等的时候打印一行，别让命令行看起来像卡住了。
+  // 现在会真的等。等的时候打印一行，别让命令行看起来像卡住了；
+  // 桌面队列要的是**同一个 info**（policyWaitOpts 两件都做），否则这 300 秒
+  // 在界面上是一段没有倒计时的「执行中」。
   await policy.assertWritable(
     { awemeId, cid: replyTo, text, uid: targetUid },
-    { signal: ctx.signal, onWait: ({ waitMs, reason }) => logger.info(`[post] ${reason}，等待 ${Math.ceil(waitMs / 1000)}s…`) }
+    policyWaitOpts('post', ctx)
   );
 
   // ② 请求节奏守卫：距上次写不足间隔则阻塞（--no-throttle 旁路，供内部调用与调试）

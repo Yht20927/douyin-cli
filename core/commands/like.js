@@ -1,9 +1,8 @@
 // lib/commands/like.js — 点赞/取消点赞视频
 
-const { escapeExpression, throttleOpts } = require('./helpers');
+const { escapeExpression, throttleOpts, policyWaitOpts } = require('./helpers');
 const riskControl = require('../risk-control');
 const policy = require('../policy').getPolicy();
-const logger = require('../runtime/logger');
 
 /**
  * 点赞或取消点赞
@@ -17,7 +16,7 @@ async function cmdLike(ctx, args) {
   // 策略闸门在前、节奏等待在后（见 post.js 的说明）。
   // 点赞不带 awemeId/cid 之类的上下文：maxPerVideoPerRound 约束的是"回复"，
   // 点赞不该受它限制，所以只走全局配额与熔断。
-  await policy.assertWritable({}, { signal: ctx.signal, onWait: ({ waitMs, reason }) => logger.info(`[like] ${reason}，等待 ${Math.ceil(waitMs / 1000)}s…`) });
+  await policy.assertWritable({}, policyWaitOpts('like', ctx));
 
   // 请求节奏守卫（--no-throttle 旁路）
   await riskControl.enforceDelay('write', throttleOpts(ctx, args));
