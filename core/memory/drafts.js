@@ -133,6 +133,122 @@ function remove(id) {
 }
 
 /**
+ * 改草稿正文的**唯一**入口 —— 单条编辑与批量改都走这里。
+ *
+ * 为什么必须有真 UPDATE：这模块此前只有 save / remove，界面的"编辑"是
+ * 存一条新的再删旧的。于是 id 变了、created_at 变成现在（这条在列表里跳到最前），
+ * 而两步之间任何一步失败都会留下**两条内容相同的待发草稿** —— 用户接着批量发布
+ * 就是把同一句话发两遍。
+ *
+ * **只允许改 text。** `persona_id` 是"这句话是谁写的"的溯源记录（发布链路只读 text，
+ * 见 core/reply-source），批量换个标签不会让正文变成那个人格写的口吻，
+ * 那样草稿行上的人格名就成了假话。要换口吻得回工作台重新生成。
+ *
+ * 两种补丁形状：
+ *   `{ text }`                整批替换成同一句
+ *   `{ find, replace }`       每条在自己的正文里把 find 换成 replace
+ *
+ * 逐条判定先一次 SELECT 拿现状，再决定每一条的命运 —— 界面必须说得出
+ * "改了 N 条、M 条已发出所以没动"，而不是报一个好看的数。
+ *
+ * @param {number[]} ids
+ * @param {{text?: string, find?: string, replace?: string}} patch
+ * @param {object} [opts]
+ * @param {string|null} [opts.accountUid] 当前账号。**没有理由让一次批量改碰到
+ *   用户在界面上根本看不见的草稿**（换号后旧 id 可能还留在前端勾选集合里）
+ * @param {boolean} [opts.dryRun] 只算不改（确认框用它显示"会改动 N 条"，
+ *   预览与执行因此必然是同一套判据）
+ * @returns {{changed: number[], skipped: {missing:number,posted:number,foreign:number,empty:number,noop:number},
+ *   preview: Array<{id:number, from: string, to: string}>, requested: number}}
+ *   preview 是每一条**计划改成什么**（dryRun 时就是"会改动这些"，执行时是"已改成这些"）；
+ *   requested 是净化后的请求条数
+ */
+function updateMany(ids, patch = {}, opts = {}) {
+  const wanted = [...new Set((Array.isArray(ids) ? ids : [])
+    .map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  const skipped = { missing: 0, posted: 0, foreign: 0, empty: 0, noop: 0 };
+  const changed = [];
+  // 净化后的请求条数从这里返回，而不是让每个调用方再抄一遍
+  // 「去重 + 只留正整数」那套规则 —— ipc.js 与探针都要报这个数，抄两份迟早不一样
+  const requested = wanted.length;
+  if (!wanted.length) return { changed, skipped, preview: [], requested };
+
+  const hasAssign = typeof patch.text === 'string';
+  const hasFind = typeof patch.find === 'string' && patch.find !== '';
+  if (!hasAssign && !hasFind) throw new Error('没有要改的内容（给 text 或给 find＋replace）');
+  if (hasAssign && hasFind) throw new Error('整批替换与查找替换只能选一种');
+  const repl = String(patch.replace == null ? '' : patch.replace);
+
+  let rows;
+  try {
+    rows = getDb().prepare(`
+      SELECT id, text, image_path, posted, account_uid FROM drafts
+      WHERE id IN (${wanted.map(() => '?').join(',')})
+    `).all(...wanted);
+  } catch (e) {
+    logger.warn(`[drafts] 批量改正文读现状失败（${wanted.length} 条）: ${e.message}`);
+    throw new Error('批量改正文失败（原因已记入日志）');
+  }
+  const byId = new Map(rows.map(r => [Number(r.id), r]));
+
+  // 用 split/join 而不是 String.replace：替换串里的 `$&` / `$1` 会被 replace
+  // 当成"引用匹配到的内容"，于是用户敲进去的正常汉字凭空长出别的东西；
+  // 而 find 若直接当模式用，`(` `.` `+` 这些字面量会变成正则元字符。
+  const nextText = (cur) => (hasAssign
+    ? patch.text
+    : String(cur == null ? '' : cur).split(patch.find).join(repl));
+
+  const plan = [];
+  for (const id of wanted) {
+    const row = byId.get(id);
+    if (!row) { skipped.missing += 1; continue; }
+    if (row.posted) { skipped.posted += 1; continue; }
+    // 与 list / removeMany 同一个口径：account_uid 为 NULL 的旧草稿在指定账号时
+    // 本来就不显示，这里也必须一动不动
+    if (opts.accountUid && String(row.account_uid || '') !== String(opts.accountUid)) {
+      skipped.foreign += 1; continue;
+    }
+    const raw = nextText(row.text);
+    // 与 save 同一条规则：只含空白的正文一律存成空串（有附图时它是合法的纯图草稿），
+    // 否则库里会留下一条"看着有字、发出去是空评论"的草稿
+    const next = String(raw).trim() ? raw : '';
+    // 与 save 同一条底线：文字与附图至少要有一个。只含空白的正文发出去就是
+    // 一条空评论，存的时候看不出来，等发布失败才发现
+    if (!next && !row.image_path) { skipped.empty += 1; continue; }
+    if (next === row.text) { skipped.noop += 1; continue; }
+    plan.push({ id, from: row.text, next });
+  }
+  // 预览与执行用的是同一个 plan：确认框里"会改成这样"的那几句，
+  // 跟真按下去之后的结果不可能对不上。界面若自己重算一遍替换，
+  // 就等于把上面那条判据抄第二份 —— 两份迟早不一致，症状是
+  // "预览说改 12 条、实际改了 11 条"。
+  const preview = plan.map(p => ({ id: p.id, from: p.from, to: p.next }));
+  if (!plan.length || opts.dryRun) {
+    return { changed: opts.dryRun ? plan.map(p => p.id) : changed, skipped, preview, requested };
+  }
+
+  try {
+    const db = getDb();
+    const stmt = db.prepare('UPDATE drafts SET text = ? WHERE id = ? AND posted = 0');
+    // 事务：中途失败时不能留下"改了一半"的状态 —— 那会儿界面上批次的
+    // 每一条都写着同一句话，而实际上还有几条是旧文案
+    const tx = db.transaction((items) => {
+      const done = [];
+      for (const it of items) {
+        const info = stmt.run(it.next, it.id);
+        if (Number(info.changes) > 0) done.push(it.id);
+      }
+      return done;
+    });
+    changed.push(...tx(plan));
+  } catch (e) {
+    logger.warn(`[drafts] 批量改正文写入失败（计划 ${plan.length} 条）: ${e.message}`);
+    throw new Error('批量改正文失败（原因已记入日志）');
+  }
+  return { changed, skipped, preview, requested };
+}
+
+/**
  * 批量删除，返回**真正删掉的条数**。
  *
  * accountUid 一定要传：草稿箱界面按账号过滤，用户看不见的草稿不该被这一批 id
@@ -176,4 +292,4 @@ function count(opts = {}) {
   }
 }
 
-module.exports = { save, get, list, markPosted, remove, removeMany, count, MAX_LIMIT, clampLimit };
+module.exports = { save, get, list, markPosted, remove, updateMany, removeMany, count, MAX_LIMIT, clampLimit };

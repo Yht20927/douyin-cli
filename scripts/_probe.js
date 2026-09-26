@@ -48,6 +48,11 @@ const MAIN_IPC = path.join(ROOT, 'app', 'main', 'ipc.js');
 /**
  * 探针**不**实现的写通道 —— 命中这些时返回一条如实的失败，形状与各 handle 的失败分支一致。
  * 新增只读通道不需要动这里；新增写通道才需要。
+ *
+ * 有一条**故意不在这里**：`draft:update-many` 是写通道，但它的 `dryRun` 那次调用
+ * 是一次真正的读（core 只算不写），探针给它写了一个只实现 dryRun 的端点，
+ * 其余情况仍返回 refused()。列进这张表的话，那个端点就没意义了 ——
+ * 而确认框里"会改动 N 条、每条改成什么"恰恰是只有真渲染才看得出的那一处。
  */
 const WRITE_CHANNELS = new Set([
   'app:open-external',
@@ -387,6 +392,31 @@ function makeRoutes() {
     'draft:delete': refused,
     'draft:delete-many': refused,
     'draft:mark-posted': refused,
+    /**
+     * 批量改正文：`dryRun` 那一次调用是一次**真正的读**（core 只算不改），
+     * 所以探针能验证它 —— 而确认框里"会改动 N 条 + 每一条改成什么"正是
+     * 形状最容易错、错了又只有真渲染才看得见的那一处。
+     * 账号口径与 ipc.js 一致（PROBE_ACCOUNT_UID 就是 account:state 报的那个号），
+     * 否则预览数与列表数对不上，界面看起来像算错了。
+     * 真按下去那次（不带 dryRun）照旧如实拒绝。
+     */
+    'draft:update-many': (ids, patch, opts) => {
+      if (!opts || opts.dryRun !== true) return refused();
+      // --fixture 的草稿是凭空造的、库里没有这些 id，预览会一律算成"已不在草稿箱"。
+      // 那种返回是在骗人，宁可拒绝（见文件头第 2 条纪律）
+      if (FIXTURE) {
+        return { ok: false, error: '探针的 --fixture 模式里草稿是假数据，批量改正文的预览算不出来 —— 要验这一处请用真库跑探针' };
+      }
+      const r = require('../core/memory/drafts').updateMany(ids, patch, {
+        dryRun: true, accountUid: PROBE_ACCOUNT_UID,
+      });
+      return ok({
+        changed: r.changed.length,
+        requested: r.requested,
+        skipped: r.skipped,
+        preview: r.preview,
+      });
+    },
   };
 }
 
@@ -571,6 +601,7 @@ window.dy = {
     save: (spec) => call('draft:save', spec),
     remove: (id) => call('draft:delete', id),
     removeMany: (ids) => call('draft:delete-many', ids),
+    updateMany: (ids, patch, opts) => call('draft:update-many', ids, patch, opts),
     markPosted: (id) => call('draft:mark-posted', id),
   },
 
@@ -728,7 +759,10 @@ function startServer(port) {
 
   server.listen(port, '127.0.0.1', () => {
     console.log(`[probe] 探针地址 http://127.0.0.1:${port}/__probe.html`);
-    console.log('[probe] 数据来自真实 core（仓库根目录的 storage/douyin.db），只读');
+    // 报**解析后的**路径而不是写死"仓库根目录"：DOUYIN_STORAGE_DIR 能把它指到别处，
+    // 而这行是验证时唯一一处说明"数据是从哪个库读的"的地方 —— 它说错，
+    // 就会让人对着自己的真库以为在读一份临时副本。
+    console.log(`[probe] 数据来自真实 core（${paths.dbFile()}），只读`);
   });
   return server;
 }

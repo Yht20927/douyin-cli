@@ -595,6 +595,36 @@ function registerIpc(opts) {
     if (deleted < 0) throw new Error('批量删除失败（原因已记入日志）');
     return { deleted, requested: requested.length };
   }));
+
+  /**
+   * 批量改草稿正文 —— 单条编辑也走这一条（ids 传一个）。纯本地写，不碰抖音，
+   * 所以同样不占串行队列。
+   *
+   * 为什么要一条真 UPDATE：此前只有 save / delete，界面"编辑"是存新的再删旧的，
+   * 于是 id 变了、created_at 变成现在（这条在列表里跳到最前），而且两步之间
+   * 任何一步失败就留下**两条内容相同的待发草稿** —— 用户接着批量发布，
+   * 同一句话就发两遍。
+   *
+   * 「整批替换」与「查找替换」能不能同时给、find 为空算不算一次替换，
+   * 判据只在 core/drafts.updateMany 里写一份：这里再抄一遍的话，
+   * 两处迟早对不上，而 preview（dryRun）与执行就会给出不同的条数。
+   * dryRun 原样透传，确认框里的"会改动 N 条"因此不是界面猜的。
+   */
+  ipcMain.handle('draft:update-many', safe((ids, patch, opts) => {
+    const drafts = require('../../core/memory/drafts');
+    // ids 原样交给 core：去重与"只留正整数"那套净化只有一份（在 updateMany 里），
+    // 这里再抄一遍的话，预览报的条数与实际改的条数迟早对不上
+    const r = drafts.updateMany(ids, patch, {
+      ...opts,
+      // 与 list / delete-many 同一个口径：刚换号或别的窗口已经删掉时，
+      // 勾选集合里会有界面上根本看不见的 id，那些一条都不能碰
+      accountUid: currentAccountUid(),
+    });
+    // 执行后界面会重新载入列表，正文本来就跟着回来了；
+    // 只有预览需要把每一条改成什么带过去
+    const preview = opts && opts.dryRun ? r.preview : [];
+    return { changed: r.changed.length, requested: r.requested, skipped: r.skipped, preview };
+  }));
 }
 
 /**

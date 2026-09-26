@@ -33,6 +33,50 @@ function estimatePublishSpan(n, interval) {
   return `${fmt((n - 1) * lo)} ~ ${fmt((n - 1) * hi)}`;
 }
 
+/** 批量改正文：输入停止多久后才去库里算一次预览 */
+const EDIT_DEBOUNCE_MS = 260;
+
+/** 预览里最多列几条改动，其余用一行"还有 M 条"说明 */
+const EDIT_PREVIEW_ROWS = 6;
+
+/**
+ * 表单 → core 的 patch 形状。**预览与执行都只从这里拿**。
+ *
+ * 两处各拼一份的话，"预览说会改 12 条、按下去实际改了 11 条"迟早出现 ——
+ * 而那是这个确认框存在的唯一理由被拆掉。
+ *
+ * 返回 null 表示还没填完：不去查库，确认按钮也按不动。
+ * 「查找」留空必须是 null 而不是一次"把每个字之间都插入替换串"的替换
+ * （core 那边也拦，但拦下来会变成一个谁也看不懂的失败）。
+ */
+function editPatch(mode, assign, find, replace) {
+  // 空着不算"要把正文清空"，算"还没填完"。探针里实测到过：一打开框子就报
+  // 「会改动 1 条」而确认键是亮的 —— 那一下点下去是覆盖，不是空操作。
+  // 真想清空正文有明确的路：切到「在每条里查找替换」，把那一句整个查找掉。
+  if (mode === 'assign') return String(assign == null ? '' : assign).trim()
+    ? { text: String(assign) } : null;
+  const f = String(find == null ? '' : find);
+  if (!f) return null;
+  return { find: f, replace: String(replace == null ? '' : replace) };
+}
+
+/**
+ * skipped → 人话。只列非零的那几类。
+ *
+ * 这一堆分类计数的存在理由就是这几句：批量写操作不能只报"改了 N 条"，
+ * 必须说得出**没动的那些为什么没动**，否则用户下一次还是靠猜。
+ */
+function skipNotes(skipped) {
+  const s = skipped || {};
+  const out = [];
+  if (s.posted) out.push(`${s.posted} 条已经发到抖音了，没动它们`);
+  if (s.foreign) out.push(`${s.foreign} 条不属于当前账号（或没标明归属），没动它们`);
+  if (s.missing) out.push(`${s.missing} 条已经不在箱里（被删掉或已经发掉），没动它们`);
+  if (s.empty) out.push(`${s.empty} 条改完会既没文字也没附图 —— 那样发出去是一条空评论，放弃了`);
+  if (s.noop) out.push(`${s.noop} 条本来就是这样的`);
+  return out;
+}
+
 /**
  * 草稿箱。
  *
@@ -73,6 +117,16 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
   const [picked, setPicked] = useState(() => new Set());
   const [confirmingBatch, setConfirmingBatch] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
+
+  // ── 批量改正文 ──
+  const [editOpen, setEditOpen] = useState(false);
+  const [editMode, setEditMode] = useState('assign');
+  const [editAssign, setEditAssign] = useState('');
+  const [editFind, setEditFind] = useState('');
+  const [editReplace, setEditReplace] = useState('');
+  /** 预览结果：{busy} / {error} / {data}，null = 还没开始算 */
+  const [editPreview, setEditPreview] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
 
   // 搜索词变化 → 查库（含首帧：离开页面时的搜索词会留在主进程那边，
   // 回来的时候如果不清，列表是过滤过的而搜索框是空的 —— 两处不一致）。
@@ -121,6 +175,13 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
     [list, picked]
   );
   const pickedIds = useMemo(() => pickedItems.map(d => d.id), [pickedItems]);
+  // 自动刷新每来一次都会重建 pickedIds（内容相同、引用不同）。预览的依赖
+  // 必须挂内容而不是引用，否则每一次后台刷新都会重新查一遍库
+  const pickedKey = pickedIds.join(',');
+  /** 当前表单拼出来的 patch；null = 还没填完，不能预览也不能确认 */
+  const editPatchNow = editPatch(editMode, editAssign, editFind, editReplace);
+  /** 预览已经算回来的那份数据（还在算 / 算失败时为 null） */
+  const editData = (editPreview && editPreview.data) || null;
 
   /**
    * 待确认批量发布的草稿（点按钮那一刻拍的快照）。
@@ -208,6 +269,54 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
     }
   }
 
+  /**
+   * 确认框开着时，把当前输入拿到库里**真算一遍**（dryRun，一个字都不写）。
+   *
+   * 为什么不在界面自己数命中几条：列表里只有已载入的那 MAX_LIMIT 条，
+   * 而"哪几条已经发出去了、哪几条其实属于别的账号"只有 SQL 知道。
+   * 预览发的是同一个 editPatchNow 产物 —— 预览里的条数就是按下去之后的条数，
+   * 这条性质不能靠"两边看起来一样"来维持。
+   */
+  useEffect(() => {
+    if (!editOpen) return undefined;
+    const patch = editPatchNow;
+    if (!patch || !pickedIds.length) { setEditPreview(null); return undefined; }
+    let dead = false;
+    setEditPreview({ busy: true });
+    const t = setTimeout(async () => {
+      const r = await window.dy.draft.updateMany(pickedIds, patch, { dryRun: true });
+      if (dead) return;
+      setEditPreview(r.ok ? { data: r.data } : { error: failText(r.error, '未知原因') });
+    }, EDIT_DEBOUNCE_MS);
+    return () => { dead = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editOpen, editMode, editAssign, editFind, editReplace, pickedKey]);
+
+  /** 按确认：把预览的那一次原样执行（不带 dryRun），并照实报改了哪几条、没动哪几条 */
+  async function applyBatchEdit() {
+    const ids = pickedIds;
+    const patch = editPatchNow;
+    if (!ids.length || !patch) return;
+    setEditBusy(true);
+    try {
+      const r = await window.dy.draft.updateMany(ids, patch);
+      if (!r.ok) {
+        // 一条都没改时说"改好了"是这一页最贵的那种假话：用户接下来就按新文案去发布了
+        setNotice(`批量改正文失败：${failText(r.error, '未知原因')} —— 一条都没改，草稿都还是原来的`);
+        return;
+      }
+      const d = r.data || {};
+      const notes = skipNotes(d.skipped);
+      setNotice(d.changed
+        ? `已改动 ${d.changed} 条${notes.length ? `；另有：${notes.join('；')}` : ''}`
+        : `一条都没改${notes.length ? `：${notes.join('；')}` : ''}`);
+      setEditOpen(false);
+      reload();
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
   /** 打开批量发布确认框。写间隔是本地读一次就够的设置，用它估时长 */
   async function openPublishConfirm() {
     const items = pickedItems;
@@ -289,33 +398,38 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
                 <div className="row" style={{ marginTop: 8 }}>
                   <button className="btn btn-primary" disabled={savingId !== null}
                     onClick={async () => {
-                      // 草稿没有"改"接口，只能存新的再删旧的。
-                      // **顺序不能反**：改造前是先 remove 再 save，save 失败时
-                      // 旧草稿已经删掉了，用户改了一半的内容彻底消失，
-                      // 界面上只有一句"保存失败"。先存后删时最坏情况是
-                      // 多出一条重复草稿（可删），而不是丢内容。
-                      // 附图必须跟着一起搬，否则编辑一次就把图弄丢了。
+                      // 改正文只有一个入口：一次 UPDATE。id 与 created_at 都不变，
+                      // 附图天然跟着走 —— 旧做法是"存一条新的再删旧的"，
+                      // 于是这条会在列表里跳到最前，而两步之间失败就留下
+                      // 两条内容相同的待发草稿（接着批量发布 = 同一句发两遍）。
                       //
-                      // savingId 不只是好看：这里连跑两次 IPC，
-                      // 没有进行中态的话连点两下会真的存出两条草稿。
+                      // savingId 仍然要：这是一次异步写，没有进行中态的话
+                      // 连点两下会飞两次请求出去。
                       setSavingId(d.id);
                       try {
-                        const r = await window.dy.draft.save({
-                          awemeId: d.awemeId, text: editText, replyToCid: d.replyToCid,
-                          personaId: d.personaId, imagePath: d.imagePath,
-                        });
+                        const r = await window.dy.draft.updateMany([d.id], { text: editText });
                         if (!r.ok) {
                           setNotice(`保存失败：${failText(r.error, '未知原因')} —— 原草稿未改动`);
                           return;
                         }
-                        const rm = await window.dy.draft.remove(d.id);
-                        if (rm.ok) {
+                        const data = r.data || {};
+                        const s = data.skipped || {};
+                        if (data.changed) {
                           setEditing(null);
                           setNotice('已保存');
+                        } else if (s.empty) {
+                          // 不许改成"既没字又没图"：那样发出去是一条空评论。
+                          // 留在编辑态里，用户能接着改，而不是白丢一次输入
+                          setNotice('正文空了，而这条没有附图 —— 那样会发不出去，所以没保存');
+                        } else if (s.noop) {
+                          setEditing(null);
+                          setNotice('正文没有变化');
                         } else {
-                          // 先存后删的顺序保证了内容不丢；删除失败只会留下重复，
-                          // 如实告诉用户该删哪条，而不是让它看起来像凭空多了一条
-                          setNotice('已保存为新草稿，但删除旧草稿失败 —— 列表里会出现两条相同内容，请手动删掉旧的那条');
+                          // posted / missing：这一条在别处被发掉或删掉了
+                          setEditing(null);
+                          setNotice(s.posted
+                            ? '这条已经发到抖音了，草稿箱里的这份没动'
+                            : '这条已经不在当前账号的草稿箱里（可能被删掉或已经发出），没保存');
                         }
                         reload();
                       } finally {
@@ -494,6 +608,9 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
                     : '把这批草稿逐条发到抖音：一次确认，每条仍然按设置的写间隔排队'}>
                   发布所选 {pickedIds.length} 条
                 </button>
+                <button className="btn" onClick={() => setEditOpen(true)}>
+                  批量改正文
+                </button>
                 <button className="btn btn-quiet text-bad" onClick={() => setConfirmingBatch(true)}
                   disabled={!!(bulkPublish && !bulkPublish.finished)}
                   title={bulkPublish && !bulkPublish.finished
@@ -569,6 +686,153 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
                 : <div className="list">{list.map(d => renderDraft(d, false))}</div>}
             </>
           )}
+
+      {editOpen && (
+        <Modal
+          title={`批量改正文：已选的 ${pickedIds.length} 条`}
+          onClose={() => setEditOpen(false)}
+          busy={editBusy}
+          width={660}
+          footer={
+            <>
+              <button className="btn btn-quiet" onClick={() => setEditOpen(false)} disabled={editBusy}>
+                取消
+              </button>
+              {/* 数字来自 core 的那次 dryRun，不是界面数出来的 —— 所以按下去之前
+                  用户看到的条数就是按下去之后的条数。预览还没回来时按钮按不动，
+                  宁等一秒也不给一个猜出来的数 */}
+              <button className="btn btn-primary" onClick={applyBatchEdit}
+                disabled={editBusy || !editPatchNow || !editData}>
+                {editBusy && <Spinner size={12} />}
+                {editBusy ? '改其中…' : `确认改动 ${editData ? editData.changed : '…'} 条`}
+              </button>
+            </>
+          }
+        >
+          <div className="seg" style={{ marginBottom: 12 }}>
+            <button
+              className={`seg-item ${editMode === 'assign' ? 'seg-item-active' : ''}`}
+              onClick={() => setEditMode('assign')}
+            >
+              整批替换成同一句
+            </button>
+            <button
+              className={`seg-item ${editMode === 'find' ? 'seg-item-active' : ''}`}
+              onClick={() => setEditMode('find')}
+            >
+              在每条里查找替换
+            </button>
+          </div>
+
+          {editMode === 'assign' ? (
+            <>
+              <textarea
+                className="input reply-box"
+                rows={4}
+                value={editAssign}
+                placeholder="新的正文 —— 勾到的每一条都会变成这一句"
+                onChange={e => setEditAssign(e.target.value)}
+              />
+              <div className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>
+                这是<b>覆盖</b>不是追加：各条原来的句子改完就不在了。想留着改，先取消、用搜索缩小范围。
+              </div>
+            </>
+          ) : (
+            <>
+              <input
+                className="input"
+                style={{ width: '100%' }}
+                value={editFind}
+                placeholder="查找：要被换掉的那几个字"
+                onChange={e => setEditFind(e.target.value)}
+              />
+              <input
+                className="input"
+                style={{ width: '100%', marginTop: 8 }}
+                value={editReplace}
+                placeholder="替换成：留空就是把这些字删掉"
+                onChange={e => setEditReplace(e.target.value)}
+              />
+              <div className="muted" style={{ fontSize: 12.5, marginTop: 6 }}>
+                按<b>字面量</b>匹配，不是正则：找 (1) 就只换写着括号的那一处，
+                替换串里的 $&amp; 也只是三个字符。每条只改自己正文里出现的那几处，没有命中的那条不动。
+              </div>
+            </>
+          )}
+
+          <div className="notice" style={{ margin: '12px 0 0' }}>
+            <div>
+              {!editPatchNow
+                ? (editMode === 'assign'
+                  ? '新的正文还空着 —— 现在一次都不会改。要把正文清空请用「在每条里查找替换」。'
+                  : '「查找」还空着 —— 现在一次都不会改。')
+                : editPreview && editPreview.busy
+                  ? <>正在库里算会改动几条…<Spinner size={12} /></>
+                  : editPreview && editPreview.error
+                    ? <>算不出来：{editPreview.error}</>
+                    : editData
+                      ? <>
+                        会改动 <b className="num">{editData.changed}</b> 条
+                        {editData.requested > editData.changed
+                          && <>，另有 <b className="num">{editData.requested - editData.changed}</b> 条不动</>}。
+                      </>
+                      : '正在算…'}
+            </div>
+            {editData && skipNotes(editData.skipped).length > 0 && (
+              <div className="muted" style={{ marginTop: 6, fontSize: 12.5 }}>
+                {skipNotes(editData.skipped).join('；')}。
+              </div>
+            )}
+          </div>
+
+          {/* 确认的是"这些句子会变成什么样"，不是"改不改"这个抽象动作 */}
+          {editData && editData.changed > 0 && editMode === 'assign' && (
+            <div className="bulk-result">
+              <div className="bulk-result-row">
+                <b className="muted">全部 {editData.changed} 条</b>
+                <span>{editAssign}</span>
+              </div>
+            </div>
+          )}
+          {editData && editMode === 'find' && editData.preview.length > 0 && (
+            <div className="bulk-result">
+              {editData.preview.slice(0, EDIT_PREVIEW_ROWS).map(p => (
+                <div className="bulk-result-row" key={`ep-${p.id}`}>
+                  <b className="muted">#{p.id}</b>
+                  <span>
+                    <span className="muted">{p.from || '（原来的正文是空的）'}</span>
+                    <span className="muted">　→　</span>
+                    {p.to || '（改完是空的：这条带附图）'}
+                  </span>
+                </div>
+              ))}
+              {editData.preview.length > EDIT_PREVIEW_ROWS && (
+                <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  另外 {editData.preview.length - EDIT_PREVIEW_ROWS} 条没有列出，会一起改。
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 三句"这一改做不到什么"，写在明面上而不是悬停才看得到 */}
+          <div className="muted" style={{ fontSize: 12.5, marginTop: 12 }}>
+            <div>
+              · 已经排进队列的发布<b>不会跟着变</b>：任务带的是入队那一刻的正文。
+              要让新文案发出去，先「取消剩下的」再重新发布一次。
+            </div>
+            <div>
+              · 这里<b>没有</b>「统一换人格」。草稿行上那个人格名是"这句话当初由谁生成"的溯源，
+              发布只发正文；把标签改掉不会让口吻变成另一个人格。要换口吻得回工作台重新生成。
+            </div>
+            {hidden > 0 && pickedIds.length === list.length && (
+              <div>
+                · 这一勾只覆盖已载入的 {list.length} 条，同条件的还有 <span className="num">{hidden}</span> 条
+                没载入，<b>这次改不到它们</b> —— 要一次做完先用搜索缩小范围。
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {publishConfirm && (
         <Modal

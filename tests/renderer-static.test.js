@@ -809,3 +809,83 @@ describe('「全选」不许承诺它覆盖不到的范围', () => {
     expect(drafts).toMatch(/没勾上/);
   });
 });
+
+describe('批量改正文：预览与执行必须是同一次判定', () => {
+  // 回归风险（这一轮新写的链路，还没有历史可回归）：草稿的"改"以前根本不存在，
+  // 界面是拿 save 新行 + remove 旧行拼出来的 —— 于是 id 变了、created_at 变了、
+  // 视频分组顺序也变了。这一轮换成了真 UPDATE，同时新增了一条批量链路。
+  // 这条链路上最贵的两种错法都是**不报错**的：
+  //   1. 预览的条数由界面自己数（core 说 12 条、实际写 11 条，用户按下去才发现）；
+  //   2. 预览与执行各自拼一遍 patch（预览按「整批替换」算，执行按「查找替换」写）。
+  // 所以这里钉的不是"有没有这个功能"，而是"这两半是不是同一个东西"。
+  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const draftsCode = () => strip(fs.readFileSync(
+    path.join(RENDERER_SRC, 'views', 'DraftsView.jsx'), 'utf8'));
+
+  it('确认键上的数字来自 core 的 dryRun，不是界面数出来的', () => {
+    const code = draftsCode();
+    expect(code).toMatch(/draft\.updateMany\(pickedIds, patch, \{ dryRun: true \}\)/);
+    // 反向的一半：按钮文案里出现 pickedIds.length 就是"界面自己数的"，
+    // 而它必然与 core 的数不同（已发布的、别人号上的、本来就是这样的都不算）
+    expect(code).not.toMatch(/确认改动 \$\{pickedIds\.length/);
+    expect(code).toMatch(/`确认改动 \$\{editData \? editData\.changed : '…'\} 条`/);
+  });
+
+  it('预览没回来之前按不动（宁等一秒也不给一个猜出来的数）', () => {
+    expect(draftsCode()).toMatch(/disabled=\{editBusy \|\| !editPatchNow \|\| !editData\}/);
+  });
+
+  it('预览与执行发的是同一个 patch 产物', () => {
+    const code = draftsCode();
+    // 派生只有一处，两处发送各自取用这个变量 —— 再拼一遍就是两个判据
+    expect(code).toMatch(/const editPatchNow = editPatch\(editMode, editAssign, editFind, editReplace\)/);
+    expect((code.match(/const patch = editPatchNow;/g) || []).length).toBe(2);
+    expect((code.match(/\beditPatch\s*\(/g) || []).length).toBe(2); // 定义 + 那一处派生
+  });
+
+  it('空着的「整批替换」是还没填完，不是要把正文清空', () => {
+    // 探针实测到过：一打开弹窗就报「会改动 1 条」而确认键是亮的
+    expect(draftsCode()).toMatch(/String\(assign == null \? '' : assign\)\.trim\(\)/);
+  });
+
+  it('三句"这一改做不到什么"是正文，不是悬停才看得到', () => {
+    const code = draftsCode();
+    for (const phrase of ['不会跟着变', '统一换人格', '这次改不到它们']) {
+      expect(code, `少了那一句：${phrase}`).toContain(phrase);
+      expect(code, `「${phrase}」被写成了 title`).not.toMatch(new RegExp(`title=[^\\n]*${phrase}`));
+    }
+    // 「没有统一换人格」必须同时给出真出路，只说"做不到"等于埋一个更深的坑
+    expect(code).toMatch(/要换口吻得回工作台重新生成/);
+  });
+
+  it('单条编辑走真 UPDATE，不再 save 一条新的删一条旧的', () => {
+    const code = draftsCode();
+    expect(code).toMatch(/draft\.updateMany\(\[d\.id\], \{ text: editText \}\)/);
+    // save 一次都没了才算换干净（remove 仍在，那是"删除"这条链路的正当用法）
+    expect(code).not.toMatch(/draft\.save\(/);
+    // 而且失败要分原因报：空正文、没变化、已经发掉，是三件不同的事
+    expect(code).toMatch(/正文空了/);
+  });
+
+  it('core 那一侧：改的是这一行的 text，别的字节都不动', () => {
+    const code = strip(fs.readFileSync(path.join(ROOT, 'core', 'memory', 'drafts.js'), 'utf8'));
+    expect(code).toMatch(/UPDATE drafts SET text = \? WHERE id = \? AND posted = 0/);
+    // created_at / id / aweme_id 一旦被重建，行就会在"按时间分组"的视图里跳位
+    expect(code).not.toMatch(/UPDATE drafts SET[^']*created_at/);
+    // 查找替换必须是字面量替换：$& 与 (1) 这类用户输入的文本会反过来吃掉替换结果
+    expect(code).toMatch(/\.split\(patch\.find\)\.join\(repl\)/);
+    expect(code).not.toMatch(/\.replace\(new RegExp|new RegExp\(patch\.find/);
+  });
+
+  it('ipc 补上当前账号，探针只做预览、绝不动笔', () => {
+    const ipc = strip(fs.readFileSync(path.join(ROOT, 'app', 'main', 'ipc.js'), 'utf8'))
+      // 主进程那句是竖排的参数对象（每个键一行），压平再比 ——
+      // 把换行写进正则的护栏，一次无关的排版调整就能把它弄红
+      .replace(/\s+/g, ' ');
+    expect(ipc).toMatch(/'draft:update-many'/);
+    // 账号边界只能由主进程补：渲染层传什么 uid 都不算数（换号后它拿的是旧 id）
+    expect(ipc).toMatch(/drafts\.updateMany\(ids, patch, \{ \.\.\.opts, accountUid: currentAccountUid\(\), \}\)/);
+    const probe = strip(fs.readFileSync(path.join(ROOT, 'scripts', '_probe.js'), 'utf8'));
+    expect(probe).toMatch(/if \(!opts \|\| opts\.dryRun !== true\) return refused\(\)/);
+  });
+});

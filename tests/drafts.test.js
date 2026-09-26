@@ -208,6 +208,158 @@ describe('drafts memory module', () => {
   });
 
   // ═════════════════════════════════════════════════════════
+  // 批量改正文（单条编辑也走这一条）
+  //
+  // 这条存在之前，界面的"编辑"是 save 一条新的 + remove 旧的。症状有三个，
+  // 每一条都是这条用例要钉住的：id 变了（草稿在列表里跳位、created_at 变成现在）、
+  // 两步之间失败留下**两条内容相同的待发草稿**（接着批量发布就是把同一句发两遍）、
+  // 以及完全没有批量入口（30 条草稿只能一条条点开改）。
+  //
+  // 本文件共用同一个临时库，且 beforeEach 每个用例都会新插几行，
+  // 所以每个用例各用一个独立的 aweme_id 把行隔开 —— 否则"行数不变"
+  // 只能跟相对值比，而 list 有 limit，累积到几十个用例以后就会失真。
+  // ═════════════════════════════════════════════════════════
+  describe('批量改正文', () => {
+    let seq = 0;
+    let aw, a1, a2, a3, b1, sentId, orphanId;
+    const rowsOfA = () => drafts.list({
+      awemeId: aw, accountUid: 'uidA', limit: drafts.MAX_LIMIT,
+    }).length;
+    beforeEach(() => {
+      aw = `v-up-${++seq}`;
+      a1 = drafts.save({ awemeId: aw, text: '亲，这款有货哦', accountUid: 'uidA' });
+      a2 = drafts.save({ awemeId: aw, text: '亲，那款没货了', accountUid: 'uidA' });
+      a3 = drafts.save({ awemeId: aw, text: '感谢支持！', accountUid: 'uidA' });
+      b1 = drafts.save({ awemeId: aw, text: '乙号的有货哦', accountUid: 'uidB' });
+      sentId = drafts.save({ awemeId: aw, text: '已经发出的有货哦', accountUid: 'uidA' });
+      drafts.markPosted(sentId);
+      orphanId = drafts.save({ awemeId: aw, text: '没标归属的有货哦' });
+    });
+
+    it('改完还是同一条草稿：id、created_at、行数都不变', () => {
+      const rows = rowsOfA();
+      const before = drafts.get(a1);
+      const r = drafts.updateMany([a1], { text: '统一口径的那句话' }, { accountUid: 'uidA' });
+      expect(r.changed).toEqual([a1]);
+      const after = drafts.get(a1);
+      expect(after.id).toBe(before.id);
+      expect(after.created_at).toBe(before.created_at);
+      expect(after.text).toBe('统一口径的那句话');
+      // 行数不变 = 没有"存新的再删旧的"那一步。少了这条断言，
+      // 把实现换回 save+remove 照样能过上面三句
+      expect(rowsOfA()).toBe(rows);
+    });
+
+    it('整批替换：勾到的每一条都变成同一句', () => {
+      const r = drafts.updateMany([a1, a2, a3], { text: '统一口径的那句话' }, { accountUid: 'uidA' });
+      expect([...r.changed].sort()).toEqual([a1, a2, a3].sort());
+      expect(r.requested).toBe(3);
+      for (const id of [a1, a2, a3]) expect(drafts.get(id).text).toBe('统一口径的那句话');
+    });
+
+    it('查找替换按字面量：$& 与正则元字符都不特殊', () => {
+      const t1 = drafts.save({
+        awemeId: aw, text: '1号链接 (1) 元', accountUid: 'uidA',
+      });
+      // replace 里写 `$&` 时 String.replace 会把它换成"匹配到的那一段"，
+      // 用户敲进去的三个字符凭空长出别的东西
+      drafts.updateMany([t1], { find: '(1)', replace: '<$&>' }, { accountUid: 'uidA' });
+      expect(drafts.get(t1).text).toBe('1号链接 <$&> 元');
+
+      const t2 = drafts.save({
+        awemeId: aw, text: '1号链接 (1) 元', accountUid: 'uidA',
+      });
+      // find 若被当正则用，`(1)` 成了"分组捕获 1"—— 正文里每个孤立的 1 都被吃掉，
+      // 开头的「1号链接」会跟着变成「X号链接」
+      drafts.updateMany([t2], { find: '(1)', replace: 'X' }, { accountUid: 'uidA' });
+      expect(drafts.get(t2).text).toBe('1号链接 X 元');
+    });
+
+    it('已发出的、别号的、库里没有的：各自算进 skipped，一个字节都不动', () => {
+      const r = drafts.updateMany(
+        [a1, sentId, b1, orphanId, 99999998], { text: '统一' }, { accountUid: 'uidA' });
+      expect(r.changed).toEqual([a1]);
+      expect(r.requested).toBe(5);
+      expect(r.skipped.posted).toBe(1);
+      // 别的账号 + account_uid 为 NULL 的旧草稿。NULL 算"外号"是因为无法判断归属，
+      // 与 list / count 同一口径 —— 它不该被这一次批量改碰到
+      expect(r.skipped.foreign).toBe(2);
+      expect(r.skipped.missing).toBe(1);
+      expect(drafts.get(sentId).text).toBe('已经发出的有货哦');
+      expect(drafts.get(b1).text).toBe('乙号的有货哦');
+      expect(drafts.get(orphanId).text).toBe('没标归属的有货哦');
+    });
+
+    it('改成空白：没附图的不许；带附图的存成空串而不是几个空格', () => {
+      const r = drafts.updateMany([a2], { text: '   ' }, { accountUid: 'uidA' });
+      expect(r.changed).toEqual([]);
+      expect(r.skipped.empty).toBe(1);
+      expect(drafts.get(a2).text).toBe('亲，那款没货了');
+
+      const img = drafts.save({
+        awemeId: aw, text: '带图的草稿', imagePath: '/tmp/x.jpg', accountUid: 'uidA',
+      });
+      const r2 = drafts.updateMany([img], { text: '   ' }, { accountUid: 'uidA' });
+      expect(r2.changed).toEqual([img]);
+      // 纯图草稿是合法的（image.withText=false），但正文得真的是空：
+      // 留着三个空格，列表里看着"有字"、发出去是一条空评论
+      expect(drafts.get(img).text).toBe('');
+    });
+
+    it('本来就一样的算 noop，不占 changed 的条数', () => {
+      const same = drafts.updateMany([a3], { text: '感谢支持！' }, { accountUid: 'uidA' });
+      expect(same.changed).toEqual([]);
+      expect(same.skipped.noop).toBe(1);
+      // 查找替换没命中时同理：界面说"改了 0 条"而不是"改了 3 条"
+      const miss = drafts.updateMany([a1, a2, a3], { find: '这几个字正文里没有', replace: 'X' },
+        { accountUid: 'uidA' });
+      expect(miss.changed).toEqual([]);
+      expect(miss.skipped.noop).toBe(3);
+    });
+
+    it('dryRun 一个字都不写，预览与真跑一次完全一致', () => {
+      const ids = [a1, a2, a3, sentId];
+      const patch = { find: '有货', replace: '现货' };
+      const pre = drafts.updateMany(ids, patch, { accountUid: 'uidA', dryRun: true });
+      // a2 是"没货"、a3 不含关键词 → noop；sentId 已发出 → 跳过。
+      // 确认框里的"会改动 1 条"就必须是这个数，不能是界面猜的
+      expect(pre.changed).toEqual([a1]);
+      expect(pre.preview).toEqual([{ id: a1, from: '亲，这款有货哦', to: '亲，这款现货哦' }]);
+      expect(drafts.get(a1).text).toBe('亲，这款有货哦');
+
+      const run = drafts.updateMany(ids, patch, { accountUid: 'uidA' });
+      expect(run.changed).toEqual(pre.changed);
+      expect(run.preview).toEqual(pre.preview);
+      expect(run.skipped).toEqual(pre.skipped);
+    });
+
+    it('两种模式互斥；缺内容时报错，而不是静默改 0 条', () => {
+      expect(() => drafts.updateMany([a1], {}, { accountUid: 'uidA' })).toThrow('没有要改的内容');
+      expect(() => drafts.updateMany([a1], { find: '' }, { accountUid: 'uidA' }))
+        .toThrow('没有要改的内容');
+      expect(() => drafts.updateMany([a1], { text: 'x', find: 'y', replace: 'z' },
+        { accountUid: 'uidA' })).toThrow('只能选一种');
+      expect(drafts.get(a1).text).toBe('亲，这款有货哦');
+    });
+
+    it('重复与非法 id 先净化，requested 报的是净化后的条数', () => {
+      const r = drafts.updateMany([a1, a1, String(a1), 0, -1, 1.5, 'abc', null, undefined],
+        { text: '统一' }, { accountUid: 'uidA' });
+      expect(r.requested).toBe(1);
+      expect(r.changed).toEqual([a1]);
+      expect(drafts.get(a2).text).toBe('亲，那款没货了');
+    });
+
+    it('空 id 列表不报错，也不看 patch 形状', () => {
+      const r = drafts.updateMany([], {});
+      expect(r).toMatchObject({
+        changed: [], requested: 0, preview: [],
+        skipped: { missing: 0, posted: 0, foreign: 0, empty: 0, noop: 0 },
+      });
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════
   // 写入必须标明归属账号
   //
   // 真实事故：批量 AI 生成回复后草稿箱是空的。数据其实进库了（CLI `draft list`

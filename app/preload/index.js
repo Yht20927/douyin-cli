@@ -151,6 +151,21 @@ contextBridge.exposeInMainWorld('dy', {
      *   比 requested 小说明有些 id 已经不属于当前账号的草稿箱，界面要照实说。
      */
     removeMany: (ids) => ipcRenderer.invoke('draft:delete-many', ids),
+    /**
+     * 改草稿正文的**唯一**入口（主进程限定在当前账号内）。单条编辑也走这里，
+     * ids 传一个 —— 旧做法是"存一条新的再删旧的"，id 和 created_at 都会变，
+     * 而两步之间失败会留下两条内容相同的待发草稿。
+     *
+     * @param {number[]} ids
+     * @param {{text?: string}|{find: string, replace?: string}} patch
+     *   整批替换给 `text`；查找替换给 `find`＋`replace`（按字面量，不是正则）
+     * @param {{dryRun?: boolean}} [opts] dryRun 只算不写，给确认框做预览
+     * @returns data 为 `{ changed, requested, skipped, preview }` —— changed 是
+     *   **真正改掉的条数**，skipped 按原因分类计数（已发出/不属于当前账号/
+     *   已被别处删掉/改完是空的/本来就一样），preview 是逐条改后的正文（仅 dryRun）。
+     *   条数与 requested 不等时界面要照实说动了哪些、没动哪些。
+     */
+    updateMany: (ids, patch, opts) => ipcRenderer.invoke('draft:update-many', ids, patch, opts),
     /** 发布成功后标记草稿已发布（否则它会一直留在草稿箱里） */
     markPosted: (id) => ipcRenderer.invoke('draft:mark-posted', id),
   },
