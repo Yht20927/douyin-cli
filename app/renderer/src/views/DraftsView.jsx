@@ -308,7 +308,7 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
       const d = r.data || {};
       const notes = skipNotes(d.skipped);
       setNotice(d.changed
-        ? `已改动 ${d.changed} 条${notes.length ? `；另有：${notes.join('；')}` : ''}`
+        ? `已改动 ${d.changed} 条${notes.length ? `；另有 ${notes.join('；')}` : ''}`
         : `一条都没改${notes.length ? `：${notes.join('；')}` : ''}`);
       setEditOpen(false);
       reload();
