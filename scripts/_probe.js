@@ -228,6 +228,53 @@ function refused() {
 }
 
 /**
+ * 检查更新的假响应，用来把诊断页那三块分支渲染出来。
+ *
+ * 分支由环境变量挑：`DOUYIN_PROBE_UPDATE=latest|packaged|current|fail`
+ * （缺省 latest）。探针**不联网**，也压根不在 Electron 里跑，
+ * 所以 `runtime.packaged` 这里是被"演"出来的那一个值 —— 目的只有一个：
+ * 让"源码跑的该怎么升"与"装好的该怎么升"那两段文案都真在屏幕上出现过一次。
+ *
+ * ⚠️ 字段逐个照 app/main/ipc.js 那一份写。少写一个字段，界面就渲染出
+ * 一个"主进程真漏了字段"时一模一样的长相，而那正是探针该抓的 bug。
+ */
+function probeUpdate() {
+  const branch = process.env.DOUYIN_PROBE_UPDATE || 'latest';
+  const { pickLocalAssets } = require('../core/shared/releaseAssets');
+  const runtime = {
+    packaged: branch === 'packaged',
+    platform: process.platform,
+    arch: process.arch,
+  };
+  const current = '0.0.0-probe';
+  const releasesUrl = 'https://github.com/Yht20927/douyin-cli/releases/latest';
+  if (branch === 'fail') {
+    return { ok: false, current, runtime, releasesUrl, error: '探针不联网，这一支是拿来验失败文案的' };
+  }
+  const assets = [
+    { name: 'douyinTool-9.9.9-win-x64.exe', size: 96 * 1024 * 1024, url: 'https://example.invalid/win' },
+    { name: 'douyinTool-9.9.9-mac-arm64.dmg', size: 88 * 1024 * 1024, url: 'https://example.invalid/mac' },
+    { name: 'douyinTool-9.9.9-linux.AppImage', size: 104 * 1024 * 1024, url: 'https://example.invalid/linux' },
+    { name: 'douyinTool-9.9.9-source.zip', size: 2 * 1024 * 1024, url: 'https://example.invalid/src' },
+  ];
+  const hasUpdate = branch !== 'current';
+  return {
+    ok: true,
+    current,
+    latest: hasUpdate ? '9.9.9' : current,
+    hasUpdate,
+    releasesUrl,
+    publishedAt: '2026-09-20T10:00:00Z',
+    notes: '## 这一版改了什么\n\n- 草稿箱可以批量改正文了\n- 等待与倒计时在页面上看得见\n\n'
+      + '这一整段是探针写的假说明，用来验长正文怎么截断、Markdown 标题会不会露出井号。',
+    notesTruncated: false,
+    assets,
+    localAssets: hasUpdate ? pickLocalAssets(assets, runtime.platform, runtime.arch) : [],
+    runtime,
+  };
+}
+
+/**
  * --fixture 模式下草稿箱的返回，带搜索语义。
  *
  * 过滤必须在"数据层"做而不是让界面自己 filter —— 探针要是把全量原样返回，
@@ -285,8 +332,12 @@ function makeRoutes() {
       configFile: require('../core/config').describe().file,
       configWarnings: [],
     }),
-    // 探针不联网查 release。带 current 是为了与 ipc.js 的失败分支同形状。
-    'app:check-update': () => ({ ok: false, current: '0.0.0-probe', error: '探针不联网检查更新' }),
+    // 检查更新在探针里**不联网**。以前这里只回 `{ok:false,error}`，于是诊断页
+    // 更新块的三条分支（有新版 / 已是最新 / 检查失败）在探针里一条都渲染不出来，
+    // 改完只能靠想。字段与 app/main/ipc.js 那一份逐项对齐，分支用
+    // DOUYIN_PROBE_UPDATE=latest|packaged|current|fail 挑（见 probeUpdate）。
+    // localAssets **算**出来而不是抄出来 —— 用的就是主进程那一个函数。
+    'app:check-update': () => probeUpdate(),
     'account:state': () => {
       // 与 bridge:status 同源（真实 accounts 表）。两处各写一份假账号的话，
       // 侧栏与连接页会报出两个对不上的账号数，而这正是本轮要验的东西。
@@ -374,6 +425,12 @@ function makeRoutes() {
     'data:comment': (cid) => ok(views.commentDetail(String(cid))),
     'data:checkDup': (text) => ok(views.checkDuplicate(text)),
     'data:events': (o) => ok(views.listEvents(o || {})),
+    // 读的是真库里的 events 表 —— 这一条不是假数据：这一页空态要摆的就是
+    // "你确实搜过的那几个词"，探针里演一份假的就等于没验。
+    'data:searchHistory': (o) => ok(views.searchHistory({
+      limit: o && o.limit,
+      scan: o && o.scan,
+    })),
     'data:cleanupPreview': (o) => ok(views.cleanupPreview(o || {})),
     'data:userProfile': (uid, o) => ok(views.userProfile(String(uid || ''), { limit: o && o.limit })),
     'data:userEvents': (uid, o) => ok(views.userEvents(String(uid || ''), { limit: o && o.limit })),
@@ -561,7 +618,10 @@ function writeProbeFiles(port) {
   // 现在写操作也照样转发给服务端，拒绝的话术只在 refused() 一处。
 const stub = `
 // 由 scripts/_probe.js 生成，勿手改（改 preload 后跑测试会告诉你这里漏了什么）
-const BASE = 'http://127.0.0.1:${port}/api/';
+// 地址从文档自己的 origin 算，**不写死端口**：这份桩是写到 dist 目录里的共享文件，
+// 两个探针同时跑时后写的那份会被前一个页面拿去用，于是页面去打另一个端口 ——
+// CSP 直接拦掉，界面就停在「正在读取…」上不出一个字，长得和主进程漏字段一模一样。
+const BASE = (self.location && self.location.origin ? self.location.origin : '') + '/api/';
 const call = (ch, ...args) =>
   fetch(BASE + ch, {
     method: 'POST',
@@ -627,6 +687,7 @@ window.dy = {
     comment: (cid) => call('data:comment', cid),
     checkDup: (text) => call('data:checkDup', text),
     events: (opts) => call('data:events', opts),
+    searchHistory: (opts) => call('data:searchHistory', opts),
     cleanupPreview: (opts) => call('data:cleanupPreview', opts),
     userProfile: (uid, opts) => call('data:userProfile', uid, opts),
     userEvents: (uid, opts) => call('data:userEvents', uid, opts),

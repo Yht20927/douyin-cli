@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
 import TaskActivity from '../components/TaskActivity.jsx';
-import { abbrNum } from '../format.js';
+import { abbrNum, ago } from '../format.js';
 import { failText } from '../errors.js';
 
 /**
@@ -56,6 +56,26 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
    * 它是这一页唯一的"下一步"出口（拉完就能去工作台），所以要活得过切页。
    */
   const [justDone, setJustDone] = useState(() => (memo && memo.justDone) || null);
+
+  /**
+   * 这一台机器上真搜过的关键词（空态里那几颗按钮的原料）。
+   *
+   * `null` 只表示**还没读回来**，不等于"没有历史" —— 把它当空数组渲染，
+   * 空态就会在数据到之前先说一句假话（"这台机器还没搜过东西"）。
+   * 不进 memo：它是一次本地读，重新挂载再读一次比留着更准（刚搜过的那次要在）。
+   */
+  const [history, setHistory] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    window.dy.data.searchHistory({ limit: 8 }).then((r) => {
+      if (!alive) return;
+      setHistory(r && r.ok
+        ? { ...r.data, error: null }
+        : { items: [], scanned: 0, truncated: false, error: (r && r.error) || '未知原因' });
+    });
+    return () => { alive = false; };
+  }, []);
 
   /** 这次等的是哪个命令的结果（'search' | 'user'）—— normalize 要按它分派 */
   const kindRef = useRef((memo && memo.kind) || 'search');
@@ -118,8 +138,16 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
     return un;
   }, [pending, settlePending]);
 
-  async function run(kind) {
-    const kw = (kind === 'search' ? keyword : userInput).trim();
+  /**
+   * 用**指定**的那句话去搜。
+   *
+   * 为什么要单独收一个 raw：空态里的「最近搜过的词」是点一下就搜，
+   * 而 `run()` 读的是 `keyword` state —— 在同一个事件回调里刚 setKeyword
+   * 再调 run，state 还没更新，搜出去的还是上一句留着的那个词。
+   * 这个 bug 不报错、不白屏，只是结果莫名其妙换了一个词。
+   */
+  async function runWith(kind, raw) {
+    const kw = String(raw || '').trim();
     if (!kw) return;
     const spec = kind === 'search'
       ? { command: 'search', argv: [kw, '--count', String(PAGE_SIZE)], label: `搜索「${kw}」` }
@@ -133,6 +161,10 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
     setJustDone(null);
     kindRef.current = kind;
     setPending(id);
+  }
+
+  async function run(kind) {
+    await runWith(kind, kind === 'search' ? keyword : userInput);
   }
 
   /** 加入运营对象 = 拉这条视频的评论。列表的判据就是"本地存到过评论"。 */
@@ -383,6 +415,14 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
           hint={mode === 'search'
             ? '上面输一个关键词点「搜索」。搜到的视频点「加入运营对象」才会开始拉它的评论。'
             : '粘一个抖音用户主页的链接（或 MS4wLjAB 开头的那串 sec_uid），看他的作品列表。'}
+          action={mode === 'search' && (
+            <HistoryChips
+              history={history}
+              busy={!!pending}
+              canQueue={actions.canQueue}
+              onPick={(kw) => { setKeyword(kw); runWith('search', kw); }}
+            />
+          )}
         />
       ) : (
         <>
@@ -502,6 +542,64 @@ function DiscoverRow({ v, st, adding, picked, onPick, onAdd, onOpen }) {
             {adding ? '拉取中…' : inLib ? '拉取它的评论' : '加入运营对象'}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 空态里的「最近搜过」。
+ *
+ * 为什么不是内置推荐词：那是这个工具的**作者**想象中的领域，对拿它卖水果的人是噪音，
+ * 而噪音会被摆在整页最显眼的位置。这里只说一件核对得上的事 —— 你在这台机器上
+ * 搜过这几个词（数据是 events 表里 status='success' 的 search 记录）。
+ *
+ * 三种"没有"要分开说，它们指向完全不同的下一步：
+ *   还没读回来 → 什么都不画（画了就是猜）
+ *   读失败     → 说没读回来，并且不假装"没有历史"
+ *   真没有     → 说清是"没有一次成功搜索"还是"整台机器没搜过"
+ */
+function HistoryChips({ history, busy, canQueue, onPick }) {
+  if (!history) return null;
+  if (history.error) {
+    return <div className="empty-hint">搜索历史这次没读回来：{history.error} —— 上面照常输关键词就行。</div>;
+  }
+  if (!history.items.length) {
+    return (
+      <div className="empty-hint">
+        {history.scanned > 0
+          ? `这台机器上还没有一次搜出结果的搜索（翻了近 ${history.scanned} 条搜索记录）。`
+          : '这台机器上还没有搜索记录 —— 这是第一次用这一页，输个词就能开始。'}
+      </div>
+    );
+  }
+  return (
+    <div className="empty-chips">
+      <div className="empty-hint">最近搜过这几个词，点一下就再搜一次：</div>
+      <div className="empty-chips-row">
+        {history.items.map(k => (
+          <button
+            key={k.keyword}
+            className="btn btn-quiet empty-chip"
+            disabled={busy || !canQueue}
+            title={!canQueue
+              ? '浏览器未连接 —— 先到「连接」页接上抖音'
+              : `再搜一次「${k.keyword}」`}
+            onClick={() => onPick(k.keyword)}
+          >
+            {k.keyword}
+            <span className="empty-chip-meta num">
+              {k.lastCount == null ? '条数没记下' : `上次 ${k.lastCount} 条`}
+              {k.times > 1 && ` · 搜过 ${k.times} 次`}
+              {' · '}{ago(k.lastTs)}
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="empty-hint">
+        这几个词是从本机的操作记录里读的
+        {history.truncated ? `（只看近 ${history.scanned} 条搜索记录，更早的没算）` : ''}
+        ；在「诊断」页按天清理数据会连它们一起清掉。
       </div>
     </div>
   );

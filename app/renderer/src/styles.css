@@ -653,6 +653,16 @@ code {
 .empty-action { margin-top: var(--sp-3); }
 .empty-spinner { margin-top: 2px; }
 
+/* 空态里的「最近搜过」：一排行得下就换行的关键词按钮 */
+.empty-chips { margin-top: var(--sp-2); }
+.empty-chips-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 6px 0; }
+.empty-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  max-width: 100%;
+  padding: 3px 9px; font-size: var(--fs-sm);
+}
+.empty-chip-meta { color: var(--text-3); font-size: 11px; white-space: nowrap; }
+
 /* ══════════════════════════════════════════════
    键值表
    ══════════════════════════════════════════════ */
@@ -673,6 +683,41 @@ code {
    那个祖先就完全没样式（renderer-static 的棘轮专门抓这个）。 */
 .diag-copy { margin-left: 8px; padding: 1px 8px; font-size: var(--fs-sm); }
 .kv dd .sub .btn { margin-left: 0; }
+
+/* ── 诊断页的更新指引 ──
+   「有新版本」之后那几步是有顺序的（备份 → 下载 → 装回原位），所以用 <ol>
+   而不是把三句话堆成一段 —— 数到第几步本身就是进度。 */
+.diag-update {
+  margin-top: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+}
+.diag-update-head { font-size: var(--fs-lg); }
+.diag-update-notes {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--line-3);
+  background: var(--bg-1);
+  border-radius: var(--r-xs);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  /* 发布说明是外部长文本：既不许把版面撑爆，也不许假装"只显示一行"，
+     超出就滚，并配合下面那句"太长，这里只显示前一部分"。 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+.diag-update-steps { margin: var(--sp-3) 0 0; padding-left: 20px; }
+.diag-update-steps li { margin-bottom: var(--sp-3); }
+.diag-update-steps li:last-child { margin-bottom: 0; }
+.diag-update-actions { margin-top: var(--sp-2); display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.diag-update-files { margin: var(--sp-2) 0 0; padding-left: 18px; list-style: none; }
+.diag-update-files li { margin-top: var(--sp-1); }
+.diag-update-path { word-break: break-all; }
+.diag-update-foot { margin-top: var(--sp-3); font-size: var(--fs-sm); }
 
 /* ══════════════════════════════════════════════
    提示条 —— 本身表达状态，所以是"色彩纪律"的合法例外

@@ -32,7 +32,13 @@ contextBridge.exposeInMainWorld('dy', {
   },
 
   app: {
-    /** 检查 GitHub 最新 release。{ok, hasUpdate, latest, current, url} 或 {ok:false, error} */
+    /**
+     * 检查 GitHub 最新 release。
+     * 成功：`{ok, current, latest, hasUpdate, releasesUrl, publishedAt, notes,
+     * notesTruncated, assets[], localAssets[], runtime}`；
+     * 失败：`{ok:false, current, error, releasesUrl, runtime}` ——
+     * 失败也给发布页地址，"检查失败"不该是一句没有下一步的话。
+     */
     checkUpdate: () => ipcRenderer.invoke('app:check-update'),
     /** 复制一段文本（诊断页的路径用）。排障第一件事就是把这些贴给别人 */
     copyText: (text) => ipcRenderer.invoke('app:copy-text', text),
@@ -115,6 +121,12 @@ contextBridge.exposeInMainWorld('dy', {
     checkDup: (text) => ipcRenderer.invoke('data:checkDup', text),
     /** 最近的操作事件（诊断页用） */
     events: (opts) => ipcRenderer.invoke('data:events', opts),
+    /**
+     * 最近搜过的关键词（找视频页的空态用）。纯本地读 events 表，不走队列。
+     * @param {{limit?: number, scan?: number}} [opts]
+     * @returns {Promise<{ok:boolean,data:{items:Array,scanned:number,truncated:boolean}}>}
+     */
+    searchHistory: (opts) => ipcRenderer.invoke('data:searchHistory', opts),
     /** 清理预演：按 TTL 算"会删掉多少行"，不删 */
     cleanupPreview: (opts) => ipcRenderer.invoke('data:cleanupPreview', opts),
     /** 某个评论者的画像（whois 的视图版） */

@@ -12,6 +12,18 @@ const { getPolicy } = require('../../core/policy');
 const views = require('../../core/data/views');
 
 /**
+ * 更新检查用的两个地址。
+ *
+ * 失败分支也要能给出发布页 —— 否则"检查失败"这句话没有任何下一步：
+ * 用户只知道没检查成，不知道该去核对一下还是该算了。
+ */
+const RELEASE_REPO = 'Yht20927/douyin-cli';
+const RELEASE_API = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`;
+const RELEASES_URL = `https://github.com/${RELEASE_REPO}/releases`;
+// 「哪个发布文件适配本机」的判据只有一份，且探针也要用它（见该文件头的理由）
+const { pickLocalAssets } = require('../../core/shared/releaseAssets');
+
+/**
  * 简单版本比较：a 是否大于 b（按数字段逐段比，段数不齐补 0）。
  * 只用于 release tag vs app.getVersion()，不需要完整 semver。
  */
@@ -71,20 +83,57 @@ function registerIpc(opts) {
   // ── 应用级：更新检查 / 数据备份 ──
   // 检查 GitHub 最新 release。网络不通（代理/防火墙）时如实报错，
   // 绝不把"检查失败"伪装成"已是最新"。
+  //
+  // 返回的不止"有没有新版"，还有**下一步要用到的事实**：
+  //   - `releasesUrl` 两条分支都给。检查失败时它是唯一还能给的出口。
+  //   - `notes` 是 release 正文（截到 NOTES_MAX 字符并标 truncated）。
+  //     没有它，用户面对"有新版本"只能猜这次改了什么、值不值得升。
+  //   - `runtime.packaged` 决定出路长什么样：源码跑的要拉代码重建，
+  //     装好的才是下载安装包。给错一半比不给更坏 —— 让人去下一条装不上的东西。
+  //   - `assets` / `localAssets` 分开：前者是发布页上的全部文件，
+  //     后者是**认得出适配本机**的那几个；认不出来时界面就说认不出来。
   ipcMain.handle('app:check-update', async () => {
+    const NOTES_MAX = 1200;
+    const runtime = {
+      packaged: app.isPackaged === true,
+      platform: process.platform,
+      arch: process.arch,
+    };
     const current = app.getVersion();
     try {
-      const res = await fetch('https://api.github.com/repos/Yht20927/douyin-cli/releases/latest', {
+      const res = await fetch(RELEASE_API, {
         headers: { 'User-Agent': 'douyin-comment-app', Accept: 'application/vnd.github+json' },
         signal: AbortSignal.timeout(8000),
       });
-      if (!res.ok) return { ok: false, current, error: `GitHub 返回 HTTP ${res.status}` };
+      if (!res.ok) {
+        return { ok: false, current, runtime, releasesUrl: RELEASES_URL,
+          error: `GitHub 返回 HTTP ${res.status}` };
+      }
       const data = await res.json();
       const latest = String(data.tag_name || '').replace(/^v/, '');
       const hasUpdate = !!latest && isNewerVersion(latest, current);
-      return { ok: true, current, latest: latest || null, hasUpdate, url: data.html_url || null };
+      const body = typeof data.body === 'string' ? data.body.trim() : '';
+      const assets = (Array.isArray(data.assets) ? data.assets : []).map(a => ({
+        name: String(a.name || ''),
+        size: typeof a.size === 'number' ? a.size : null,
+        url: a.browser_download_url || a.download_url || null,
+      })).filter(a => a.name && a.url);
+      return {
+        ok: true,
+        current,
+        latest: latest || null,
+        hasUpdate,
+        releasesUrl: data.html_url || RELEASES_URL,
+        publishedAt: data.published_at || null,
+        notes: body.length > NOTES_MAX ? body.slice(0, NOTES_MAX) : body,
+        notesTruncated: body.length > NOTES_MAX,
+        assets,
+        localAssets: pickLocalAssets(assets, runtime.platform, runtime.arch),
+        runtime,
+      };
     } catch (e) {
-      return { ok: false, current, error: `网络请求失败：${e.message}` };
+      return { ok: false, current, runtime, releasesUrl: RELEASES_URL,
+        error: `网络请求失败：${e.message}` };
     }
   });
 
@@ -96,21 +145,32 @@ function registerIpc(opts) {
   });
 
   // 备份本地数据库（作品/评论/草稿都在里面）到用户选的位置。
-  // 热备份：SQLite 单文件，直接复制 —— 运行中复制最多损失最后几秒的写入，
-  // 对"防误删/迁移"这个用途可以接受；wired-up 的事务级备份属于过度设计。
+  //
+  // ⚠️ 不能用 copyFileSync 拷主文件：库是 WAL 模式（core/memory/db.js），
+  // 最近的写入还在 `douyin-data.db-wal` 里。实测一次写入后主文件 4KB、
+  // WAL 230KB —— 拷主文件得到的那份基本是空的，而它看起来完全正常，
+  // 界面还会报一句"已备份到"。
+  //
+  // 用的是 `VACUUM INTO`：SQLite 原子的"把整个库（含 WAL）导出成一份单文件"，
+  // 参数绑定路径，不经过驱动适配层任何自定义方法（node:sqlite 没有 backup()）。
   ipcMain.handle('data:backup', async () => {
     const fs = require('fs');
-    const dbFile = require('../../core/paths').dbFile();
     const r = await dialog.showSaveDialog({
       title: '备份数据库',
       defaultPath: `douyin-data-${new Date().toISOString().slice(0, 10)}.db`,
       filters: [{ name: 'SQLite 数据库', extensions: ['db'] }],
     });
     if (r.canceled) return { ok: true, canceled: true };
+    // VACUUM INTO 拒绝写到**已存在**的文件，而保存框允许用户挑一个已有的名字
+    // （它自己的"替换吗？"确认不算数）。先写到同目录的临时文件，再 rename 过去 ——
+    // 被覆盖的永远是用户刚刚亲手确认过的那个路径。
+    const tmp = `${r.filePath}.tmp-${process.pid}-${Date.now()}`;
     try {
-      fs.copyFileSync(dbFile, r.filePath);
+      require('../../core/memory/db').getDb().prepare('VACUUM INTO ?').run(tmp);
+      fs.renameSync(tmp, r.filePath);
       return { ok: true, path: r.filePath };
     } catch (e) {
+      try { fs.rmSync(tmp, { force: true }); } catch (_) { /* 临时文件没建成 */ }
       return { ok: false, error: e.message };
     }
   });
@@ -425,6 +485,12 @@ function registerIpc(opts) {
     limit: o && o.limit,
     command: o && o.command,
     status: o && o.status,
+  })));
+  // 找视频页空态用的"最近搜过的关键词"。纯本地读，不走队列 —— 它只是把
+  // events 里已经躺着的那一列聚合一下，为它等一次读间隔是错的。
+  ipcMain.handle('data:searchHistory', safe((o) => views.searchHistory({
+    limit: o && o.limit,
+    scan: o && o.scan,
   })));
   // 用户详情（whois 的视图版）+ 交互历史（profile）。纯本地读，不走队列。
   ipcMain.handle('data:userProfile', safe((uid, o) => views.userProfile(String(uid || ''), {

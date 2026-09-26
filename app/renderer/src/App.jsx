@@ -22,6 +22,9 @@ function oneLine(s) {
 
 export default function App() {
   const [info, setInfo] = useState(null);
+  // 读运行环境失败时的那句理由。没有它，诊断页会在「正在读取运行环境…」
+  // 上停一辈子 —— 而诊断页是唯一该告诉用户"哪里坏了"的地方。
+  const [infoError, setInfoError] = useState(null);
   const [status, setStatus] = useState(null);
   const [queueState, setQueueState] = useState(null);
   /**
@@ -212,10 +215,28 @@ export default function App() {
     } finally { setLoadingDrafts(false); }
   }, []);
 
+  /**
+   * 读运行环境（版本、数据目录、配置文件在哪）。
+   *
+   * `app:info` 是主进程里少数**没包 safe()** 的通道之一 —— 它直接读
+   * `app.getVersion()` / 路径 / 配置，任何一处抛出来都是一个 reject，
+   * 而不是 `{ok:false}`。所以失败必须在这里就接住：诊断页整页都靠这份数据，
+   * 没接住就等于"读失败了"看起来像"还在读"。
+   */
+  const loadInfo = useCallback(async () => {
+    try {
+      const i = await window.dy.info();
+      setInfo(i);
+      setInfoError(null);
+    } catch (e) {
+      setInfoError(String((e && e.message) || e));
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
-    window.dy.info().then((i) => { if (!cancelled) setInfo(i); });
+    loadInfo();
     window.dy.bridge.status().then((s) => { if (!cancelled) applyStatus(s); });
     reloadAccount();
     window.dy.queue.state().then((q) => { if (!cancelled && q) setQueueState(q); });
@@ -708,7 +729,7 @@ export default function App() {
                     busy={busy}
                   />
                 )}
-                {view === 'diagnostics' && <DiagnosticsView info={info} status={status} actions={actions} />}
+                {view === 'diagnostics' && <DiagnosticsView info={info} infoError={infoError} onRetryInfo={loadInfo} status={status} actions={actions} />}
               </>
             )}
         </div>

@@ -144,6 +144,15 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
   // ── 全量拉取 ──
   /** 正在跑的全量拉取任务 id */
   const [fullTaskId, setFullTaskId] = useState(null);
+  /**
+   * 正在跑的普通「拉取新评论」任务 id。
+   *
+   * 单独一个而不是复用上面那个：这两颗按钮的量级差几十倍，共用一个状态会让
+   * 「拉取新评论」把页头那颗按钮的文案改成「全量拉取中…」。
+   * 存在这里的理由与 fullTaskId 一样 —— **这一页要看得见自己发起的动作**。
+   * 普通拉取也要等一次读间隔（30–50 秒），而此前本页只有一句会消失的 toast。
+   */
+  const [fetchTaskId, setFetchTaskId] = useState(null);
   /** 全量拉取的结果（本次拿到多少条 / 用时 / 失败原因） */
   const [full, setFull] = useState(null);
   const fullHandled = useRef(null);
@@ -297,6 +306,13 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
       }
     }
 
+    // 普通拉取跑完撤掉本页那一行实时状态。**只负责让行消失** ——
+    // 刷新列表是上面那段的事，两件事混在一起会导致"行还在但数据是新的"。
+    if (fetchTaskId) {
+      const t = tasks.find(x => x.id === fetchTaskId);
+      if (t && ['done', 'failed', 'blocked', 'cancelled'].includes(t.status)) setFetchTaskId(null);
+    }
+
     // 全量拉取：跑完说清楚"这次拿到多少条"。
     //
     // 条数取 `resultSummary.count`（task-queue.js 一直在维护、任务结束后仍然保留），
@@ -397,6 +413,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
     });
     if (!id) return;
     pendingRefresh.current = { id, kind: 'fetch' };
+    setFetchTaskId(id);
     setNotice('已加入队列 —— 拉取完成后列表会自动刷新');
   }
 
@@ -643,6 +660,17 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
   const fullTask = fullTaskId
     ? ((queueState && queueState.tasks) || []).find((t) => t.id === fullTaskId)
     : null;
+
+  /**
+   * 正在跑的普通「拉取新评论」。
+   *
+   * 空态里那句"进度在上方那一行看得见"必须有东西承接它 —— 普通拉取过去只发一条
+   * toast，读间隔要等几十秒时页面上没有任何东西在动，那句话就是假话。
+   */
+  const fetchTask = fetchTaskId
+    ? ((queueState && queueState.tasks) || []).find((t) => t.id === fetchTaskId)
+    : null;
+
   // 让用户点按钮之前就知道这次会不会真的调 AI（固定内容是秒回的）
   const modeHint = replyDesc && {
     ai: 'AI 生成较慢',
@@ -740,9 +768,12 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
           <button className="btn" onClick={reload} disabled={loading}>
             {loading && <Spinner size={12} />}刷新
           </button>
-          <button className="btn btn-primary" onClick={fetchComments} disabled={!actions.canQueue}
-            title={!actions.canQueue ? '浏览器未连接 —— 先到「连接」页接上抖音' : '从抖音拉取这条视频的最新评论'}>
-            拉取新评论
+          <button className="btn btn-primary" onClick={fetchComments}
+            disabled={!actions.canQueue || !!fetchTaskId}
+            title={!actions.canQueue
+              ? '浏览器未连接 —— 先到「连接」页接上抖音'
+              : '从抖音拉取这条视频的最新评论'}>
+            {fetchTaskId ? <><Spinner size={12} />拉取中…</> : '拉取新评论'}
           </button>
           {/* 全量拉取和「拉取新评论」是两条量级完全不同的路径，所以按钮并列而不是合并成
               一个带下拉的入口 —— 点错一次的代价是几分钟的队列占用 */}
@@ -775,6 +806,20 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
       </div>
 
       <Notice data={notice} style={{ margin: '0 0 12px' }} />
+
+      {/* 普通拉取也要有这一行：读间隔几十秒时，页面上得有个东西在动，
+          否则「进度在上方看得见」那句话（空态里写的）就是假话。 */}
+      {fetchTask && (
+        <TaskActivity
+          task={fetchTask}
+          note="只拉最新一页（最多 20 条）。等的是读间隔，不是卡住了。"
+          onCancel={async (id) => {
+            await actions.cancelTask(id);
+            setNotice('已请求取消 —— 已经发出去的那一个请求打不断');
+          }}
+          cancelNote="取消在下一个等待边界生效：已经在浏览器里跑的那一个请求打不断，它回来后队列会直接丢掉这次的结果。"
+        />
+      )}
 
       {/* 全量拉取：进度、等待、取消都留在这一页。
           翻页要几分钟，用户多半就停在这里看着；只把进度丢进队列页等于逼他去别处找。 */}
@@ -1005,13 +1050,14 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
             : comments.length === 0
               ? (
                 <div className="ws-list-pad">
-                  <EmptyState
-                    title={search
-                      ? `没有匹配「${search}」的评论。`
-                      : '这个筛选下没有评论。'}
-                    hint={tab === 'pending' && !search
-                      ? '如果从来没拉到过评论，点右上角「拉取新评论」。'
-                      : (search ? '换个关键词，或者清空搜索框。' : '换个筛选标签看看。')}
+                  <ListEmpty
+                    stats={stats}
+                    tab={tab}
+                    search={search}
+                    canQueue={actions.canQueue}
+                    onClearSearch={() => { setSearchInput(''); setSearch(''); }}
+                    onTab={(key) => { setTab(key); setSelectedCid(null); }}
+                    onFetch={fetchComments}
                   />
                 </div>
               )
@@ -1441,4 +1487,106 @@ function extractReplyText(result) {
     return String(result.comments[0].text);
   }
   return '';
+}
+
+/**
+ * 评论列表的空态。
+ *
+ * 换掉的是页面上最浪费的两句话：`这个筛选下没有评论。` + `换个筛选标签看看。`
+ * —— 这一页头顶就摆着每个筛选各有多少条，它**知道**该去哪一个，
+ * 却把"找过去"这一步推回给用户手动点标签。而另一半更糟：
+ * 「如果从来没拉到过评论」是一句猜测，`stats.total` 就是答案 ——
+ * 猜错的代价是白等一整个读间隔。
+ *
+ * 三种空态的出路完全不同，所以分开写：
+ *   本地一条都没有 → 只能先拉。这是读操作，未连接时按不动，都要说出口
+ *   这一筛为空     → 一颗点得动的按钮，直接把筛选切到真有数据的那一个
+ *   搜索没命中     → 清词。⚠️ 这一支**不报各筛选的条数**：那些数是不带搜索词的
+ *                    全量口径，摆在"没匹配到"旁边就是"数字各说各的"那一类缺陷
+ *
+ * `stats` 还没读回来时不给任何结论 —— 没有 total 就说不清"这条视频本地有几条"。
+ */
+function ListEmpty({ stats, tab, search, canQueue, onClearSearch, onTab, onFetch }) {
+  const tabName = (TABS.find(t => t.key === tab) || {}).label || tab;
+  if (!stats) {
+    return (
+      <EmptyState
+        title={`「${tabName}」这一筛下现在没有评论。`}
+        hint="这个视频的统计还在读。读回来之后这里会直接告诉你数据在哪个筛选下。"
+      />
+    );
+  }
+  if (search) {
+    return (
+      <EmptyState
+        title={`没有匹配「${search}」的评论。`}
+        hint={<>搜索是在<b>当前这个筛选</b>里做的，所以「全部」或别的筛选下可能有，而这个筛选下确实没有。</>}
+        action={<>
+          <button className="btn" onClick={onClearSearch}>清空搜索词</button>
+          {' '}
+          <button className="btn btn-quiet" onClick={() => { onClearSearch(); onTab('all'); }}>
+            清空并看全部 {stats.total} 条
+          </button>
+        </>}
+      />
+    );
+  }
+  if (stats.total === 0) {
+    return (
+      <EmptyState
+        title="这条视频本地还没有一条评论。"
+        hint="评论要先从抖音拉一次才会在本地存在 —— 拉之前这一页确实无事可做。"
+        action={<>
+          <button
+            className="btn btn-primary"
+            onClick={onFetch}
+            disabled={!canQueue}
+            title={!canQueue ? '浏览器未连接 —— 先到「连接」页接上抖音' : '从抖音拉取这条视频的最新评论'}
+          >
+            拉取新评论
+          </button>
+          {' '}
+          <span className="muted">
+            {canQueue
+              ? '这是读操作：要等一次读间隔，进度在上方那一行看得见'
+              : '浏览器还没连接，这颗按钮现在按不动'}
+          </span>
+        </>}
+      />
+    );
+  }
+  const counts = [
+    { key: 'pending', label: '待处理', n: stats.pending },
+    { key: 'reply', label: '建议回复', n: stats.byDecision.reply },
+    { key: 'emoji_reply', label: '表情回复', n: stats.byDecision.emoji_reply },
+    { key: 'skip', label: '跳过', n: stats.byDecision.skip },
+    { key: 'replied', label: '已回复', n: stats.replied },
+    { key: 'all', label: '全部', n: stats.total },
+  ];
+  const elsewhere = counts.filter(c => c.n > 0 && c.key !== tab);
+  // 「这一筛之外全是 0 条」只剩一种可能：本地统计说有、列表却没读到东西
+  // （两次查询之间的瞬时失败）。此时说得出口的出路还是回「全部」再读一次，
+  // 所以给它一颗按钮，而不是留一句"那就先回「全部」"下面什么也没有。
+  const exits = elsewhere.length ? elsewhere : counts.filter(c => c.key === 'all');
+  return (
+    <EmptyState
+      title={<>「{tabName}」这一筛下没有评论 —— 这个视频本地有 <b className="num">{stats.total}</b> 条</>}
+      hint={<>
+        {elsewhere.length
+          ? '数据在别的筛选下，点一下直接过去：'
+          : '别的筛选下也没有（这一筛之外全是 0 条）—— 那多半是列表这一次没读到，回「全部」再看一眼。'}
+        {stats.scanCapped && ' · ⚠ 条数是在扫描上限内算的，评论很多时可能偏小'}
+      </>}
+      action={exits.length > 0 && (
+        <div className="empty-chips-row">
+          {exits.map(c => (
+            <button key={c.key} className="btn btn-quiet empty-chip" onClick={() => onTab(c.key)}>
+              {c.label}
+              <span className="empty-chip-meta num">{c.n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    />
+  );
 }

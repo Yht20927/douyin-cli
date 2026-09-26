@@ -919,3 +919,126 @@ describe('批量改正文：预览与执行必须是同一次判定', () => {
     expect(probe).toMatch(/if \(!opts \|\| opts\.dryRun !== true\) return refused\(\)/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 第二十一轮：两个空态 + 检查更新的"下一步"
+//
+// 三条都在补同一个毛病：**界面把最后一步推回给用户**。
+//   - 找视频的空态放一组"推荐关键词" —— 那组词是这个工具的作者想象中的领域；
+//   - 工作台的空态说"换个筛选标签看看" —— 而这一页头顶就摆着每个筛选各有多少条；
+//   - 检查更新只给一句"有新版本"加一个浏览器按钮 —— 该下哪个文件、装完数据还在不在，
+//     全留给用户猜。
+// 三条都能被"改回原样"轻易绕过，所以钉的是**结构**：数据从哪来、分支分了几条、
+// 出口是不是真点得动。
+// ═══════════════════════════════════════════════════════════
+describe('空态与更新指引必须给得出下一步', () => {
+  const code = (name) => fs.readFileSync(path.join(RENDERER_SRC, 'views', name), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  // ── 1. 找视频：那几个词只能来自真历史 ──
+  it('找视频页的关键词来自 data.searchHistory，而不是写死的一组词', () => {
+    const c = code('DiscoverView.jsx');
+    expect(c).toMatch(/window\.dy\.data\.searchHistory\(/);
+    // 内置推荐词是本轮特意不要做的事：一旦出现"看起来像词表"的常量就是回退了
+    expect(c).not.toMatch(/(?:RECOMMEND|SUGGEST)_?(?:KEYWORDS|WORDS)\s*=/);
+    expect(c).not.toMatch(/推荐关键词|热门关键词|试试搜/);
+  });
+
+  it('HistoryChips 四种状态分开（没读回来 / 读失败 / 翻过但没成功 / 真有历史）', () => {
+    const fn = code('DiscoverView.jsx');
+    const chips = fn.slice(fn.indexOf('function HistoryChips'));
+    expect(chips).toMatch(/if \(!history\) return null/);   // 还没读回来不许先说"没有"
+    expect(chips).toMatch(/history\.error/);                 // 读失败要说得出来
+    expect(chips).toMatch(/history\.scanned > 0/);           // 搜过但都没出结果 ≠ 没搜过
+    expect(chips).toMatch(/history\.truncated/);             // 只翻了近 N 条要说明
+    expect(chips).toMatch(/onPick\(k\.keyword\)/);           // 而点了确实会再搜一次
+  });
+
+  // ── 2. 工作台：空态要能用上这一页已经知道的数 ──
+  it('工作台空态不再甩一句"换个筛选标签看看"，而是把筛选切过去', () => {
+    const c = code('WorkspaceView.jsx');
+    expect(c).not.toMatch(/换个筛选标签看看/);
+    const fn = c.slice(c.indexOf('function ListEmpty'));
+    // 三种空态的出路完全不同，各自都要有分支
+    expect(fn).toMatch(/if \(!stats\)/);                 // 统计还没读回来：不给结论
+    expect(fn).toMatch(/if \(search\)/);                 // 搜索没命中：清词
+    expect(fn).toMatch(/stats\.total === 0/);            // 本地一条都没有：先拉
+    // 出路必须点得动，不是一句话
+    expect(fn).toMatch(/onClick=\{\(\) => onTab\(c\.key\)\}/);
+    expect(fn).toMatch(/onClick=\{onFetch\}/);
+    expect(fn).toMatch(/disabled=\{!canQueue\}/);        // 没连上浏览器时不许假装能点
+  });
+
+  it('搜索那一支不报各筛选的条数（两套口径并排就是"数字各说各的"）', () => {
+    const fn = code('WorkspaceView.jsx');
+    const empty = fn.slice(fn.indexOf('function ListEmpty'));
+    const branch = empty.slice(empty.indexOf('if (search)'), empty.indexOf('if (stats.total === 0)'));
+    expect(branch).toContain('清空搜索词');
+    expect(branch).not.toMatch(/empty-chip/);            // 别的筛选的条数不许出现在这里
+    expect(branch).not.toMatch(/byDecision/);
+  });
+
+  it('空态里那句"进度看得见"有东西承接（普通拉取也在本页跑）', () => {
+    const c = code('WorkspaceView.jsx');
+    expect(c).toMatch(/const \[fetchTaskId, setFetchTaskId\] = useState\(null\)/);
+    expect(c).toMatch(/const fetchTask = fetchTaskId/);
+    // 光有 state 不够：必须真渲染那一行，否则这句话仍是假话
+    expect(c).toMatch(/\{fetchTask && \(/);
+    expect(c).toMatch(/<TaskActivity\s*\n?\s*task=\{fetchTask\}/);
+  });
+
+  // ── 3. 检查更新：两条出路 + 一份说明 + 一个备份 ──
+  it('诊断页读的是 releasesUrl，并按 packaged 分两条出路', () => {
+    const c = code('DiagnosticsView.jsx');
+    expect(c).toMatch(/update\.releasesUrl/);
+    expect(c).not.toMatch(/openExternal\(update\.url\)/);   // 主进程已不返回这个字段
+    expect(c).toMatch(/runtime\.packaged/);                  // 源码版与安装版是两件事
+    expect(c).toMatch(/update\.localAssets/);                // 点名该下哪个文件
+    expect(c).toMatch(/认不出/);                             // 认不出时要说认不出
+  });
+
+  it('失败分支也有出口，备份那颗按钮接的是真函数', () => {
+    const c = code('DiagnosticsView.jsx');
+    const fn = c.slice(c.indexOf('function UpdateGuide'), c.indexOf('export default function DiagnosticsView'));
+    expect(fn).toMatch(/if \(!update\.ok\)/);
+    // 失败时先判 releasesUrl 在不在，再谈"上哪儿自己看一眼"
+    expect(fn).toMatch(/update\.releasesUrl && \(/);
+    expect(fn).toMatch(/onClick=\{onBackup\}/);
+    // 而调用点真的把备份函数与数据目录传进来（只声明 prop 不传 = 按钮是死的）
+    expect(c).toMatch(/<UpdateGuide update=\{update\} dataDir=\{info && info\.dataDir\} onBackup=\{backupData\}/);
+    // 没有自动更新这件事要说明，否则用户会等一个不会发生的弹窗
+    expect(fn).toMatch(/不会自己更新/);
+  });
+
+  // ── 4. 读失败不许长成"还在读"（本轮渲染核对时真撞上的） ──
+  it('app:info 被拒时诊断页说话，而不是无限转圈', () => {
+    const app = fs.readFileSync(path.join(RENDERER_SRC, 'App.jsx'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    // 裸的 .then(...) 没有失败分支 —— 那正是"停在正在读取…"一辈子的形状
+    expect(app).not.toMatch(/window\.dy\.info\(\)\.then\(/);
+    const loader = app.slice(app.indexOf('const loadInfo = useCallback'));
+    expect(loader).toMatch(/try \{/);
+    expect(loader).toMatch(/catch/);
+    expect(loader).toMatch(/setInfoError\(/);
+    // 失败状态必须真的传到那一页（只 setState 不传 = 界面还是看不见）
+    expect(app).toMatch(/<DiagnosticsView info=\{info\} infoError=\{infoError\} onRetryInfo=\{loadInfo\}/);
+
+    const c = code('DiagnosticsView.jsx');
+    expect(c).toMatch(/\(\{ info, infoError, onRetryInfo,/);
+    // 「还在读」与「读失败了」分成两支：无限制的那一支只能是还在读
+    const branch = c.slice(c.indexOf('if (!info)'), c.indexOf('return (\n    <div className="main-col">\n      <h1 className="page-title">诊断</h1>\n      <p className="page-sub">'));
+    expect(branch).toMatch(/infoError \?/);
+    expect(branch).toMatch(/读运行环境失败/);
+    expect(branch).toMatch(/onClick=\{onRetryInfo\}/);   // 重试接的是真函数，不是摆设
+  });
+
+  it('检查更新整个 IPC 没回来时也要说话（按钮不能点下去没反应）', () => {
+    const c = code('DiagnosticsView.jsx');
+    const fn = c.slice(c.indexOf('async function checkUpdate'), c.indexOf('const loadEvents'));
+    expect(fn).toMatch(/catch \(e\)/);
+    // 拒了的形状要和"问到了但失败"走同一支渲染，否则多出一条没人看的分支
+    expect(fn).toMatch(/setUpdate\(\{ ok: false/);
+  });
+});

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import LoadingState from '../components/LoadingState.jsx';
 // ago 收的是**毫秒时间戳**（events.ts 就是），不要传 ISO 字符串
-import { ago } from '../format.js';
+import { ago, formatBytes } from '../format.js';
 
 /**
  * 一键复制。
@@ -41,10 +41,144 @@ function CopyBtn({ text, label = '复制' }) {
 }
 
 /**
+ * 检查更新之后的那几步。
+ *
+ * 改造前这里只有一句「有新版本 v2.1.0 —— [打开发布页]」。那不叫下一步：
+ * 发布页上一排 `.exe` / `.dmg` / `.AppImage` / `source.zip`，运营者要自己猜
+ * 哪个适配自己的系统；他也不知道装完数据还在不在（数据跟着安装目录走）、
+ * 更不知道装之前该先备份。所以这一节把**只有主进程知道的事实**摊开：
+ * `runtime.packaged`（装好的还是源码跑的）、`localAssets`（按平台+架构筛出来的那几个文件）。
+ *
+ * 判据不在这里重复一遍 —— `localAssets` 是 `core/shared/releaseAssets.js` 算的，
+ * 与探针用的是同一个函数。界面只负责把它摆出来，认不出时**说认不出**。
+ */
+const OS_LABEL = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' };
+const ARCH_LABEL = { x64: 'x64（64 位）', arm64: 'ARM 64 位' };
+
+function UpdateGuide({ update, dataDir, onBackup }) {
+  const runtime = update.runtime || {};
+  const os = OS_LABEL[runtime.platform] || runtime.platform || '当前系统';
+  const arch = ARCH_LABEL[runtime.arch] || runtime.arch || '';
+  const all = Array.isArray(update.assets) ? update.assets : [];
+  const mine = Array.isArray(update.localAssets) ? update.localAssets : [];
+  const publishedTs = update.publishedAt ? Date.parse(update.publishedAt) : NaN;
+
+  if (!update.ok) {
+    return (
+      <div className="notice notice-warn diag-update">
+        <div>
+          <b>这次没问到新版本：</b>{update.error || '未知原因'}
+          <div className="muted">
+            不影响正常使用 —— 这个检查只读发布页，不碰任何数据。
+            想确认是不是网络问题，直接去发布页看一眼最快。
+          </div>
+          {update.releasesUrl && (
+            <div className="diag-update-actions">
+              <button className="btn btn-quiet" onClick={() => window.dy.openExternal(update.releasesUrl)}>
+                打开发布页
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="diag-update">
+      <div className="diag-update-head">
+        <b>
+          v{update.current} → <span className="num">v{update.latest}</span>
+        </b>
+        {Number.isFinite(publishedTs) && (
+          <span className="muted">　发布于 {ago(publishedTs)}（{update.publishedAt.slice(0, 10)}）</span>
+        )}
+      </div>
+
+      {update.notes
+        ? (
+          <>
+            <pre className="diag-update-notes">{update.notes}</pre>
+            {update.notesTruncated && (
+              <div className="muted">—— 说明太长，这里只显示前一部分，全文在发布页。</div>
+            )}
+          </>
+        )
+        : <div className="muted">这个版本没写更新说明 —— 改了什么要去发布页看。</div>}
+
+      <ol className="diag-update-steps">
+        <li>
+          <b>先备份一份</b>
+          <span className="muted">
+            　升级本身不删数据，但装到一半出事、或新版本要退回旧版时，这份备份是唯一的退路。
+          </span>
+          <div className="diag-update-actions">
+            <button className="btn btn-quiet" onClick={onBackup}>备份数据库</button>
+          </div>
+        </li>
+
+        <li>
+          <b>下载适配自己机器的文件</b>
+          <div className="muted">
+            这台机器是 {os}{arch ? ` · ${arch}` : ''}
+            {runtime.packaged ? '，跑的是装好的版本' : '，跑的是源码目录里的版本'}。
+          </div>
+          {mine.length > 0
+            ? (
+              <ul className="diag-update-files">
+                {mine.map(a => (
+                  <li key={a.url}>
+                    <button className="btn btn-quiet" onClick={() => window.dy.openExternal(a.url)}>
+                      下载 {a.name}
+                    </button>
+                    {a.size ? <span className="muted num">　{formatBytes(a.size)}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            )
+            : (
+              <div className="muted">
+                这一版发布了 {all.length} 个文件，我认不出哪个适配 {os}{arch ? ` · ${arch}` : ''} ——
+                得你自己挑：{all.map(a => a.name).join('、') || '（一个文件都没有）'}
+              </div>
+            )}
+        </li>
+
+        {/* 源码跑的那份换不掉 —— 不写这一条，用户会以为下了包就是更新完了 */}
+        {!runtime.packaged && (
+          <li>
+            <b>你现在跑的不是安装版</b>
+            <div className="muted">
+              从代码目录直接起的那份，下载新安装包<b>不会</b>把它换掉。
+              要更新得回到你取代码的那一侧；想改用安装版就装一个然后以它为准 ——
+              但那是<b>另一份数据</b>（见下一条），旧数据得靠上面那份备份导过去。
+            </div>
+          </li>
+        )}
+
+        <li>
+          <b>装到<em>原来那个位置</em></b>
+          <div className="muted">
+            数据存在应用自己旁边：
+            {dataDir ? <code className="diag-update-path">{dataDir}</code> : '（数据目录还没读回来）'}
+            。装到新位置就是从零开始的另一份数据，看起来跟"作品和草稿全没了"一模一样。
+            装的时候如果提示文件被占用，先把这个应用整个退出。
+          </div>
+        </li>
+      </ol>
+
+      <div className="muted diag-update-foot">
+        这个应用不会自己更新 —— 检查只负责说有没有新版，下载安装要你来。
+      </div>
+    </div>
+  );
+}
+
+/**
  * 诊断。正常使用时不需要看，但出问题时是唯一能自查的地方：
  * 数据到底存哪了、配置被回退成了什么、脚本源在不在。
  */
-export default function DiagnosticsView({ info, status, actions }) {
+export default function DiagnosticsView({ info, infoError, onRetryInfo, status, actions }) {
   const warnings = (info && info.configWarnings) || [];
 
   // 更新检查是异步的网络请求，结果就地显示在这一行
@@ -63,7 +197,15 @@ export default function DiagnosticsView({ info, status, actions }) {
     setChecking(true);
     try {
       const r = await window.dy.app.checkUpdate();
-      setUpdate(r.ok ? r : { ok: false, error: r.error, current: r.current });
+      // **原样收下**，失败时也不挑字段重拼 —— 主进程失败分支特意带着 releasesUrl 回来
+      // （网络不通时"打开发布页自己看一眼"恰恰是最需要的那一步），
+      // 重拼一遍就等于把出口丢了。
+      setUpdate(r);
+    } catch (e) {
+      // 走到这里说明这一次 IPC 整个没回来（不是"问到了但没有新版"）。
+      // 没有这个分支的话，按钮点下去只是转一下又停下，一个字都不说。
+      // releasesUrl 这里拿不到 —— 所以失败分支本就该在没有它的时候也只报理由，不假装知道出口。
+      setUpdate({ ok: false, error: String((e && e.message) || e) });
     } finally {
       setChecking(false);
     }
@@ -123,10 +265,31 @@ export default function DiagnosticsView({ info, status, actions }) {
   // 改造前这里**完全没有加载态**：读不到时每个字段渲染成一枚「…」，
   // 而那看起来像"这些值本来就是空的" —— 与"还在读"是两回事。
   if (!info) {
+    // 「还在读」与「读失败了」是两种处境。只有前一种该转圈 ——
+    // 后一直转圈等于这一页最该说话的时候不说话（app:info 没包 safe()，
+    // 主进程任何一处抛出来都是一个 reject）。
     return (
       <div className="main-col">
         <h1 className="page-title">诊断</h1>
-        <LoadingState variant="text" label="正在读取运行环境…" />
+        {infoError ? (
+          <>
+            <div className="notice notice-bad">
+              <div>
+                <b>读运行环境失败：</b>{infoError}
+                <div className="muted" style={{ marginTop: 6 }}>
+                  这一页的每一项都要从主进程读这一次才知道，读失败就没有任何一项能报 ——
+                  包括这份失败本身出在哪。数据一条都没被动过，可以再读一次。
+                </div>
+                <div className="diag-update-actions">
+                  <button className="btn" onClick={onRetryInfo}>重新读取</button>
+                </div>
+              </div>
+            </div>
+            <LoadingState variant="text" label="其余检查项在读回来之前一概不显示 —— 没有一项是「已知为正常」。" />
+          </>
+        ) : (
+          <LoadingState variant="text" label="正在读取运行环境…" />
+        )}
       </div>
     );
   }
@@ -175,22 +338,13 @@ export default function DiagnosticsView({ info, status, actions }) {
             </button>
             {update && (
               <div className="sub">
-                {update.ok
-                  ? (update.hasUpdate
-                    ? (
-                      <>
-                        有新版本 v{update.latest} ——
-                        <button
-                          className="btn btn-quiet"
-                          style={{ marginLeft: 4, padding: '1px 8px', fontSize: 12 }}
-                          onClick={() => window.dy.openExternal(update.url)}
-                        >
-                          打开发布页
-                        </button>
-                      </>
-                    )
-                    : '已是最新版本')
-                  : `检查失败（${update.error}）—— 不影响使用，多半是网络到 GitHub 不通`}
+                {!update.ok
+                  ? `检查失败（${update.error || '未知原因'}）—— 不影响使用，多半是网络到发布页不通`
+                  : !update.latest
+                    ? '读到了发布页，但那边没给出版本号 —— 没法判断有没有新版'
+                    : update.hasUpdate
+                      ? <>有新版本 <b className="num">v{update.latest}</b> —— 下一步在下面的「更新」那一节</>
+                      : <>已是最新（发布页 v{update.latest}，不比现在的 v{update.current} 新）</>}
               </div>
             )}
           </dd>
@@ -237,6 +391,12 @@ export default function DiagnosticsView({ info, status, actions }) {
             <div className="sub">{info && info.sourceExists ? '存在' : '缺失'}</div>
           </dd>
         </dl>
+
+        {/* 「有新版本」之后要走的那几步。此前检查更新只给一句提示加一个浏览器按钮，
+            等于把"该下哪个文件、装完数据还在不在、要不要先备份"全推给用户猜。 */}
+        {update && (update.hasUpdate || !update.ok) && (
+          <UpdateGuide update={update} dataDir={info && info.dataDir} onBackup={backupData} />
+        )}
       </section>
 
       {/* ── 操作历史 ── */}

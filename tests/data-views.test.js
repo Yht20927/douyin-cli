@@ -1348,3 +1348,69 @@ describe('targetStatus', () => {
     expect(views.targetStatus([null, '', undefined])).toEqual({});
   }));
 });
+
+// ═══════════════════════════════════════════════════════════
+// searchHistory —— 找视频页空态的那几个词
+//
+// 事件形状照 `core/commands/search.js` 真正写的那一行：
+// `withAudit(ctx,'search',{keyword,offset,count})` + `summary:{count}`。
+// 随手编一个 `{query:'…'}` 会让 real 实现读不到 keyword 而用例照样绿（§2.28）。
+// ═══════════════════════════════════════════════════════════
+describe('searchHistory（找视频空态的搜索历史）', () => {
+  const T0 = Date.now();
+
+  it('同词合并计次，取最近那次的 ts 与条数；最近的词排在前面', withTempEnv({}, async ({ views, evts }) => {
+    evts.append({ ts: T0 - 1000, command: 'search', status: 'success',
+      args: { keyword: '苹果', offset: 0, count: 10 }, summary: { count: 12 } });
+    evts.append({ ts: T0 - 5000, command: 'search', status: 'success',
+      args: { keyword: '苹果', offset: 20, count: 10 }, summary: { count: 9 } });
+    evts.append({ ts: T0 - 2000, command: 'search', status: 'success',
+      args: { keyword: '梨', offset: 0, count: 10 }, summary: { count: 3 } });
+
+    const r = views.searchHistory();
+    expect(r.items.map(i => i.keyword)).toEqual(['苹果', '梨']);
+    expect(r.items[0]).toMatchObject({ times: 2, lastTs: T0 - 1000, lastCount: 12 });
+    expect(r.scanned).toBe(3);
+    expect(r.truncated).toBe(false);
+  }));
+
+  it('失败的搜索不进关键词，但**要**计入 scanned', withTempEnv({}, async ({ views, evts }) => {
+    evts.append({ ts: T0, command: 'search', status: 'error', error: '桥接未连接',
+      args: { keyword: '西瓜', offset: 0, count: 10 } });
+    const r = views.searchHistory();
+    expect(r.items).toEqual([]);
+    // 这一条撑着空态那句"还没有一次搜出结果的搜索（翻了近 N 条）"：
+    // 过滤写在查询里的话 scanned 恒为 0，界面就只剩"还没有搜索记录"可说 —— 假话
+    expect(r.scanned).toBe(1);
+  }));
+
+  it('别的命令、缺 keyword、keyword 是空白都不算数', withTempEnv({}, async ({ views, evts }) => {
+    evts.append({ ts: T0, command: 'get', status: 'success', args: { keyword: '不是搜索' } });
+    evts.append({ ts: T0, command: 'search', status: 'success', args: { offset: 0 } });
+    evts.append({ ts: T0, command: 'search', status: 'success', args: { keyword: '   ' } });
+    evts.append({ ts: T0, command: 'search', status: 'success', args: null });
+    const r = views.searchHistory();
+    expect(r.items).toEqual([]);
+    // 那 3 行是 search 命令的（含缺字段/空白词），scanned 说的是"翻了多少行搜索"。
+    // 唯一不算进去的是那条 get —— 查询本身按命令过滤，这是对的。
+    expect(r.scanned).toBe(3);
+  }));
+
+  it('limit 与 scan 都会被夹住；scan 打满时 truncated 说真话', withTempEnv({}, async ({ views, evts }) => {
+    for (let i = 0; i < 12; i++) {
+      evts.append({ ts: T0 - i * 1000, command: 'search', status: 'success',
+        args: { keyword: `词${i}`, offset: 0, count: 10 }, summary: { count: 1 } });
+    }
+    expect(views.searchHistory({ limit: 0 }).items.length).toBe(8);      // 0 当"用默认"
+    expect(views.searchHistory({ limit: 999 }).items.length).toBe(12);    // 上限 20，这里只有 12 条
+    const capped = views.searchHistory({ scan: 5 });
+    expect(capped.scanned).toBe(5);
+    expect(capped.truncated).toBe(true);
+    expect(views.searchHistory({ scan: 99999 }).truncated).toBe(false);   // scan 夹到 2000
+  }));
+
+  it('summary 缺 count 时 lastCount 是 null（界面据此显示"条数没记下"）', withTempEnv({}, async ({ views, evts }) => {
+    evts.append({ ts: T0, command: 'search', status: 'success', args: { keyword: '旧记录' } });
+    expect(views.searchHistory().items[0]).toMatchObject({ keyword: '旧记录', lastCount: null });
+  }));
+});

@@ -785,6 +785,55 @@ function listEvents(opts = {}) {
 }
 
 /**
+ * 最近搜过的关键词（找视频页的空态用）。
+ *
+ * 为什么从 events 表来，而不是内置一组"推荐词"：这一页缺的不是点子，是入口。
+ * 内置的词是这个工具的作者想象中的领域 —— 对用它卖水果的人是噪音，而噪音会被
+ * 摆在空态最显眼的位置。events 里那一行是真的：`search` 命令每次跑成都写一行，
+ * `args.keyword` 就是当时搜的那句（见 core/commands/search.js）。
+ * 所以这里给的是「你上次搜过的那些，再来一遍」，一句可核对的话。
+ *
+ * 只把 status='success' 的那几次摆成关键词：失败的那一次没有返回结果，
+ * "你搜过 X"虽然仍成立，但把失败摆在建议位上等于让人重复一次注定没结果的操作。
+ * ⚠️ 但**查询本身不按 status 过滤** —— 翻了 N 条里没有一条成功，与"根本没有搜索记录"
+ * 是两种处境，界面要分开说。过滤写在查询里会让前一种永远拿不到 scanned，
+ * 于是空态只能对着它说"还没有搜索记录"，那是句假话。
+ *
+ * 扫描上限是必须的：events 是唯一一张**只增不减**的表（cleanup 按 TTL 清），
+ * 而这里要的是"最近"。`scanned` 与 `truncated` 一起返回 —— 空态里那句
+ * "只在这些记录里找过"必须说得出，否则"没有搜索历史"就成了假话
+ * （被清理过的库、以及搜了很多次但都不是同一批词，都藏在这个数后面）。
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.limit=8]   - 最多给几个关键词
+ * @param {number} [opts.scan=400]  - 最多读多少行事件
+ * @returns {{items: Array<{keyword:string,times:number,lastTs:number,
+ *   lastCount:number|null}>, scanned: number, truncated: boolean}}
+ *   scanned = 翻到的 search 事件条数（**含失败的**）
+ */
+function searchHistory(opts = {}) {
+  const want = Math.max(1, Math.min(Number(opts.limit) || 8, 20));
+  const scan = Math.max(1, Math.min(Number(opts.scan) || 400, 2000));
+  // query() 而不是 queryStrict()：这是"少显示几条也无所谓"的读者。
+  // 这里的读失败只会让空态变成"没找到历史"，而它本来就允许为空。
+  const rows = events.query({ command: 'search' }, { limit: scan, order: 'desc' });
+  const byKw = new Map();
+  for (const e of rows) {
+    if (e.status !== 'success') continue;
+    const kw = e.args && typeof e.args.keyword === 'string' ? e.args.keyword.trim() : '';
+    if (!kw) continue;
+    const hit = byKw.get(kw);
+    if (hit) {
+      hit.times += 1;   // desc 顺序，第一条就是最近的那次，lastTs / lastCount 不再覆盖
+    } else {
+      byKw.set(kw, { keyword: kw, times: 1, lastTs: e.ts, lastCount: (e.summary || {}).count ?? null });
+    }
+  }
+  const items = [...byKw.values()].slice(0, want);
+  return { items, scanned: rows.length, truncated: rows.length >= scan };
+}
+
+/**
  * 清理**预演**：按 TTL 算一下"会删掉多少行"，但不删。
  *
  * 诊断页的清理按钮必须先给这个数再让人点确认 —— 一个只说"确定要清理吗？"
@@ -1289,6 +1338,7 @@ module.exports = {
   targetStatus,
   checkDuplicate,
   listEvents,
+  searchHistory,
   cleanupPreview,
   userProfile,
   userEvents,
