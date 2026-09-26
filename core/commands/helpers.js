@@ -159,14 +159,32 @@ function throttleOpts(ctx, args) {
  * 每个调用点都该显式等一次，这就是 get.js 的翻页等待与 enrich.js 的逐条等待共用的那段。
  *
  * @param {number[]} range - [minSec, maxSec]；传空数组或 [0,0] 表示不等
- * @param {object} [opts] - { signal } 取消信号
+ * @param {object} [opts] - { signal, onWait } 取消信号 / 等待上报
  */
 async function pace(range, opts = {}) {
   const [a, b] = Array.isArray(range) && range.length === 2 ? range : [0, 0];
   const lo = Math.round(Math.min(a, b) * 1000);
   const hi = Math.round(Math.max(a, b) * 1000);
   const ms = hi > lo ? randomInt(lo, hi) : lo;
-  if (ms > 0) await sleepAbortable(ms, opts.signal);
+  if (ms <= 0) return;
+
+  // 上报等待：这是**量大的一面**（逐条补全、全量翻页每轮都走这里），
+  // 而改造前这里是一段裸 sleep —— 界面上"读间隔到底还要等多久"永远是问号。
+  // 与 enforceDelay 同一个回调契约，所以队列只管落一处。
+  // onWait 缺省（CLI）时什么都不做：命令行输出保持与改造前逐字节一致。
+  const { signal, onWait } = opts;
+  if (onWait) {
+    onWait({
+      phase: 'pace',
+      waitMs: ms,
+      deadline: Date.now() + ms,
+      reason: `单次请求之间的节奏，等 ${Math.ceil(ms / 1000)}s（配置 ${a}–${b}s）`,
+      type: 'read',
+    });
+  }
+  // 被打断时不补报 end：抛错会一路出命令入口，队列的 finally 负责清 task.wait
+  await sleepAbortable(ms, signal);
+  if (onWait) onWait({ phase: 'end', waitMs: 0, deadline: Date.now(), reason: '', type: 'read' });
 }
 
 module.exports = {

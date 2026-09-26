@@ -144,10 +144,30 @@ const FIXTURE = process.argv.includes('--fixture') ? {
       warnings: [], progress: { text: '正在读取第 2 页' }, resultSummary: null, wait: null,
     },
     {
+      // **running 但也带 wait**：命令内部的节奏等待（读间隔、逐条之间）。
+      // 队列不会因为"在等"就把状态改成 waiting —— 这段时间任务确实在跑。
+      // 没有这一条，这一轮新加的那行实时状态（TaskActivity）与队列页的倒计时在探针里
+      // 渲染不出来：t1 是写闸门在等，走的是另一支。
+      id: 't6', command: 'enrich', argv: ['--missing'], label: '补全视频信息', status: 'running',
+      createdAt: Date.now() - 20000, startedAt: Date.now() - 18000, endedAt: null,
+      error: null, blockers: [], warnings: [],
+      progress: { text: '第 2/20 条：正在取视频信息', current: 2, total: 20 },
+      resultSummary: null,
+      // 措辞是 core/risk-control.js 的原话，数字也对得上（4 + 26 = 下限 30）
+      wait: {
+        until: Date.now() + 26000,
+        reason: '距上次读仅 4s，强制等待 26s（下限 30s）',
+        waitMs: 26000, type: 'read',
+      },
+    },
+    {
       id: 't1', command: 'post', argv: [], label: '发布草稿', status: 'waiting',
       createdAt: Date.now() - 5000, startedAt: Date.now() - 3000, endedAt: null, error: null,
       blockers: [], warnings: [], progress: null, resultSummary: null,
-      wait: { until: Date.now() + 42000, reason: '距上次写操作不足最小间隔', waitMs: 42000, remainingMs: 42000 },
+      // 字段与 core/runtime/task-queue.js 里 waiting 那一支落进去的形状逐项对齐。
+      // 曾经这里多写了一个 `remainingMs` —— 真链路从来不报它，于是界面要是去读它，
+      // 探针里照样"看着是对的"。倒计时只认 until（绝对时刻）这一件事就测不出来了。
+      wait: { until: Date.now() + 42000, reason: '距上次写操作不足最小间隔', waitMs: 42000 },
     },
     {
       id: 't2', command: 'getReply', argv: [], label: '生成回复（示例用户）', status: 'done',
@@ -171,6 +191,30 @@ const FIXTURE = process.argv.includes('--fixture') ? {
 
 /** 对应 ipc.js 里 safe() 包出来的形状 */
 const ok = (data) => ({ ok: true, data });
+
+/**
+ * --fixture 的队列统计：**跟着清单算**，不手写。
+ *
+ * 以前这里是手抄的一份 `{pending:1, done:1, blocked:1, running:2, waiting:1}`：
+ * 少两个键（failed / cancelled）、少一个 currentId，而且清单每加一条就得记得来改它。
+ * 队列页头部那排数字与下面那些行是**两个来源**，对不上就是"数字各说各的口径"
+ * —— 那一类缺陷我们这几轮一直在往外清，不该由探针自己再造一个。
+ * 键集合与算法都照 core/runtime/task-queue.js 的 stats()。
+ */
+function fixtureStats(tasks) {
+  const counts = { pending: 0, running: 0, waiting: 0, done: 0, failed: 0, cancelled: 0, blocked: 0 };
+  for (const t of tasks) {
+    if (counts[t.status] !== undefined) counts[t.status] += 1;
+  }
+  const current = tasks.find(t => t.status === 'running' || t.status === 'waiting') || null;
+  return {
+    counts,
+    total: tasks.length,
+    currentId: current ? current.id : null,
+    idle: counts.pending === 0 && counts.running === 0 && counts.waiting === 0,
+    serial: true,
+  };
+}
 
 /**
  * 写操作的统一响应。
@@ -280,9 +324,7 @@ function makeRoutes() {
     // ── 裸返回（ipc.js 里没有 safe() 包）──
     'queue:state': () => ({
       tasks: FIXTURE ? FIXTURE.tasks : [],
-      stats: FIXTURE
-        ? { counts: { pending: 1, done: 1, blocked: 1, running: 2, waiting: 1 }, total: 6, idle: false, serial: true }
-        : { counts: {}, total: 0, idle: true, serial: true },
+      stats: FIXTURE ? fixtureStats(FIXTURE.tasks) : { counts: {}, total: 0, idle: true, serial: true },
       policy: policySnapshot(),
     }),
     'policy:stats': () => policySnapshot(),

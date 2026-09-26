@@ -201,8 +201,11 @@ function shouldBypass(opts = {}) {
  * 改造前这里是裸 `await sleep(need)`：CLI 下没问题，但 GUI 里既看不到还要等多久，
  * 也无法取消。现在等待过程通过 onWait 回调上报，并支持 AbortSignal 打断：
  *
- *   onWait({ phase, waitMs, deadline, reason })   等待开始/更新时调用一次
- *   opts.signal                                   取消时抛 AbortError
+ *   onWait({ phase, waitMs, deadline, reason, type })   每段等待开始时报一次
+ *                                                       （phase: min_interval / jitter），
+ *                                                       等待结束或被取消时**再补一次
+ *                                                       phase='end'**（waitMs=0）
+ *   opts.signal                                          取消时抛 AbortError
  *
  * onWait 缺省时按原样打印到 stderr —— **CLI 输出与改造前逐字节一致**。
  *
@@ -235,12 +238,25 @@ async function enforceDelay(type = 'write', opts = {}) {
   const lastOf = () => (type === 'read' ? lastReadTs() : lastWriteTs());
 
   // 上报一次等待信息：CLI 走默认打印，GUI 走回调画倒计时
+  let started = false;
   const reportWait = (phase, waitMs, reason) => {
+    started = true;
     if (onWait) {
       onWait({ phase, waitMs, deadline: Date.now() + waitMs, reason, type });
     } else {
       logger.info(`⏳ [risk-control] ${reason}...`);
     }
+  };
+
+  // 等待结束必须**补报一次**。
+  //
+  // ⚠️ 此前只有开始的两报：倒计时到了 00:00 之后界面还在往下数，因为没有人告诉
+  // 它"等待已经过去了、请求正在飞"。这与 task-queue 里那条"progress 只落库不 emit
+  // 就等于没有"是同一类缺陷 —— 报了开始却没报结束，界面就只能猜。
+  // 只在真的报过开始时补报：快速放行与 advisory 那条路一次都没等，凭空一个 end 是噪音。
+  // 只走 onWait、不走 logger：CLI 的输出保持与改造前逐字节一致。
+  const reportEnd = () => {
+    if (started && onWait) onWait({ phase: 'end', waitMs: 0, deadline: Date.now(), reason: '', type });
   };
 
   const t0 = Date.now();
@@ -279,6 +295,11 @@ async function enforceDelay(type = 'write', opts = {}) {
     }
   }
 
+  // 等满之后补报一次结束。
+  //
+  // 只在**正常走完这两段等待**时补：被 AbortError 打断时不补 —— 那个抛错会一路
+  // 出命令入口，队列的 finally 本来就负责清 task.wait 并推 finished。
+  reportEnd();
   return { skipped: false, waitedMs: Date.now() - t0, lastWriteTs: last || lastAfterFloor, intervals };
 }
 

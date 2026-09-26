@@ -198,7 +198,7 @@ async function fetchAllPages(ctx, awemeId, opts = {}) {
   while (true) {
     if (pages >= maxPages) { stoppedBy = 'maxPages'; break; }
     throwIfAborted(signal);
-    if (pages > 0) await pace(opts.delayRange, { signal });
+    if (pages > 0) await pace(opts.delayRange, { signal, onWait: ctx.onWait });
 
     const expr = `window.__bridge.getComments('${escapeExpression(String(awemeId))}', ${cursor}, ${perPage})`;
     const data = await ctx.loggedCall('get', { aweme_id: awemeId, cursor, count: perPage }, expr);

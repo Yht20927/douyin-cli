@@ -1097,16 +1097,29 @@ code {
 }
 .ws-bulkbar-main { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-2); }
 
-.ws-bulkprogress { margin-bottom: 10px; }
-
-/* 全量拉取：进度条 + 取消按钮并排。
-   进度条自己撑满剩余宽度，取消按钮固定宽度 —— 否则按钮会随文字长度跳来跳去 */
-.ws-fullpull {
-  display: flex; align-items: center; gap: 12px;
-  margin-bottom: 12px;
+/* 任务在"发起它的那一页"上的实时状态：在做什么 · 还要等多久 · 取消。
+   找视频 / 运营对象 / 工作台的批量生成与全量拉取四处共用一份 ——
+   倒计时读数的字号必须一致，否则同一件事在两处看起来像两种状态。
+   长相沿用批量条那一套（同底色、同边框），它俩本来就是同一类东西。 */
+.task-activity {
+  display: block;
+  padding: 10px 14px; margin-bottom: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--bg-3);
+  box-shadow: var(--sh-1);
 }
-.ws-fullpull .progress { flex: 1; min-width: 0; }
-.ws-fullpull .btn { flex: none; }
+.task-activity-row { display: flex; align-items: center; gap: 10px; }
+.task-activity-text {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: var(--text-2);
+}
+.task-activity-count { flex: none; font-size: 13px; color: var(--wait); white-space: nowrap; }
+.task-activity-note { flex: none; font-size: 11.5px; }
+.task-activity-row .btn { flex: none; }
+.task-activity .progress { margin-top: 9px; }
+.task-activity-hint { margin-top: 7px; font-size: 11.5px; }
 
 /* 批量生成的结果：一行一条，失败的标红 */
 .bulk-result { max-height: 200px; overflow-y: auto; margin-top: 9px; }

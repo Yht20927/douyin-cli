@@ -46,7 +46,9 @@ const MAX_RESULT_BYTES = 64 * 1024;
  * 创建任务队列。
  *
  * @param {object} opts
- * @param {Function} opts.createContext - (task) => ctx，由调用方提供（CLI / 桌面主进程）
+ * @param {Function} opts.createContext - (task, { signal, extraSinks, onWait }) => ctx
+ *   由调用方提供（CLI / 桌面主进程）。⚠️ **三个都要透传给 ctx**：漏掉 onWait
+ *   就等于命令内部的节奏等待在界面上不可见（读操作曾长期如此，见 run() 里的 handleWait）。
  * @param {object}   [opts.policy]      - PolicyEngine，缺省用全局单例
  * @param {object}   [opts.logger]      - logger，缺省用全局单例
  * @returns {object} queue
@@ -306,8 +308,39 @@ function createTaskQueue(opts = {}) {
       },
     };
 
+    // 命令内部的节奏等待 → task.wait。
+    //
+    // 为什么此前读操作**从来没有**倒计时：enforceDelay 与 pace 都认 ctx.onWait，
+    // 而主进程建 ctx 时没把队列的回调传下去 —— 于是 task.wait 只在队列自己
+    // awaitTurn（写操作节奏）时非空，读间隔那 30–50 秒在界面上是一段静默的
+    // 「执行中」。找视频页甚至写着"队列页能看到还剩多久"，指向一个不存在的东西。
+    //
+    // 与上面 progressSink 那条是同一条规则：**只落字段不 emit 就等于没有**。
+    // queue:changed 只在入队/开始/恢复/结束这些边界上发，等待必须自己推一次。
+    //
+    // ⚠️ 这里**不改 task.status**：这段时间任务仍在执行（只是卡在两次请求之间）。
+    // 标成 waiting 会让 stats() 的计数与页面上的「执行中」都说错话。
+    const handleWait = (info) => {
+      if (!info) return;
+      if (info.phase === 'end') {
+        if (task.wait) {
+          task.wait = null;
+          emit('wait-end');
+        }
+        return;
+      }
+      if (!info.waitMs) return;
+      task.wait = {
+        until: info.deadline || Date.now() + info.waitMs,
+        reason: info.reason || '节奏等待',
+        waitMs: info.waitMs,
+        type: info.type || null,
+      };
+      emit('wait');
+    };
+
     try {
-      const ctx = createContext(task, { signal: ac.signal, extraSinks: [progressSink] });
+      const ctx = createContext(task, { signal: ac.signal, extraSinks: [progressSink], onWait: handleWait });
       const result = await runCommand(ctx, task.command, argv);
       if (task.status === 'cancelled') return; // 执行期间被取消
 

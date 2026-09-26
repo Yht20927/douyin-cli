@@ -1,5 +1,9 @@
 // tests/preload-contract.test.js — 渲染层用到的 API 必须都被 preload 暴露
 //
+// 这里管的是**跨进程边界上的交接**：preload 暴露面 ↔ 渲染层调用、IPC 通道 ↔ 主进程
+// handler、handler 转发的参数键、以及任务队列交给主进程的 ctx 装配通道。
+// 它们的共同点是两端隔得远、中间没有任何东西会替你检查。
+//
 // 回归背景
 // --------
 // 主进程加了 `ipcMain.handle('queue:result', ...)`，preload 里却漏了对应的方法。
@@ -319,5 +323,63 @@ describe('界面传的参数必须被主进程接住', () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+});
+
+describe('队列交给主进程的每个通道，都必须被接进 ctx', () => {
+  // 回归背景
+  // --------
+  // 任务队列建 ctx 时一次交下三个通道：signal（取消）、extraSinks（进度）、
+  // onWait（节奏等待，含读间隔那 30–50 秒）。前两个一开始就接了，第三个没人接。
+  // 于是命令内部清清楚楚地等了 40 秒，界面上只有一个空转的「执行中」——
+  // 而找视频页那句「队列页能看到还剩多久」指的正是这个不存在的倒计时。
+  //
+  // 这种"多给一个参数、装配处没接"的漂移运行时一点动静都没有：`o.onWait` 是
+  // undefined，`ctx.onWait` 也就是 undefined，命令里那句 `if (ctx.onWait)` 安静地不走。
+  // 所以只能静态钉 —— 与上面几对"通道名/参数键"的比对是同一类护栏。
+  //
+  // 通道清单**从 task-queue 那一侧解析出来**，不写死在这份文件里：
+  // 以后队列再交新通道，主进程忘了接会立刻红，而不需要谁来记得更新这张表。
+  const QUEUE = path.join(ROOT, 'core', 'runtime', 'task-queue.js');
+  const MAIN_INDEX = path.join(ROOT, 'app', 'main', 'index.js');
+  const REAL_CHAIN = path.join(ROOT, 'tests', 'server', 'real-chain.test.js');
+
+  /** createContext(task, { … }) 第二个实参的键名 */
+  function channelsQueued() {
+    const code = fs.readFileSync(QUEUE, 'utf8');
+    const marker = 'createContext(task, {';
+    const at = code.indexOf(marker);
+    expect(at, `找不到队列建 ctx 的调用处：${marker}`).toBeGreaterThan(-1);
+    const rest = code.slice(at + marker.length);
+    // marker 把开头的 { 一起吃掉了，补回来 —— 否则第一个键前面没有 { 也没有逗号，会漏
+    const literal = '{' + rest.slice(0, rest.indexOf('})'));
+    // 只认"紧跟 { 或逗号"的键，避免把三元表达式里的 `x ? 1 : 2` 当成键
+    return [...literal.matchAll(/[{,]\s*(\w+)\s*:/g)].map(x => x[1]);
+  }
+
+  /** 某个装配处把队列交下来的哪些通道读进了 ctx（返回 o.* 的名字集合） */
+  function channelsWired(file) {
+    const code = fs.readFileSync(file, 'utf8');
+    const marker = 'createContext: (task, o = {}) => {';
+    const at = code.indexOf(marker);
+    expect(at, `找不到 ctx 的装配处：${file.replace(ROOT, '')}`).toBeGreaterThan(-1);
+    const body = code.slice(at, code.indexOf('bindCommands', at));
+    return new Set([...body.matchAll(/\bo\.(\w+)/g)].map(x => x[1]));
+  }
+
+  const channels = channelsQueued();
+
+  it('解析器解析得出队列交下的三个通道（护栏本身要先有效）', () => {
+    expect(channels).toEqual(expect.arrayContaining(['signal', 'extraSinks', 'onWait']));
+  });
+
+  it('主进程装配 ctx 时一个都不漏', () => {
+    const wired = channelsWired(MAIN_INDEX);
+    expect(channels.filter(c => !wired.has(c))).toEqual([]);
+  });
+
+  it('端到端用例里那份镜像接的是同一批通道（否则它测的是一份不存在的装配）', () => {
+    const wired = channelsWired(REAL_CHAIN);
+    expect(channels.filter(c => !wired.has(c))).toEqual([]);
   });
 });

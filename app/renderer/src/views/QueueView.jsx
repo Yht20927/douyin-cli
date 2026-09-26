@@ -1,16 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import ProgressBar from '../components/ProgressBar.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
 import { describeError } from '../errors.js';
-
-/** 秒 → mm:ss */
-function mmss(ms) {
-  const total = Math.max(0, Math.ceil(ms / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
+import { duration, mmss } from '../format.js';
+import { useNow } from '../useNow.js';
 
 const STATUS_TEXT = {
   pending: '排队中',
@@ -43,16 +37,6 @@ function everConnectedNote(status) {
     : '还没有抖音页面连上来';
 }
 
-/** 毫秒 → "1 分 20 秒" / "12 秒"。任务耗时比绝对时刻更有用 */
-function duration(ms) {
-  const total = Math.max(0, Math.round(ms / 1000));
-  if (total < 60) return `${total} 秒`;
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  if (m < 60) return s ? `${m} 分 ${s} 秒` : `${m} 分`;
-  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
-}
-
 /**
  * 把 policy 上的提示统一成数组。
  *
@@ -78,12 +62,7 @@ function warningsOf(policy) {
  * 同屏的侧栏却写着"等待连接"，用户没法判断该信哪个。
  */
 function WriteGate({ policy, status, onGotoConnection }) {
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
-  }, []);
+  const now = useNow();
 
   const disconnected = status && status.listening && !status.online;
 
@@ -115,7 +94,7 @@ function WriteGate({ policy, status, onGotoConnection }) {
 
   // 倒计时一律"绝对时刻 - 本地 now"。policy 里那两个 *InMs 是 stats() 那一刻的
   // 快照，而主进程只在队列边界（入队/开始/等待/恢复/结束）推一次 —— 拿快照做倒计时
-  // 的结果就是数字冻住：上面那个 500ms 的定时器白跑，状态词也永远停在「等待中」。
+  // 的结果就是数字冻住：useNow 的走表白跑，状态词也永远停在「等待中」。
   const cadenceLeft = Math.max(0, (policy.nextWriteAllowedAt || 0) - now);
   const cooldownLeft = Math.max(0, (policy.cooldownUntil || 0) - now);
   const remainingMs = Math.max(cadenceLeft, cooldownLeft);
@@ -365,16 +344,10 @@ function ResultPeek({ task }) {
 }
 
 function TaskRow({ task, onCancel }) {
-  const [now, setNow] = useState(Date.now());
-  // 只在需要走表的行开定时器：waiting 数倒计时，running 数已经跑了多久。
-  // 启动前先同步一次 now —— 这行第一次渲染时可能还是 pending，攒下的旧值会先
-  // 显示出一个错得离谱的"已跑"。
-  useEffect(() => {
-    if (task.status !== 'waiting' && task.status !== 'running') return undefined;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
-  }, [task.status]);
+  // 只在需要走表的行开定时器：waiting 数倒计时，running 数已经跑了多久
+  // （挂载瞬间先同步一次 now 由 useNow 负责，见 app/renderer/src/useNow.js）。
+  const ticking = task.status === 'waiting' || task.status === 'running';
+  const now = useNow({ enabled: ticking });
 
   const problem = PROBLEM.has(task.status);
   // 失败原因翻译成人话 + 下一步（这一页是用户唯一能看到明细的地方）。
@@ -402,7 +375,9 @@ function TaskRow({ task, onCancel }) {
         <div className="row-sub">
           {STATUS_TEXT[task.status] || task.status}
           {task.status === 'pending' && ' · 前面的任务做完才会开始'}
-          {task.status === 'waiting' && task.wait && ` · ${task.wait.reason}`}
+          {/* 等待原因。两种等待都要露面：队列自己的节奏等待（status=waiting）
+              与命令内部的读间隔/逐条等待（status=running + task.wait） */}
+          {task.wait && ` · ${task.wait.reason}`}
           {/* 进度不再拼进这行小字 —— 见下面的进度条 */}
           {note && ` · ${note.text}`}
           {/* 跑完的任务显示用了多久。"这条到底卡了还是在跑"靠它才看得出来 */}
@@ -469,8 +444,9 @@ function TaskRow({ task, onCancel }) {
         <ResultPeek task={task} />
       </div>
       {/* 与页首倒计时同一条规则：截止时刻一过就不显示数字。停在 00:00 的读数
-          和"数字冻住"在屏幕上完全同形，运营者分不出"马上开始"还是"没人走表"。 */}
-      {task.status === 'waiting' && task.wait && task.wait.until > now && (
+          和"数字冻住"在屏幕上完全同形，运营者分不出"马上开始"还是"没人走表"。
+          状态不限 waiting：命令内部等读间隔时任务是 running，那才是最长的一段。 */}
+      {task.wait && task.wait.until > now && (
         <div className="row-meta num">{mmss(task.wait.until - now)}</div>
       )}
       {cancellable && (

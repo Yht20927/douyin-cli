@@ -627,6 +627,9 @@ describe('倒计时必须走表，不能停在推送那一刻', () => {
   const queueCode = () => fs.readFileSync(path.join(RENDERER_SRC, 'views', 'QueueView.jsx'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
+  const codeOf = (...rel) => fs.readFileSync(path.join(RENDERER_SRC, ...rel), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
 
   it('队列页读绝对时刻，并减去本地 now', () => {
     const code = queueCode();
@@ -634,10 +637,35 @@ describe('倒计时必须走表，不能停在推送那一刻', () => {
     expect(code).toContain('cooldownUntil');
     expect(code).toMatch(/nextWriteAllowedAt[^\n]*- now/);
     expect(code).toMatch(/cooldownUntil[^\n]*- now/);
-    // 任务行那条等待同理（它用的是队列给的 wait.until）
+    // 任务行那条等待同理（它用的是队列给的 wait.until）。
+    // ⚠️ 不再限定 status==='waiting'：命令内部等读间隔时任务是 running，
+    // 那才是最长的一段等待，限定状态就等于把读间隔的倒计时又关掉。
     expect(code).toMatch(/wait\.until - now/);
-    // 截止时刻一过就不再渲染这个数字 —— 停在 00:00 的读数与"冻住"同形
-    expect(code).toMatch(/task\.status === 'waiting' && task\.wait && task\.wait\.until > now &&/);
+    expect(code).toMatch(/task\.wait && task\.wait\.until > now &&/);
+  });
+
+  it('页内那条实时状态（TaskActivity）也走绝对时刻，不读快照时长', () => {
+    const code = codeOf('components', 'TaskActivity.jsx');
+    expect(code).toMatch(/task\.wait\.until > now \? task\.wait\.until - now : 0/);
+    expect(code).toMatch(/mmss\(waitLeft\)/);
+    // 不许改回读主进程推来的那份剩余时长：它只在推送那一刻成立
+    expect(code).not.toMatch(/remainingMs/);
+    // 任务跑完就不再渲染这一行 —— 留着一句「执行中」是假话
+    expect(code).toMatch(/FINISHED\.includes\(task\.status\)/);
+  });
+
+  it('等待读数与走表时钟各只有一份实现', () => {
+    // 这一轮之前 mmss 在队列页与发布确认弹窗各一份、走表在三个组件里各一份，
+    // 于是"新加一个页面要显示倒计时"必然长成第四种写法。
+    expect(codeOf('format.js')).toMatch(/export function mmss/);
+    expect(codeOf('format.js')).toMatch(/export function duration/);
+    expect(codeOf('useNow.js')).toMatch(/setInterval\(\(\) => setNow\(Date\.now\(\)\), intervalMs\)/);
+    for (const rel of [['views', 'QueueView.jsx'], ['components', 'PublishDialog.jsx'], ['components', 'TaskActivity.jsx']]) {
+      const code = codeOf(...rel);
+      expect(code).not.toMatch(/function mmss/);
+      expect(code).not.toMatch(/function duration/);
+      expect(code).not.toMatch(/setInterval\(\(\) => setNow/);
+    }
   });
 
   it('队列页不再用那两个快照时长做显示', () => {
@@ -648,7 +676,9 @@ describe('倒计时必须走表，不能停在推送那一刻', () => {
 
   it('正在执行的任务行走表显示已耗时（静止的「执行中」判断不了卡没卡）', () => {
     const code = queueCode();
-    expect(code).toMatch(/task\.status !== 'waiting' && task\.status !== 'running'/);
+    // 走表的开关是一个 ticking 判据，交给共用的 useNow（不再各写一份 setInterval）
+    expect(code).toMatch(/const ticking = task\.status === 'waiting' \|\| task\.status === 'running';/);
+    expect(code).toMatch(/useNow\(\{ enabled: ticking \}\)/);
     expect(code).toMatch(/duration\(now - task\.startedAt\)/);
   });
 

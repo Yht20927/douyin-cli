@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
+import TaskActivity from '../components/TaskActivity.jsx';
 import { abbrNum } from '../format.js';
 import { failText } from '../errors.js';
 
@@ -260,12 +261,33 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
 
   const searching = results.length === 0 && pending;
 
+  /**
+   * 正在等的搜索/看主页任务。
+   *
+   * 从队列快照按 id 取，而不是自己再攒一份状态：这一页被卸载期间队列照跑，
+   * 回来时快照里就是最新的那一格，倒计时不会是从前。
+   */
+  const pendingTask = pending
+    ? ((queueState && queueState.tasks) || []).find(t => t.id === pending)
+    : null;
+
+  /** 这一批「拉取评论」任务里正在跑的那一条，以及还在排队的条数 */
+  const liveAdd = useMemo(() => {
+    const ids = [...addingRef.current.values()];
+    if (!ids.length) return null;
+    const tasks = (queueState && queueState.tasks) || [];
+    const mine = ids.map(id => tasks.find(t => t.id === id)).filter(Boolean);
+    const running = mine.find(t => !FINISHED.includes(t.status));
+    if (!running) return null;
+    return { task: running, queued: mine.filter(t => t.status === 'pending').length };
+  }, [queueState, adding]);
+
   return (
     <div className="main-col">
       <h1 className="page-title">找视频</h1>
       <p className="page-sub">
         在这里找到值得评论的视频，加进「运营对象」。搜索与查看主页都是<b>只读</b>操作 ——
-        不会发布任何内容，但同样受读间隔约束（队列页能看到倒计时）。
+        不会发布任何内容，但同样受读间隔约束（要等的时候，这一页直接给出还要等多久）。
       </p>
 
       <div className="seg discover-mode">
@@ -339,11 +361,22 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
       )}
 
       {searching ? (
-        <EmptyState
-          variant="loading"
-          title={mode === 'search' ? '正在搜索…' : '正在读取主页…'}
-          hint="读操作要等读间隔（默认 30–50 秒），队列页能看到还剩多久。"
-        />
+        <>
+          <EmptyState
+            variant="loading"
+            title={mode === 'search' ? '正在搜索…' : '正在读取主页…'}
+            hint="读操作要等一次读间隔（默认 30–50 秒）。"
+          />
+          {/* 等的是哪一段、还要多久、能不能收手 —— 都留在这一页。
+              以前这里只写"队列页能看到还剩多久"，而读操作的 task.wait 根本没有值。 */}
+          {pendingTask && (
+            <TaskActivity
+              task={pendingTask}
+              onCancel={actions.cancelTask}
+              cancelNote="取消在下一个等待边界生效：已经发出去的那一个请求打不断。"
+            />
+          )}
+        </>
       ) : results.length === 0 ? (
         <EmptyState
           title="还没有结果。"
@@ -392,6 +425,17 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
               </button>
               <button className="btn btn-quiet" onClick={() => setPicked(new Set())}>取消选择</button>
             </div>
+          )}
+
+          {/* 批量拉取时这一批要跑 N × 读间隔。行上那个「拉取中…」不告诉人
+              现在轮到谁、还要等多久，也告诉不了 —— 所以这一条单独占一行。 */}
+          {liveAdd && (
+            <TaskActivity
+              task={liveAdd.task}
+              note={liveAdd.queued > 0 ? `还有 ${liveAdd.queued} 条在排队` : '这是这一批的最后一条'}
+              onCancel={actions.cancelTask}
+              cancelNote="取消只停这一条 —— 队列里其它任务照跑；要全部停就去「队列」页按「取消排队中的 N 条」。"
+            />
           )}
 
           <div className="list">

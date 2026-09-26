@@ -4,7 +4,7 @@ import PublishDialog from '../components/PublishDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import LoadingState from '../components/LoadingState.jsx';
 import Spinner from '../components/Spinner.jsx';
-import ProgressBar from '../components/ProgressBar.jsx';
+import TaskActivity from '../components/TaskActivity.jsx';
 import Notice from '../components/Notice.jsx';
 import { ago, fileNameOf } from '../format.js';
 import { failText } from '../errors.js';
@@ -776,25 +776,18 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
 
       <Notice data={notice} style={{ margin: '0 0 12px' }} />
 
-      {/* 全量拉取：进度和结果都留在这一页。
-          翻页要几分钟，用户多半就停在这里看着；只把进度丢进队列页等于逼他去别处找。
-          进度条走不确定态（不传 current/total）：服务端回的 total 跟真正能拉到的条数
-          对不上（实测 903 条的视频报 1180），拿它当分母的话永远停不满 100%。 */}
-      {fullTask && (fullTask.progress || fullTask.status === 'waiting') && (
-        <div className="ws-fullpull">
-          <ProgressBar
-            label={fullTask.status === 'waiting'
-              ? (fullTask.wait && fullTask.wait.reason) || '等待中'
-              : (fullTask.progress && fullTask.progress.text) || '拉取中'}
-            tone={fullTask.status === 'waiting' ? 'wait' : 'neutral'}
-          />
-          <button className="btn btn-quiet" onClick={async () => {
-            await actions.cancelTask(fullTaskId);
+      {/* 全量拉取：进度、等待、取消都留在这一页。
+          翻页要几分钟，用户多半就停在这里看着；只把进度丢进队列页等于逼他去别处找。 */}
+      {fullTask && (
+        <TaskActivity
+          task={fullTask}
+          note="这一条不标百分比：服务端报的总数与真能拉到的条数对不上"
+          onCancel={async (id) => {
+            await actions.cancelTask(id);
             setNotice('已请求取消 —— 当前这一页会先收完');
-          }}>
-            取消
-          </button>
-        </div>
+          }}
+          cancelNote="取消在下一个等待边界生效：已经发出去的那一页会先收完，不会开始下一页。"
+        />
       )}
 
       {full && (
@@ -948,19 +941,9 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
         </div>
       )}
 
-      {/* 批量生成的实时进度条。留在工作台不动也能看到跑到第几条了 */}
-      {bulkTask && (bulkTask.progress || bulkTask.status === 'waiting') && (
-        <div className="ws-bulkprogress">
-          <ProgressBar
-            current={bulkTask.progress && bulkTask.progress.current}
-            total={bulkTask.progress && bulkTask.progress.total}
-            label={bulkTask.status === 'waiting'
-              ? (bulkTask.wait && bulkTask.wait.reason) || '等待中'
-              : (bulkTask.progress && bulkTask.progress.text) || '生成中'}
-            tone={bulkTask.status === 'waiting' ? 'wait' : 'neutral'}
-          />
-        </div>
-      )}
+      {/* 批量生成的实时进度。留在工作台不动也能看到跑到第几条、还要等多久
+          （取消按钮在上方批量条上，这里不重复给一颗） */}
+      {bulkTask && <TaskActivity task={bulkTask} />}
 
       {/* 批量结果：生成多少、跳过多少、失败多少，以及失败的原因 */}
       {bulk && (

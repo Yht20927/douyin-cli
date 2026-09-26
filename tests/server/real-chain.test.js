@@ -18,6 +18,9 @@
 //
 // 写任务的 meta.skipWait = true：等写间隔是 risk-control/policy 那些用例负责的事，
 // 这里要验的是"接线"，让测试跑 40 秒没有任何额外收益。
+// 唯一的例外是"两批补全之间"那一条：它要验的正是**等待本身有没有被报出来**，
+// 所以那一处把 throttle 旁路临时摘掉、并把读间隔从 30s 缩到 2s（文件多花的
+// 那 10 秒基本都在它身上），其余用例仍然一次都不等。
 
 const fs = require('fs');
 const os = require('os');
@@ -260,6 +263,10 @@ describe('三条链路的端到端验证（补全 / 删除回复 / 私信）', (
           taskId: task.id,
           signal: o.signal,
           extraSinks: o.extraSinks || [],
+          // 队列给的三个通道一个都不能漏。这一份是 app/main/index.js 那一份的镜像，
+          // 漏掉 onWait 就等于下面那条"等待看得见"的用例在测一份不存在于任何进程里的装配
+          // —— 两个文件由 preload-contract.test.js 钉在一起。
+          onWait: o.onWait,
           logger: quietLogger,
           accountUid: MY_UID,
         });
@@ -353,6 +360,74 @@ describe('三条链路的端到端验证（补全 / 删除回复 / 私信）', (
     const res = queue.getResult(id);
     expect(res).toMatchObject({ requested: 1, updatedCount: 1, failedCount: 0 });
   });
+
+  // ═══════════════════════════════════════════════════════
+  // 这一条钉的是"等待在界面上根本看不见"那个 ★ 缺陷：读间隔默认 30–50 秒，
+  // 而找视频页当时写着"队列页能看到还剩多久"—— 那句话指向一个不存在的倒计时。
+  //
+  // task-queue.test.js 里那几条用的是手写的 onWait 载荷：它能证明"队列会把收到的
+  // 等待落进 task.wait 并推一次"，但证不了真命令会不会报、报的措辞是什么。
+  // 断在哪一环（risk-control 不报 / pace 不报 / ctx 上没有 onWait / 队列不落字段）
+  // 只有这一条全用真件跑才测得出来。
+  it('两批补全之间：真读间隔与真逐条节奏都落进 task.wait，快照带的是截止时刻', async () => {
+    for (const id of ['v_wait_1', 'v_wait_2', 'v_wait_3']) {
+      expect(m.videos.markGet(id, { accountUid: MY_UID })).toBeTruthy();
+    }
+
+    // 与真实运行只有两处不同，其余全是真的：
+    //   1. vitest.config.js 给整个测试进程设了 DOUYIN_NO_THROTTLE=1，
+    //      enforceDelay 第一句就 skipped —— 不临时摘掉它，这条永远测不到等待。
+    //   2. 读间隔从 [30,50] 缩到 [2,2]：只是为了让这条用例睡 2 秒而不是 30 秒。
+    // readEnforce:true 与主进程完全一致（app/main/index.js 正是用它把 GUI 的读间隔打开的）。
+    const savedNoThrottle = process.env.DOUYIN_NO_THROTTLE;
+    delete process.env.DOUYIN_NO_THROTTLE;
+    m.config.setRuntimeOverrides({ intervals: { read: [2, 2], readEnforce: true } });
+
+    const snaps = [];
+    let un = null;
+    let id2 = null;
+    try {
+      // 第一批只补一条。目的不是补全，是**产生一行真·读事件**（endOperation 写的），
+      // 让第二批入口那次 enforceDelay 必然算出"距上次读 0s"而不是撞上默认放行。
+      const id1 = queue.enqueue({ command: 'enrich', argv: ['--missing', '--limit', '1'], label: '补全视频信息' });
+      await waitTask(queue, id1);
+
+      un = queue.subscribe((p) => {
+        const t = (p.tasks || []).find(x => x.id === id2);
+        if (t) snaps.push({ status: t.status, wait: t.wait ? { ...t.wait } : null, at: Date.now() });
+      });
+
+      id2 = queue.enqueue({ command: 'enrich', argv: ['--missing', '--limit', '20'], label: '补全视频信息' });
+      const t = await waitTask(queue, id2);
+      expect(t.status).toBe('done');
+      // 不是空跑出来的等待：另外两条真的补完了，等待是在有活干的过程中报出来的
+      expect(queue.getResult(id2)).toMatchObject({ requested: 2, updatedCount: 2 });
+    } finally {
+      if (un) un();
+      m.config.setRuntimeOverrides(null);
+      if (savedNoThrottle == null) delete process.env.DOUYIN_NO_THROTTLE;
+      else process.env.DOUYIN_NO_THROTTLE = savedNoThrottle;
+    }
+
+    const waits = snaps.filter(s => s.wait);
+    expect(waits.length).toBeGreaterThan(0);
+    // 等的是节奏，任务状态仍是 running：标成 waiting 会让 stats() 的计数
+    // 和页面上那句「执行中」一起变成假话。
+    expect(waits.every(s => s.status === 'running')).toBe(true);
+    // 批次之间那句是 core/risk-control 的原话，批内逐条是 helpers.pace 的原话
+    // （commentPage 默认 [1,3]，这里没动它）—— 措辞变了这两条会红，是对的。
+    expect(waits.some(s => /距上次读/.test(s.wait.reason))).toBe(true);
+    expect(waits.some(s => /单次请求之间的节奏/.test(s.wait.reason))).toBe(true);
+    // 快照交出去的是**绝对截止时刻**：界面用它减本地 now 走表，不是读推过来的时长快照
+    for (const s of waits) {
+      expect(s.wait.until).toBeGreaterThan(s.at);
+      expect(s.wait.until - s.at).toBeLessThanOrEqual(s.wait.waitMs + 100);
+    }
+    // 等过去之后必须清掉：倒计时走完还在往下数，与"冻住"是同一种坏法
+    expect(queue.get(id2).wait).toBeNull();
+    expect(snaps[snaps.length - 1].wait).toBeNull();
+    expect(snaps.findIndex(s => !s.wait)).toBeLessThan(snaps.findIndex(s => s.wait));
+  }, 60000);
 
   // ═══════════════════════════════════════════════════════
   it('删除回复：抖音侧删掉之后本地真的回到待回复，界面读的 localRemoved/localUnmarked 有值', async () => {

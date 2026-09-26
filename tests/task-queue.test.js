@@ -75,6 +75,9 @@ function makeQueue(opts = {}) {
         command: task.command,
         taskId: task.id,
         signal: o.signal,
+        // 与 app/main/index.js 同一根线。漏了这一行，命令内部的节奏等待就落不进
+        // task.wait —— 读间隔那 30~50 秒在界面上因此一直是一个空转的「执行中」。
+        onWait: o.onWait,
         extraSinks: o.extraSinks || [],
       });
       bindCommands(ctx, require('../core/commands'));
@@ -357,6 +360,108 @@ describe('进度捕获', () => {
       await waitIdle(queue);
       expect(queue.get(id).progress).toBeNull();
     });
+  }));
+});
+
+describe('命令内部的节奏等待（读间隔）', () => {
+  // 这一组钉的是"读操作到底能不能看见还要等多久"。
+  // 链条：core/risk-control.enforceDelay 与 helpers.pace 报 onWait
+  //      → task-queue 落进 task.wait 并推一次 → 界面用 until 本地倒数。
+  // 以前断在第二环：主进程建 ctx 时没传 onWait，读操作的 task.wait 恒为 null，
+  // 而找视频页写着"队列页能看到还剩多久"。
+  const readWait = (over = {}) => ({
+    phase: 'min_interval',
+    waitMs: 1500,
+    deadline: Date.now() + 1500,
+    reason: '距上次读仅 1s，强制等待 2s（下限 2s）',
+    type: 'read',
+    ...over,
+  });
+
+  it('ctx 上确实有 onWait（主进程漏接线时这条先红）', withTempEnv({}, async () => {
+    const queue = makeQueue();
+    let seenType = 'unset';
+    await withStub('get', async (ctx) => { seenType = typeof ctx.onWait; return null; }, async () => {
+      queue.enqueue({ command: 'get', argv: ['x'] });
+      await waitIdle(queue);
+    });
+    expect(seenType).toBe('function');
+  }));
+
+  it('等待落进 task.wait 并立刻推一次事件，状态仍是 running', withTempEnv({}, async () => {
+    const queue = makeQueue();
+    const events = [];
+    queue.subscribe((p) => events.push(p));
+
+    await withStub('get', async (ctx) => {
+      ctx.onWait(readWait());
+      await wait(20);
+      return null;
+    }, async () => {
+      const id = queue.enqueue({ command: 'get', argv: ['x'] });
+      await waitIdle(queue);
+      const final = queue.get(id);
+      expect(final.status).toBe('done');
+      expect(final.wait).toBeNull();   // 结束时不留过期的截止时间
+    });
+
+    const snaps = events
+      .map(e => e.tasks.find(t => t.command === 'get'))
+      .filter(Boolean)
+      .map(t => ({ status: t.status, hasWait: !!t.wait, reason: t.wait && t.wait.reason, until: t.wait && t.wait.until }));
+
+    expect(snaps.some(s => s.status === 'running' && s.hasWait && /强制等待/.test(s.reason))).toBe(true);
+    // ⚠️ 不能因为"在等"就把状态改成 waiting：这段时间任务确实正在跑，
+    // 标成 waiting 会让 stats() 的计数与页面上那句「执行中」都变成假话。
+    expect(snaps.some(s => s.status === 'waiting')).toBe(false);
+    expect(events.map(e => e.event)).toContain('wait');
+  }));
+
+  it('phase=end 会把 task.wait 清掉（倒计时不许在请求已经发出之后还在数）', withTempEnv({}, async () => {
+    const queue = makeQueue();
+    const events = [];
+    queue.subscribe((p) => events.push(p));
+
+    await withStub('get', async (ctx) => {
+      ctx.onWait(readWait());
+      await wait(10);
+      ctx.onWait(readWait({ phase: 'end', waitMs: 0, reason: '' }));
+      await wait(10);
+      return null;
+    }, async () => {
+      queue.enqueue({ command: 'get', argv: ['x'] });
+      await waitIdle(queue);
+    });
+
+    const snaps = events
+      .map(e => e.tasks.find(t => t.command === 'get'))
+      .filter(Boolean)
+      .map(t => `${t.status}|${t.wait ? 'wait' : 'nowait'}`);
+
+    expect(snaps).toContain('running|wait');
+    // 清掉之后仍然是 running —— 等待过去了，请求正在飞。
+    // 用 lastIndexOf：任务刚开始本来就有一次 running|nowait，比第一次会白过。
+    expect(snaps).toContain('running|nowait');
+    expect(snaps.lastIndexOf('running|nowait')).toBeGreaterThan(snaps.indexOf('running|wait'));
+    expect(events.map(e => e.event)).toContain('wait-end');
+  }));
+
+  it('没在等待（waitMs=0）的回报不会凭空造出一个倒计时', withTempEnv({}, async () => {
+    const queue = makeQueue();
+    const events = [];
+    queue.subscribe((p) => events.push(p));
+
+    await withStub('get', async (ctx) => {
+      ctx.onWait(readWait({ waitMs: 0, deadline: Date.now() }));
+      await wait(10);
+      return null;
+    }, async () => {
+      queue.enqueue({ command: 'get', argv: ['x'] });
+      await waitIdle(queue);
+    });
+
+    const snaps = events.map(e => e.tasks.find(t => t.command === 'get')).filter(Boolean);
+    expect(snaps.every(t => !t.wait)).toBe(true);
   }));
 });
 

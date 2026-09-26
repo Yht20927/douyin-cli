@@ -102,6 +102,9 @@ function bootstrap() {
         taskId: task.id,
         signal: o.signal,
         extraSinks: o.extraSinks || [],
+        // 队列 → 命令内部的节奏等待。没有这一行，读间隔（30–50s）与逐条/翻页
+        // 之间的等待就不会落进 task.wait，界面上就只有一个空转的「执行中」。
+        onWait: o.onWait,
         // 界面当前在看哪个账号。命令据此做两件事：
         //   1. 写操作前与"浏览器实际登录的号"比对，不一致就拦下
         //      （否则界面显示 A 的作品，实际以 B 的身份发出去）

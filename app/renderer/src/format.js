@@ -2,6 +2,33 @@
 //
 // 提出来是因为 fileNameOf 在四个地方各写了一份（工作台 / 草稿箱 / 发布确认 /
 // 图片列表），改一处漏三处的风险很实在。
+// 倒计时那两处读数（mmss / duration）也收在这里：队列页、发布确认弹窗原本各写
+// 一份，找视频页与运营对象页从本轮起也要显示等待与进度 —— 同一个"还剩多久"
+// 不该有五份写法。
+
+/**
+ * 剩余毫秒 → `mm:ss`。
+ *
+ * 只负责读数本身。**"截止时刻一过就别显示"是调用方的责任**：
+ * 停在 00:00 的读数与"数字冻住"在屏幕上完全同形，运营者分不出
+ * "马上开始"还是"没人走表"，所以要用 `until > now` 挡住而不是让它数到 0。
+ */
+export function mmss(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** 毫秒 → "12 秒" / "1 分 20 秒" / "1 小时 5 分"。跑完的任务显示耗时用 */
+export function duration(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total} 秒`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m < 60) return s ? `${m} 分 ${s} 秒` : `${m} 分`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
 
 /**
  * 从路径里取文件名用于展示。

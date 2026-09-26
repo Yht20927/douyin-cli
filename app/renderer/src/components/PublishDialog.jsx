@@ -2,12 +2,8 @@ import React, { useEffect, useState } from 'react';
 import Modal from './Modal.jsx';
 import Spinner from './Spinner.jsx';
 import EmptyState from './EmptyState.jsx';
-import { fileNameOf, formatBytes } from '../format.js';
-
-function mmss(ms) {
-  const total = Math.max(0, Math.ceil(ms / 1000));
-  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-}
+import { fileNameOf, formatBytes, mmss } from '../format.js';
+import { useNow } from '../useNow.js';
 
 /**
  * 发布二次确认。
@@ -21,7 +17,7 @@ function mmss(ms) {
  */
 export default function PublishDialog({ target, onCancel, onConfirm }) {
   const [check, setCheck] = useState(null);
-  const [now, setNow] = useState(Date.now());
+  const now = useNow();
   const [working, setWorking] = useState(false);
   const [skipWait, setSkipWait] = useState(false);
   /** 附图的即时预检结果：文件在不在、格式认不认、有没有超限 */
@@ -68,11 +64,6 @@ export default function PublishDialog({ target, onCancel, onConfirm }) {
     });
     return () => { alive = false; };
   }, [imagePath]);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
-  }, []);
 
   if (!check) {
     return (

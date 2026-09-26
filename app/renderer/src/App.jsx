@@ -668,7 +668,7 @@ export default function App() {
                     onMemo={(m) => { discoverMemo.current = m; }}
                   />
                 )}
-                {view === 'targets' && <TargetsView actions={actions} />}
+                {view === 'targets' && <TargetsView actions={actions} queueState={queueState} />}
                 {view === 'works' && (
                   <WorksView
                     videos={videos}

@@ -3,6 +3,7 @@ import EmptyState from '../components/EmptyState.jsx';
 import LoadingState from '../components/LoadingState.jsx';
 import Notice from '../components/Notice.jsx';
 import Spinner from '../components/Spinner.jsx';
+import TaskActivity from '../components/TaskActivity.jsx';
 import { ago } from '../format.js';
 import { failText } from '../errors.js';
 import useAutoRefresh from '../useAutoRefresh.js';
@@ -55,7 +56,25 @@ function describeEnrich(res) {
   return { text: `补全完成：${done}/${requested} 条已写入标题与封面`, warn: false };
 }
 
-export default function TargetsView({ actions }) {
+/** 与队列页同一份清单：这几个状态之后任务不会再变 */
+const FINISHED = ['done', 'failed', 'blocked', 'cancelled'];
+
+/**
+ * 正在跑的补全任务。
+ *
+ * 优先认本页记下的 taskId；记不下时（切过一页，组件已经卸载过）退回按命令找
+ * 队列里还活着的那一条 —— 「补全视频信息」的入队点全仓只有这一页，
+ * 所以这个退回不会认错任务，而切页回来看不见进度是实打实的。
+ */
+function liveEnrichTask(tasks, myId) {
+  const mine = myId ? tasks.find(t => t.id === myId) : null;
+  if (mine && !FINISHED.includes(mine.status)) return mine;
+  return tasks
+    .filter(t => t.command === 'enrich' && !FINISHED.includes(t.status))
+    .sort((a, b) => a.createdAt - b.createdAt)[0] || null;
+}
+
+export default function TargetsView({ actions, queueState }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -139,6 +158,10 @@ export default function TargetsView({ actions }) {
 
   const { items, total, shown, truncated, scanCapped, scanLimit, missingInfoCount, orders, accountCertain } = data;
 
+  // 按钮的禁用、按钮上的字、下面那一行进度 —— 必须认同一个判据。
+  // 分开写就会出现"进度行没了、按钮还灰着"这类对不上的状态。
+  const enrichLive = liveEnrichTask((queueState && queueState.tasks) || [], enriching);
+
   return (
     <div className="main-col">
       <h1 className="page-title">运营对象</h1>
@@ -165,14 +188,14 @@ export default function TargetsView({ actions }) {
             <button
               className="btn"
               onClick={enrich}
-              disabled={!!enriching || !actions.canQueue}
+              disabled={!!enrichLive || !actions.canQueue}
               title={!actions.canQueue
                 ? '浏览器未连接 —— 先到「连接」页接上抖音'
                 : `这个数数的是库里所有还缺标题与封面的作品（${missingInfoCount} 个），点下去补的就是这一整批 ——`
                 + '它和右下角的「共 N 个对象」不是一个口径：这里还包括「我的作品」，以及拉过评论但已经不在本列表里的历史对象。'
                 + '补全会逐个取一次视频详情，顺便带上播放与点赞。'}
             >
-              {enriching ? <><Spinner size={12} />补全中…</> : `补全视频信息（${missingInfoCount} 个）`}
+              {enrichLive ? <><Spinner size={12} />补全中…</> : `补全视频信息（${missingInfoCount} 个）`}
             </button>
             {/* 两个数字对不上时必须在明面上讲一句 —— 悬停提示没人找，而"按钮说 200、
                 页面说 5"看起来就像一个坏掉的计数。 */}
@@ -208,6 +231,16 @@ export default function TargetsView({ actions }) {
             视频数超出统计上限（最多扫 {scanLimit} 个），「待回复最多」可能不是全局最靠前的那个。
           </div>
         </div>
+      )}
+
+      {/* 补全是一批读操作：逐条取一次详情，每条之间还要等一次读间隔 ——
+          一批 200 条就是几十分钟。进度与取消此前只在队列页有，这一页只有一颗变灰的按钮。 */}
+      {enrichLive && (
+        <TaskActivity
+          task={enrichLive}
+          onCancel={actions.cancelTask}
+          cancelNote="取消在下一个等待边界生效：已经发出去的那一条详情请求打不断。"
+        />
       )}
 
       <Notice data={enrichResult} style={{ margin: '0 0 12px' }} />

@@ -130,7 +130,7 @@ async function cmdEnrich(ctx, args) {
     // 逐条之间的等待（第一条不等，上面那次 enforceDelay 已经覆盖"开始干之前"）。
     // 放在进度之后：等待期间界面上停着的是"第 N 条 · 正在取视频信息"，
     // 而不是上一条的残留。ctx.signal 一 abort 就抛 AbortError，任务能立刻取消。
-    if (i > 0) await pace(itemRange, { signal: ctx.signal });
+    if (i > 0) await pace(itemRange, { signal: ctx.signal, onWait: ctx.onWait });
 
     let detail;
     try {
