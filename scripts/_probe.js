@@ -15,6 +15,10 @@
 // 用法：
 //   node scripts/_probe.js            # 起服务，打印探针地址
 //   node scripts/_probe.js --port 8791
+//   浏览器地址上加 ?fail=queue:state,app:info
+//     → 这几条通道直接 reject，用来把界面上"读失败"那几支摆到屏幕上重放。
+//       开关在桩那一侧（浏览器里），服务端不受影响：同一个探针可以同时开两个标签，
+//       一个正常、一个注入失败，对照看两边的措辞。
 //
 // ⚠️ 只读：所有端点都只调 views / describe 这类读函数，不产生任何写操作。
 //
@@ -622,8 +626,17 @@ const stub = `
 // 两个探针同时跑时后写的那份会被前一个页面拿去用，于是页面去打另一个端口 ——
 // CSP 直接拦掉，界面就停在「正在读取…」上不出一个字，长得和主进程漏字段一模一样。
 const BASE = (self.location && self.location.origin ? self.location.origin : '') + '/api/';
-const call = (ch, ...args) =>
-  fetch(BASE + ch, {
+// ?fail=queue:state,bridge:status —— 让指定通道**像主进程那样 reject**。
+// 没这个开关时，界面上"读失败"那几支只能在真出故障的机器上偶然看到，
+// 改完没人能重放一遍，于是它长得对不对全靠想。
+// 拒绝的理由照抄 Electron 的说法（ipcRenderer.invoke 失败就是这个形状），
+// 好让翻译层面对的是同一种串。
+const FAIL = new URLSearchParams(self.location.search).get('fail');
+const failSet = new Set(FAIL ? FAIL.split(',').map(s => s.trim()).filter(Boolean) : []);
+if (failSet.size) console.log('[probe] 注入失败的通道：' + [...failSet].join('、'));
+const call = (ch, ...args) => failSet.has(ch)
+  ? Promise.reject(new Error("Error invoking remote method '" + ch + "': Error: 探针注入的失败"))
+  : fetch(BASE + ch, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(args),

@@ -122,3 +122,42 @@ describe('errors: 失败原因 → 人话 + 下一步', () => {
     expect(errorText(new Error('GM_xmlhttpRequest failed'))).toBe('浏览器里的脚本发不出这个请求');
   });
 });
+
+describe('Electron 的 IPC 拒绝外层不许挡住翻译', () => {
+  // 这一条是本轮（第二十二轮）撞出来的：以前 reject 从来没被递到翻译层
+  // （App.jsx 里那批 .then() 没有 catch），所以外层那圈
+  // `Error invoking remote method 'x': Error: 原话` 一直待在没人看的地方。
+  // 一旦界面开始如实报失败，它就成天上屏 —— 而且因为前面多了那串英文，
+  // RULES 里每一条都匹配不上，本来有中文映射的原因会原样露出。
+  const WRAPPED = [
+    ["Error invoking remote method 'bridge:status': Error: Bridge Server 未启动 (127.0.0.1:19422) — 请先运行 node server.js", '桥接'],
+    ["Error invoking remote method 'app:info': Error: listen EADDRINUSE: address already in use 127.0.0.1:19422", '端口'],
+    ["Error invoking remote method 'queue:state': Error: GM_xmlhttpRequest failed", '浏览器'],
+  ];
+
+  it('剥掉外层之后仍然命中既有的中文映射', async () => {
+    const { describeError } = await load();
+    for (const [raw, word] of WRAPPED) {
+      const note = describeError(raw);
+      expect(note.text, raw).not.toMatch(/Error invoking remote method/);
+      expect(note.text, raw).toContain(word);
+      // 原文整条留着：频道名对排查有用，展开「原始信息」时应当看得见
+      expect(note.detail, raw).toBe(raw);
+    }
+  });
+
+  it('外层里没带原因时，报出是哪一条调用没成功，而不是"没有返回具体原因"', async () => {
+    const { describeError } = await load();
+    const note = describeError("Error invoking remote method 'data:drafts': ");
+    expect(note.text).toContain('data:drafts');
+    expect(note.text).not.toBe('没有返回具体原因');
+    expect(note.next.length).toBeGreaterThan(0);
+  });
+
+  it('没被包裹的串不走这条路（剥外层不许吃掉正常输入）', async () => {
+    const { describeError } = await load();
+    const raw = '当日写入额度已用尽（30/30），明天再试';
+    expect(describeError(raw).text).toBe(raw);
+    expect(describeError(new Error(raw)).text).toBe(raw);
+  });
+});

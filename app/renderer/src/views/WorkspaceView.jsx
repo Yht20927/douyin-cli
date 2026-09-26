@@ -63,6 +63,14 @@ const TABS = [
 export default function WorkspaceView({ awemeId, queueState, actions, onBack, memo, onMemo }) {
   const [video, setVideo] = useState(null);
   const [stats, setStats] = useState(null);
+  /**
+   * 「这个视频的统计这一次没读回来」的理由（读成功时置 null）。
+   *
+   * 为什么不能只看 `stats === null`：那是个三态合一的值 —— 还在读、读失败、
+   * 真没有统计，屏幕上都是同一句话「统计还在读」，而它是个会一直挂着不动的
+   * 承诺。列表空态是这一页最常被看到的一块，见 ListEmpty。
+   */
+  const [statsError, setStatsError] = useState(null);
   const [comments, setComments] = useState([]);
   /**
    * 是否正在读本地库。
@@ -186,6 +194,13 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
     setLoading(true);
     try {
       await doReload();
+    } catch (e) {
+      // ⚠️ 改造前这里只有 finally。Promise.all 一 reject，loading 复位而
+      // stats 仍是 null，于是这一页停在「统计还在读」那句话上**永远不动** ——
+      // 比说"没有数据"更糟，因为它承诺了一个不会再来的答案。
+      // 单通道失败（{ok:false}）走不到这里，是 doReload 里分支处理的。
+      setStatsError(failText(e && e.message, '本地数据没读回来'));
+      setNotice(`读取本地数据失败：${failText(e && e.message, '未知错误')}`);
     } finally {
       setLoading(false);
     }
@@ -202,6 +217,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
     // 用户会去反复点「拉取新评论」，永远查不出真实原因。
     setVideo(v.ok ? v.data : null);
     setStats(s.ok ? s.data : null);
+    setStatsError(s.ok ? null : failText(s.error, '这个视频的统计没读回来'));
     if (c.ok) {
       setComments(c.data.items || []);
       setListMeta(c.data);
@@ -1052,9 +1068,11 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                 <div className="ws-list-pad">
                   <ListEmpty
                     stats={stats}
+                    statsError={statsError}
                     tab={tab}
                     search={search}
                     canQueue={actions.canQueue}
+                    onRetry={() => reload()}
                     onClearSearch={() => { setSearchInput(''); setSearch(''); }}
                     onTab={(key) => { setTab(key); setSelectedCid(null); }}
                     onFetch={fetchComments}
@@ -1505,9 +1523,21 @@ function extractReplyText(result) {
  *                    全量口径，摆在"没匹配到"旁边就是"数字各说各的"那一类缺陷
  *
  * `stats` 还没读回来时不给任何结论 —— 没有 total 就说不清"这条视频本地有几条"。
+ * 而"还没读回来"本身又有两种：还在读（等一下就有答案）与读失败（等多久都没有，
+ * 必须给出原因和重读的那一步），改造前这两支共用一句话。
  */
-function ListEmpty({ stats, tab, search, canQueue, onClearSearch, onTab, onFetch }) {
+function ListEmpty({ stats, statsError, tab, search, canQueue, onClearSearch, onTab, onFetch, onRetry }) {
   const tabName = (TABS.find(t => t.key === tab) || {}).label || tab;
+  if (!stats && statsError) {
+    return (
+      <EmptyState
+        title={`「${tabName}」这一筛下现在没有评论 —— 但这句话说不出依据。`}
+        hint={<>这个视频的统计没读回来：{statsError}。列表与统计是两次读取，
+          所以"列表为空"和"统计为空"哪一条是真的，要重读一次才知道。</>}
+        action={<button className="btn" onClick={onRetry}>重新读取</button>}
+      />
+    );
+  }
   if (!stats) {
     return (
       <EmptyState

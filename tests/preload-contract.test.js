@@ -253,6 +253,19 @@ describe('探针桩必须是 preload 的完整镜像', () => {
     const ghost = [...stubChannels].filter(c => !channels.has(c));
     expect(ghost).toEqual([]);
   });
+
+  it('桩能把指定通道改成 reject（界面那些"读失败"分支唯一的可重放手段）', () => {
+    // 背景：主进程没包 safe() 的通道失败形式是 reject，而浏览器里永远读得到
+    // 服务端的响应 —— 于是界面上为失败写的那几支在探针里一次都走不到，
+    // 改完对不对只能靠想。?fail=<channel,channel> 就是补这个的。
+    expect(stubCode).toMatch(/new URLSearchParams\(self\.location\.search\)\.get\('fail'\)/);
+    // ⚠️ 必须紧跟箭头：只找 `failSet.has(ch)` 这个子串时，把它短路成
+    // `=> false && failSet.has(ch)` 也照样"通过"（整条开关从此是死的）
+    expect(stubCode).toMatch(/=>\s*failSet\.has\(ch\)\s*\?/);
+    // 必须是 **reject**，不是返回 {ok:false} —— 后者是 safe() 的形状，
+    // 用它验出来的"失败分支"是另一条分支，等于白验
+    expect(stubCode).toMatch(/Promise\.reject\(new Error\("Error invoking remote method '/);
+  });
 });
 
 describe('界面传的参数必须被主进程接住', () => {

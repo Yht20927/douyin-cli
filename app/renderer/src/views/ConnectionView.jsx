@@ -139,7 +139,7 @@ function SetupGuide({ actions, busy }) {
   );
 }
 
-export default function ConnectionView({ status, actions, busy, account }) {
+export default function ConnectionView({ status, readError, actions, busy, account }) {
   // 桥接服务返回的 connections 里**包含已经断掉的残留连接**（alive: false）。
   // 之前这里直接用 connections.length 当"已连接"的数量，于是同一个屏幕上
   // 会出现两个对不上的数字：这里写"已连接的页面 3"，上面的状态条和诊断页
@@ -169,7 +169,7 @@ export default function ConnectionView({ status, actions, busy, account }) {
         下面显示的就是当前登录、正在被操作的账号。
       </p>
 
-      <StatusBand status={status} actions={actions} busy={busy} />
+      <StatusBand status={status} readError={readError} actions={actions} busy={busy} />
 
       {fail && (
         <div className="notice notice-bad">
@@ -182,6 +182,24 @@ export default function ConnectionView({ status, actions, busy, account }) {
         </div>
       )}
 
+      {/* 连接名单**根本没读回来**时不能走"空名单"那一支。那一支画的是安装引导
+          （意思是"你还没装过脚本"），而真实情况是应用自己没读到 ——
+          照原样画会把用户送去重装一遍油猴脚本，而要做的事是点「重新检测」。 */}
+      {!status && readError ? (
+        <section className="section">
+          <div className="section-head">
+            <h2 className="section-title">已连接的账号</h2>
+            <span className="section-meta">未知</span>
+          </div>
+          <div className="notice notice-bad">
+            <div>
+              这一屏不是"没装过脚本"，是<b>连接名单没读回来</b> —— 空名单在这里不能当证据用。
+              点上面那一行的「重新检测」再读一次；连着几次都读不到就退出应用重开，
+              数据都在本地，不会丢。
+            </div>
+          </div>
+        </section>
+      ) : (
       <section className="section">
         <div className="section-head">
           <h2 className="section-title">已连接的账号</h2>
@@ -210,6 +228,7 @@ export default function ConnectionView({ status, actions, busy, account }) {
             </div>
           )}
       </section>
+      )}
 
       {/* 断开的连接单开一节。它们仍然要露面（"以前装好过、现在断了"与
           "从来没装过"是两个完全不同的排查方向），但不能追加进上面那个列表 ——

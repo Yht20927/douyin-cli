@@ -175,11 +175,60 @@ function UpdateGuide({ update, dataDir, onBackup }) {
 }
 
 /**
+ * 后台读数清单：每一份都在 App.jsx 的失败账本里占一格（key 一致）。
+ *
+ * 为什么诊断页要列它：这几份读数失败时的默认画法都是**一句假话** ——
+ * 侧栏「检测中」、队列页「没有任务」、作品页「还没有作品记录」。
+ * 页面各自补了失败支之后，这里再给一处"今天到底哪几份没读回来"的汇总，
+ * 用户不必挨个页面去撞。`retry` 必须是 actions 上真存在的函数，
+ * 有护栏扫这一点（静态测试），否则这一节自己就成了那颗死按钮。
+ */
+const READ_SLOTS = [
+  { key: 'status', label: '连接状态', where: '侧栏那一行与「连接」页顶部', retry: 'refresh' },
+  { key: 'queue', label: '队列', where: '「队列」页整页与侧栏角标', retry: 'reloadQueue' },
+  { key: 'account', label: '当前账号', where: '侧栏「当前账号」与所有按号过滤的数据', retry: 'reloadAccount' },
+  { key: 'videos', label: '作品列表', where: '「我的作品」页与工作台入口', retry: 'reloadWorks' },
+];
+
+/** 诊断页那一节：把失败的读数逐行列出，每行一个真能重读的按钮 */
+function ReadFailures({ failed, actions }) {
+  if (failed.length === 0) return null;
+  return (
+    <section className="section">
+      <h2 className="section-title" style={{ marginBottom: 12 }}>这几份读数这次没读回来</h2>
+      <p className="muted chart-note" style={{ marginTop: 0 }}>
+        它们在各页面上看起来像"没有"，其实是"没读到"。下面每一行都只重读那一份，不动任何数据。
+      </p>
+      <div className="list">
+        {failed.map((f) => (
+          <div className="diag-readfail" key={f.key}>
+            <div>
+              <b>{f.label}</b>
+              <div className="sub">{f.where}</div>
+              <div className="sub diag-readfail-why">{f.why}</div>
+            </div>
+            <button className="btn btn-quiet" onClick={() => actions[f.retry]()}>重新读取</button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 诊断。正常使用时不需要看，但出问题时是唯一能自查的地方：
  * 数据到底存哪了、配置被回退成了什么、脚本源在不在。
  */
-export default function DiagnosticsView({ info, infoError, onRetryInfo, status, actions }) {
+export default function DiagnosticsView({ info, infoError, onRetryInfo, readErrors, status, actions }) {
   const warnings = (info && info.configWarnings) || [];
+  // 账本没传也不该把这一页弄崩（这一页正是"别的地方崩了才来看"的地方）
+  const failedReads = READ_SLOTS
+    .map(f => ({ ...f, why: (readErrors || {})[f.key] }))
+    .filter(f => f.why);
+  // 桥接服务那一节的三行都从这一份 status 派生。null 有两种来历，
+  // 说出来的话完全不同 —— 与侧栏/连接页同一条判据，只是这里词更短
+  const statusUnknown = status ? null
+    : ((readErrors || {}).status ? '没读回来' : '还在读…');
 
   // 更新检查是异步的网络请求，结果就地显示在这一行
   const [update, setUpdate] = useState(null);
@@ -271,6 +320,9 @@ export default function DiagnosticsView({ info, infoError, onRetryInfo, status, 
     return (
       <div className="main-col">
         <h1 className="page-title">诊断</h1>
+        {/* 运行环境读不到，不等于另外四份读数也读不到 —— 它们各走各的通道，
+            这一节仍然要出现，否则"重新读取"这条路在这一页就断了 */}
+        <ReadFailures failed={failedReads} actions={actions} />
         {infoError ? (
           <>
             <div className="notice notice-bad">
@@ -320,6 +372,8 @@ export default function DiagnosticsView({ info, infoError, onRetryInfo, status, 
           <br />安装包可能不完整，脚本相关的功能会失效。
         </div>
       )}
+
+      <ReadFailures failed={failedReads} actions={actions} />
 
       <section className="section">
         <h2 className="section-title" style={{ marginBottom: 12 }}>运行环境</h2>
@@ -490,7 +544,9 @@ export default function DiagnosticsView({ info, infoError, onRetryInfo, status, 
         <h2 className="section-title" style={{ marginBottom: 12 }}>桥接服务</h2>
         <dl className="kv">
           <dt>状态</dt>
-          <dd>{status && status.listening ? '运行中' : '未启动'}</dd>
+          {/* 「未启动」是一个结论，「没读回来」是另一个结论，两者不能共用一份 null：
+              这一页是用户判断"到底是抖音没连上还是应用坏了"的唯一地方 */}
+          <dd>{statusUnknown || (status.listening ? '运行中' : '未启动')}</dd>
 
           <dt>监听地址</dt>
           <dd>
@@ -499,7 +555,7 @@ export default function DiagnosticsView({ info, infoError, onRetryInfo, status, 
           </dd>
 
           <dt>已连接</dt>
-          <dd className="num">{status ? status.totalConnections : '—'} 个页面</dd>
+          <dd className="num">{statusUnknown || `${status.totalConnections} 个页面`}</dd>
 
           <dt>脚本地址</dt>
           <dd>

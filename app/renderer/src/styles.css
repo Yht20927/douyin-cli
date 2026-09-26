@@ -282,6 +282,8 @@ code {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sidebar-account-more { font-size: var(--fs-xs); color: var(--text-4); margin-top: 2px; }
+/* 账号读不出来时的那一行（理由挂在 title 上，所以允许换行，不像账号名那样截断） */
+.sidebar-account-error { font-size: 13px; color: var(--bad); line-height: 1.35; }
 /* 这句现在是能点的（跳到连接页），但它在一个自带内边距的盒子里，
    用 .nav-item 的默认内边距会缩进得比上面的账号名还深 */
 .sidebar-account-box .nav-item { padding: 3px 4px; margin-left: -4px; }
@@ -365,13 +367,16 @@ code {
 .band[data-state='online']::before  { background: var(--ok); }
 .band[data-state='waiting']::before { background: var(--wait); }
 .band[data-state='offline']::before,
-.band[data-state='down']::before    { background: var(--bad); }
+.band[data-state='down']::before,
+/* 「读不到状态」与"连不上"同样要动手，用同一档严重度 —— 区别在文字里说清 */
+.band[data-state='unreadable']::before { background: var(--bad); }
 
 /* 状态色的极淡底光：面积大、浓度极低，只够让卡片"属于"某个状态 */
 .band[data-state='online']  { border-color: rgba(76, 195, 138, .18);  background: linear-gradient(180deg, rgba(76, 195, 138, .05), transparent 55%), var(--bg-2); }
 .band[data-state='waiting'] { border-color: rgba(227, 169, 62, .18);  background: linear-gradient(180deg, rgba(227, 169, 62, .05), transparent 55%), var(--bg-2); }
 .band[data-state='offline'],
-.band[data-state='down']    { border-color: rgba(232, 101, 90, .20);  background: linear-gradient(180deg, rgba(232, 101, 90, .06), transparent 55%), var(--bg-2); }
+.band[data-state='down'],
+.band[data-state='unreadable'] { border-color: rgba(232, 101, 90, .20);  background: linear-gradient(180deg, rgba(232, 101, 90, .06), transparent 55%), var(--bg-2); }
 
 .band-head { display: flex; align-items: flex-start; gap: 14px; }
 
@@ -386,7 +391,8 @@ code {
 .band[data-state='online']  .band-word { color: var(--ok); }
 .band[data-state='waiting'] .band-word { color: var(--wait); }
 .band[data-state='offline'] .band-word,
-.band[data-state='down']    .band-word { color: var(--bad); }
+.band[data-state='down']    .band-word,
+.band[data-state='unreadable'] .band-word { color: var(--bad); }
 
 .band-dot {
   width: 8px; height: 8px; border-radius: 50%;
@@ -717,6 +723,18 @@ code {
 .diag-update-files { margin: var(--sp-2) 0 0; padding-left: 18px; list-style: none; }
 .diag-update-files li { margin-top: var(--sp-1); }
 .diag-update-path { word-break: break-all; }
+
+/* 诊断页：一行 = 一份没读回来的数据 + 一颗只重读它的按钮。
+   失败原因可能很长（一整段堆栈），所以它单独占列并允许断词。 */
+.diag-readfail {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.diag-readfail-why { color: var(--bad); word-break: break-all; }
+
 .diag-update-foot { margin-top: var(--sp-3); font-size: var(--fs-sm); }
 
 /* ══════════════════════════════════════════════
@@ -933,8 +951,12 @@ code {
   margin: 0 auto;
 }
 
-.ws-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
-.ws-title { flex: 1; min-width: 0; }
+/* 允许换行 + 标题给一个 340px 的基准宽度：放不下时整排按钮落到标题下面。
+   改前是 nowrap 而 .ws-title 的 min-width 为 0，于是在产品最小宽度 940 下
+   右边那排按钮（417px）把标题栏挤到 145px —— 「待处理 = 本地 − 已回…」
+   那段解释被排成一列一个字（探针真渲染量出来的）。 */
+.ws-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 16px; }
+.ws-title { flex: 1 1 340px; min-width: 0; }
 .ws-title-main { font-size: 17px; font-weight: 650; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-title-sub { font-size: var(--fs-sm); color: var(--text-3); margin-top: 3px; }
 /* 一组一个口径，所以一组一块；口径不同的两组并排摆，读的人才会去对数 */
@@ -951,6 +973,10 @@ code {
 }
 .tab {
   padding: 5px 12px;
+  /* 不许被压扁：940（产品最小宽度）下这一行放不下 6 个标签 + 搜索框 + 排序，
+     默认 flex-shrink:1 会把标签挤成两行、中文在词中间断开（「待处/理」）。
+     挤不动就挤搜索框 —— 它少几个字不影响可读性。 */
+  flex: none; white-space: nowrap;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   background: transparent;

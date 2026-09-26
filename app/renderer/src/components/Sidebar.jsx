@@ -34,10 +34,12 @@ const NAV_GROUPS = [
 ];
 
 export default function Sidebar({
-  view, onNavigate, status, queueCount, draftCount, version, onQuit,
-  account, onSwitchAccount,
+  view, onNavigate, status, readError, queueCount, draftCount, version, onQuit,
+  account, accountError, onSwitchAccount,
 }) {
-  const d = describeStatus(status);
+  // 第二个实参是"这一次读没读回来"。没有它，读失败与"还没开始读"都只剩
+  // 一份 null，屏幕上都是「检测中」—— 见 status.js 的 describeStatus
+  const d = describeStatus(status, readError);
   const badges = { queue: queueCount, draft: draftCount };
 
   // 当前账号由主进程解析（跟随浏览器当前登录的号），这里只显示与切换。
@@ -85,6 +87,15 @@ export default function Sidebar({
       <div className="sidebar-foot">
         {/* 把核心状态常驻在侧栏底部：切到任何页面都能一眼看到能不能发，
             而不必回到「连接」页 */}
+        {/* 账号读不出来时这一块原本整个不渲染（它挂在 accountName 上）。
+            "没有当前账号"与"没读到当前账号"在侧栏上是两件事：前者可能是
+            没连上，后者是应用自己的读数坏了 —— 不说，用户会去查抖音。 */}
+        {!accountName && accountError && (
+          <div className="sidebar-account-box">
+            <div className="sidebar-account-label">当前账号</div>
+            <div className="sidebar-account-error" title={accountError}>读不出账号</div>
+          </div>
+        )}
         {accountName && (
           <div className="sidebar-account-box">
             <div className="sidebar-account-label">当前账号</div>
@@ -129,7 +140,8 @@ export default function Sidebar({
             className={`nav-dot ${d.state === 'online' ? 'nav-dot-on' : ''}`}
             style={
               d.state === 'waiting' ? { background: 'var(--wait)' }
-                : d.state === 'offline' || d.state === 'down' ? { background: 'var(--bad)' }
+                : d.state === 'offline' || d.state === 'down' || d.state === 'unreadable'
+                  ? { background: 'var(--bad)' }
                   : undefined
             }
           />

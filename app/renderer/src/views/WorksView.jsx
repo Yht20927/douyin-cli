@@ -2,6 +2,7 @@ import React from 'react';
 import LoadingState from '../components/LoadingState.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import { abbrNum } from '../format.js';
+import { errorText } from '../errors.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
 /**
@@ -77,7 +78,7 @@ function Cover({ url }) {
  * 第 51 个以后既看不到也点不进去 —— 工作台的唯一入口就在这一行。
  * 现在「加载更早」逐步放大读取上限（本地库直读，放大没有代价）。
  */
-export default function WorksView({ videos, total, loading, actions, onRefresh, onLoadMore }) {
+export default function WorksView({ videos, total, loading, readError, actions, onRefresh, onLoadMore }) {
   const [q, setQ] = React.useState('');
 
   // 定时重读（间隔在设置页里配，0 = 关）。只读本地库，不发抖音请求。
@@ -91,6 +92,9 @@ export default function WorksView({ videos, total, loading, actions, onRefresh, 
     ? list.filter(v => (v.title || '').includes(kw) || v.awemeId.includes(kw))
     : list;
   const hasMore = total > list.length;
+  // 「最近一次读失败」与「这次启动还什么都没读到」是两句话：前者下面摆的还是
+  // 上一次的结果，说 0 会低估；后者才是真的没有任何依据。
+  const nothingLoaded = list.length === 0 && !loading;
 
   return (
     <div className="main-col">
@@ -117,24 +121,46 @@ export default function WorksView({ videos, total, loading, actions, onRefresh, 
           onChange={e => setQ(e.target.value)}
         />
         <span className="muted" style={{ alignSelf: 'center', fontSize: 12.5 }}>
-          共 {total || list.length} 个作品
-          {total > list.length && `（已加载最近 ${list.length} 个）`}
-          {kw && ` · 匹配 ${filtered.length} 条`}
+          {readError && nothingLoaded
+            ? '作品数未知'
+            : <>共 {total || list.length} 个作品
+              {total > list.length && `（已加载最近 ${list.length} 个）`}
+              {kw && ` · 匹配 ${filtered.length} 条`}</>}
         </span>
       </div>
+
+      {/* 读数失败不能只靠下面那个空态说 —— 空态那句是给"确实没有作品"的人看的。
+          这里单独说一句，并且给一颗只重读本页的按钮。 */}
+      {readError && (
+        <div className="notice notice-bad">
+          <div>
+            <b>作品列表最近一次没读回来：</b>{errorText(readError)}
+            <div className="muted" style={{ marginTop: 6 }}>
+              {nothingLoaded
+                ? '这次启动还没读到过任何作品，所以这一页不能判断你有没有作品。'
+                : '下面列的还是上一次读到的结果，可能已经不是库里现在的样子。'}
+            </div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={onRefresh}>重新读取</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading && list.length === 0
         // 骨架屏而不是一句「正在读取…」：作品行有封面、有高，文字塌成一行
         // 会让数据回来时整页重排（见 Skeleton 的注释）
         ? <LoadingState rows={6} thumb title />
-        : list.length === 0
-          ? (
-            <EmptyState
-              title="还没有作品记录。"
-              hint={<>点上面的「刷新列表」从抖音拉一次 —— 前提是浏览器里已装好脚本并打开着 douyin.com。</>}
-            />
-          )
-          : (
+        : list.length === 0 && readError
+          ? <EmptyState title="作品列表没读回来。" hint="上面那句原因处理完，点「重新读取」。这一页说不了你有没有作品。" />
+          : list.length === 0
+            ? (
+              <EmptyState
+                title="还没有作品记录。"
+                hint={<>点上面的「刷新列表」从抖音拉一次 —— 前提是浏览器里已装好脚本并打开着 douyin.com。</>}
+              />
+            )
+            : (
             <>
               <div className="list">
                 {filtered.map(v => (

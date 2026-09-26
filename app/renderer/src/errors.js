@@ -195,6 +195,18 @@ const RULES = [
 ];
 
 /**
+ * Electron 的 IPC 拒绝串外层。
+ *
+ * `ipcRenderer.invoke` 失败时，主进程那个异常会被包成
+ * `Error invoking remote method 'bridge:status': Error: <原话>` 再抛给界面。
+ * 外层这一圈纯属工程噪音，而它**挡掉下面每一条规则**：本轮第一次把 reject
+ * 递到翻译层就撞上了 —— "桥接服务未启动"本来有中文映射，因为前面多了这串
+ * 英文，整条原样上了屏。所以先剥外层再翻，**原文整条留在 detail** 里
+ * （通道名对排查有用，折叠着看得见）。
+ */
+const IPC_WRAPPER = /^Error invoking remote method '([^']+)':\s*/i;
+
+/**
  * 翻一条错误。
  *
  * @param {string|Error|null} raw
@@ -205,7 +217,19 @@ export function describeError(raw) {
   if (!detail) {
     return { text: '没有返回具体原因', next: ['到「队列」页展开这条任务看明细'], detail: null, tone: 'bad' };
   }
-  const lower = detail.toLowerCase();
+  const wrap = IPC_WRAPPER.exec(detail);
+  const inner = wrap ? detail.slice(wrap[0].length).replace(/^Error:\s*/i, '').trim() : detail;
+  if (!inner) {
+    // 外层里没有原因可翻。这时候**不许**给一句"没有返回具体原因"了事：
+    // 报出是哪一条调用没成功，才让人知道坏在哪个环节。
+    return {
+      text: `主进程的「${wrap[1]}」调用没成功，而且没给出原因`,
+      next: ['到「诊断」页看运行环境', '重试一次还不行就把这一句发给开发者'],
+      detail,
+      tone: 'bad',
+    };
+  }
+  const lower = inner.toLowerCase();
   for (const rule of RULES) {
     const m = rule.test(lower);
     if (!m) continue;
@@ -216,7 +240,7 @@ export function describeError(raw) {
   return {
     // 认不出来就原样给（压成一行、最多留 120 字）：这类串本身多半是中文说明，
     // 切太短会把"为什么"的后半句丢掉 —— 而那正是要紧的部分。
-    text: detail.length > 120 ? detail.slice(0, 120) + '…' : detail,
+    text: inner.length > 120 ? inner.slice(0, 120) + '…' : inner,
     next: [],
     detail,
     tone: 'bad',

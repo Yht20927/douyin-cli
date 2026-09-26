@@ -28,6 +28,18 @@ export default function App() {
   const [status, setStatus] = useState(null);
   const [queueState, setQueueState] = useState(null);
   /**
+   * 后台读数的失败账本：键 = 界面上会引用它的那块地方（status / queue /
+   * account / videos），值 = 那句能给人看的理由。
+   *
+   * 为什么需要它：这四份数据都是"启动时读一次 + 之后靠推送"，读失败时页面
+   * 手里只有一份 null。而 null 在界面上的默认画法是一句**假话** ——
+   * 侧栏画成「检测中」（其实已经读过了，失败了）、队列页画成「没有任务」、
+   * 作品页画成「还没有作品记录」。诊断页那一处（§2.38）本轮已经修过，
+   * 这四条是同一个形状的副本，判据也共用那一条：
+   * **"还在读"和"读失败了"必须在屏幕上不同形。**
+   */
+  const [readErrors, setReadErrors] = useState({});
+  /**
    * 当前账号。
    *
    * 界面上的每一份数据都属于某个账号 —— 不把它取回来传给页面，两个号的
@@ -145,6 +157,47 @@ export default function App() {
   const [videoLimit, setVideoLimit] = useState(50);
 
   /**
+   * 记下一个后台读数的失败，或把它清掉（传 null）。
+   *
+   * ⚠️ 值没变就返回原对象：桥接状态每 5 秒推一次，每次都换新对象等于
+   * 让整棵树跟着重渲染，而这条链路上的失败理由本来就是同一句。
+   */
+  const noteRead = useCallback((key, err) => {
+    setReadErrors((prev) => {
+      const msg = err == null ? null : String((err && err.message) || err);
+      if ((prev[key] || null) === msg) return prev;
+      const next = { ...prev };
+      if (msg === null) delete next[key]; else next[key] = msg;
+      return next;
+    });
+  }, []);
+
+  /**
+   * 读一条**没包 safe()** 的通道（bridge:status / queue:state）。
+   *
+   * 这类 handle 失败的形式是一个 reject，而不是 {ok:false} —— 原版光有
+   * `.then()` 时这条失败连一次 console 报错都不留（未处理的 rejection），
+   * 而页面会继续把"从没读回来"画成"正在读"。三种结果都在这一个函数里落账：
+   * 读到值 → 清账；读到空 → 记「没有返回」；被拒 → 记那句理由并提示一次。
+   * 清账意味着失败支会自己消失，用户不必重启应用。
+   */
+  const readSlot = useCallback((key, label, get, onOk) => get()
+    .then((v) => {
+      if (!v) {
+        noteRead(key, `主进程没有返回${label}信息`);
+        return null;
+      }
+      onOk(v);
+      noteRead(key, null);
+      return v;
+    })
+    .catch((e) => {
+      noteRead(key, e);
+      flash(`读${label}失败：${failText(e && e.message, '未知错误')}`, 'bad');
+      return null;
+    }), [noteRead]);
+
+  /**
    * 取当前账号。
    *
    * ⚠️ 桥接状态**每 5 秒推一次**（connectionWatch 的轮询），applyStatus 每次都
@@ -153,16 +206,26 @@ export default function App() {
    * 但无谓的对象更新会让所有子页面的 props 全部变化。
    */
   const reloadAccount = useCallback(async () => {
-    const r = await window.dy.account.state();
-    if (!r || !r.ok) return;
-    setAccount((prev) => {
-      const same = prev
-        && String(prev.uid) === String(r.data.uid)
-        && prev.needsChoice === r.data.needsChoice
-        && JSON.stringify(prev.candidates) === JSON.stringify(r.data.candidates);
-      return same ? prev : r.data;
-    });
-  }, []);
+    try {
+      const r = await window.dy.account.state();
+      if (!r || !r.ok) {
+        // 原来是静默 return：账号那块界面上就一直停在初始形状，
+        // 「未选定账号」与「读不出账号」在屏幕上同形
+        noteRead('account', (r && r.error) || '主进程没有返回账号信息');
+        return;
+      }
+      noteRead('account', null);
+      setAccount((prev) => {
+        const same = prev
+          && String(prev.uid) === String(r.data.uid)
+          && prev.needsChoice === r.data.needsChoice
+          && JSON.stringify(prev.candidates) === JSON.stringify(r.data.candidates);
+        return same ? prev : r.data;
+      });
+    } catch (e) {
+      noteRead('account', e);
+    }
+  }, [noteRead]);
 
   // 换号就把工作台那张表整个丢掉：里面存的勾选是上一个号的列表，
   // cid 再对得上也不该被当成"用户在这个号下勾过的东西"恢复回来。
@@ -181,13 +244,20 @@ export default function App() {
       if (r.ok) {
         setVideos(r.data.items || []);
         setVideoTotal(r.data.total || 0);
+        noteRead('videos', null);
       } else {
-        setVideos([]);
-        setVideoTotal(0);
+        // 失败**不清列表**。原来这里 setVideos([]) + setVideoTotal(0)，于是
+        // 「读失败了」被画成「库里一个作品都没有」—— 而空态（第二十一轮刚做的
+        // 三支）会理直气壮地写「还没有把作品拉进来」。与 reloadDrafts 同一条判据：
+        // 留住上一次读到的东西，只报错。
+        noteRead('videos', r.error || '主进程没有返回作品列表');
         flash(`读取作品列表失败：${failText(r.error, '未知错误')}`, 'bad');
       }
+    } catch (e) {
+      noteRead('videos', e);
+      flash(`读取作品列表失败：${failText(e && e.message, '未知错误')}`, 'bad');
     } finally { setLoadingVideos(false); }
-  }, []);
+  }, [noteRead]);
 
   const reloadDrafts = useCallback(async (q) => {
     if (typeof q === 'string') draftQueryRef.current = q;
@@ -237,9 +307,9 @@ export default function App() {
     let cancelled = false;
 
     loadInfo();
-    window.dy.bridge.status().then((s) => { if (!cancelled) applyStatus(s); });
+    readSlot('status', '连接状态', () => window.dy.bridge.status(), applyStatus);
     reloadAccount();
-    window.dy.queue.state().then((q) => { if (!cancelled && q) setQueueState(q); });
+    readSlot('queue', '队列', () => window.dy.queue.state(), setQueueState);
     reloadVideos(50);
     // 草稿角标要在启动时就有值。改造前只在进入草稿箱页面时才加载，
     // 于是工作台「存草稿」提示成功之后，侧栏角标还是旧值 —— 用户以为没存上。
@@ -248,6 +318,8 @@ export default function App() {
     const unStatus = window.dy.bridge.onStatusChanged((s) => applyStatus(s));
     const unQueue = window.dy.queue.onChanged((payload) => {
       setQueueState({ tasks: payload.tasks, stats: payload.stats, policy: payload.policy });
+      // 推送能到就说明这条通道活着：启动时那一次读失败留下的红条该跟着消失
+      noteRead('queue', null);
       // 任务失败不能只留在队列页 —— 用户多半停在别的页面。
       // 每个失败任务只提示一次（同一个 id 不重复弹）。
       for (const t of payload.tasks || []) {
@@ -268,7 +340,11 @@ export default function App() {
   }, [reloadVideos]);
 
   function applyStatus(s) {
-    if (s && s.online) everConnected.current = true;
+    if (!s) return;
+    if (s.online) everConnected.current = true;
+    // 状态真的读回来了 —— 「读不到连接状态」那句就该撤掉。
+    // 放在最前面：下面的 reloadAccount 会读账号，账本里那一格跟着一起翻新。
+    noteRead('status', null);
     // 连接的账号可能变了（在浏览器里换了号、或关掉了某个页面）——
     // 重新解析一次当前账号，界面上的数据随之整体重读
     reloadAccount();
@@ -534,7 +610,41 @@ export default function App() {
       });
     },
 
-    async refresh() { return withBusy(() => window.dy.bridge.refresh()); },
+    /**
+     * 连接页与侧栏上那颗「重新检测」。
+     *
+     * 两处改动：
+     * 1. 把自己读回来的状态直接用掉。原来只 `await` 完就结束，等着推送 ——
+     *    而"读不到"的时候推送恰恰也不会来，按钮按下去看着像没反应。
+     * 2. 失败必须记账 + 提示。bridge:refresh 没包 safe()，抛出就是一个
+     *    reject；`withBusy` 只有 finally，于是整条链上没有任何一处接得住。
+     */
+    async refresh() {
+      return withBusy(async () => {
+        try {
+          const s = await window.dy.bridge.refresh();
+          if (!s) {
+            noteRead('status', '主进程没有返回连接状态');
+            return null;
+          }
+          applyStatus(s);
+          return s;
+        } catch (e) {
+          noteRead('status', e);
+          flash(`重新检测失败：${failText(e && e.message, '未知错误')}`, 'bad');
+          return null;
+        }
+      });
+    },
+
+    /** 队列页失败支上那颗「重新读取」：与启动时那一次共用 readSlot 的三种结果 */
+    async reloadQueue() {
+      return readSlot('queue', '队列', () => window.dy.queue.state(), setQueueState);
+    },
+
+    /** 诊断页那一节里每行那颗「重新读取」 */
+    async reloadAccount() { return reloadAccount(); },
+    async reloadWorks() { return reloadVideos(videoLimit); },
 
     async copyUserscriptUrl() {
       const r = await window.dy.bridge.copyUserscriptUrl();
@@ -646,7 +756,9 @@ export default function App() {
           : workspaceId ? workspaceFrom.current : view}
         onNavigate={(v) => { navClicked.current = true; setWorkspaceId(null); setUserId(null); setView(v); }}
         status={status}
+        readError={readErrors.status}
         account={account}
+        accountError={readErrors.account}
         onSwitchAccount={actions.setAccount}
         queueCount={activeCount}
         draftCount={draftTotal}
@@ -679,7 +791,13 @@ export default function App() {
             : (
               <>
                 {view === 'queue' && (
-                  <QueueView state={queueState} status={status} actions={actions} busy={busy} />
+                  <QueueView
+                    state={queueState}
+                    readError={readErrors.queue}
+                    status={status}
+                    actions={actions}
+                    busy={busy}
+                  />
                 )}
                 {view === 'discover' && (
                   <DiscoverView
@@ -696,6 +814,7 @@ export default function App() {
                     total={videoTotal}
                     shown={videos.length}
                     loading={loadingVideos}
+                    readError={readErrors.videos}
                     actions={actions}
                     onRefresh={() => reloadVideos(videoLimit)}
                     onLoadMore={() => {
@@ -724,12 +843,22 @@ export default function App() {
                 {view === 'connection' && (
                   <ConnectionView
                     status={status}
+                    readError={readErrors.status}
                     account={account}
                     actions={actions}
                     busy={busy}
                   />
                 )}
-                {view === 'diagnostics' && <DiagnosticsView info={info} infoError={infoError} onRetryInfo={loadInfo} status={status} actions={actions} />}
+                {view === 'diagnostics' && (
+                  <DiagnosticsView
+                    info={info}
+                    infoError={infoError}
+                    onRetryInfo={loadInfo}
+                    readErrors={readErrors}
+                    status={status}
+                    actions={actions}
+                  />
+                )}
               </>
             )}
         </div>

@@ -1023,7 +1023,9 @@ describe('空态与更新指引必须给得出下一步', () => {
     expect(loader).toMatch(/catch/);
     expect(loader).toMatch(/setInfoError\(/);
     // 失败状态必须真的传到那一页（只 setState 不传 = 界面还是看不见）
-    expect(app).toMatch(/<DiagnosticsView info=\{info\} infoError=\{infoError\} onRetryInfo=\{loadInfo\}/);
+    // readErrors 是后台读数的失败账本：这一页是"别的地方坏了才来看"的地方，
+    // 账本不传过来，它就只能报自己这一块。
+    expect(app).toMatch(/<DiagnosticsView\s+info=\{info\}\s+infoError=\{infoError\}\s+onRetryInfo=\{loadInfo\}\s+readErrors=\{readErrors\}/);
 
     const c = code('DiagnosticsView.jsx');
     expect(c).toMatch(/\(\{ info, infoError, onRetryInfo,/);
@@ -1040,5 +1042,189 @@ describe('空态与更新指引必须给得出下一步', () => {
     expect(fn).toMatch(/catch \(e\)/);
     // 拒了的形状要和"问到了但失败"走同一支渲染，否则多出一条没人看的分支
     expect(fn).toMatch(/setUpdate\(\{ ok: false/);
+  });
+});
+
+describe('第二十二轮：主进程读数失败在界面上必须有形状', () => {
+  // 判据（与 §2.38 那一条同源）：**"还在读"与"读失败了"不许在屏幕上同形。**
+  // 这一轮把 App.jsx 里那四份裸着的后台读数（连接状态 / 队列 / 账号 / 作品）
+  // 全部接进一份失败账本，并且给每一处原来的空态补了失败支。
+  //
+  // 为什么静态比对管得住这件事：这些分支**没有任何一条会被单元测试碰到** ——
+  // 它们要的是一个 reject 走到 React 里。而漏掉一处（比如新加一页没传 readError）
+  // 的症状是"那一页在故障时继续说'什么都没有'"，没有任何红。
+  const stripComments = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const src = (rel) => stripComments(
+    fs.readFileSync(path.join(RENDERER_SRC, rel), 'utf8')
+  );
+  const app = src('App.jsx');
+  // 断言"甲这处写法在乙之前"（分支顺序就是判据本身）
+  const before = (hay, a, b, what) => {
+    const ia = hay.indexOf(a);
+    const ib = hay.indexOf(b);
+    expect(ia, `${what}：找不到「${a}」`).toBeGreaterThanOrEqual(0);
+    expect(ib, `${what}：找不到「${b}」`).toBeGreaterThanOrEqual(0);
+    expect(ia < ib, `${what}：「${a}」必须排在「${b}」之前，否则失败时画出来的是后者`).toBe(true);
+  };
+
+  it('App 有一份失败账本，三种结果都落账，而且会自己消失', () => {
+    expect(app).toMatch(/const \[readErrors, setReadErrors\] = useState\(\{\}\);/);
+    const fn = app.slice(app.indexOf('const readSlot = useCallback'));
+    expect(fn.length).toBeGreaterThan(0);
+    // 读到值 → 清账（失败支必须会消失，否则用户只能重启应用）
+    expect(fn).toMatch(/onOk\(v\);\s*noteRead\(key, null\);/);
+    // 读到空 → 也要记，不许当成"读回来一份空的"
+    expect(fn).toMatch(/if \(!v\) \{/);
+    // 被拒 → 记理由 + 提示一次
+    expect(fn.slice(fn.indexOf('.catch('))).toMatch(/noteRead\(key, e\);/);
+    // 5 秒一次的轮询不许每轮都换新对象（那会让所有子页面的 props 全部变化）
+    expect(app).toMatch(/if \(\(prev\[key\] \|\| null\) === msg\) return prev;/);
+  });
+
+  it('四份后台读数一律走账本，界面上不许再留裸的 .then()', () => {
+    for (const re of [
+      /window\.dy\.bridge\.status\(\)\.then\(/,
+      /window\.dy\.queue\.state\(\)\.then\(/,
+      /window\.dy\.account\.state\(\)\.then\(/,
+      /window\.dy\.data\.videos\([^)]*\)\.then\(/,
+    ]) {
+      expect(app, `裸 .then()：${re}`).not.toMatch(re);
+    }
+    expect(app).toMatch(/readSlot\('status', '连接状态', \(\) => window\.dy\.bridge\.status\(\)/);
+    expect(app).toMatch(/readSlot\('queue', '队列', \(\) => window\.dy\.queue\.state\(\)/);
+    // 推送能到 = 这条通道活着：启动时那一次读失败留下的红条必须跟着消失。
+    // 切片按函数边界切，别按「});」—— 回调体第一行就是 setQueueState({…});
+    const push = app.slice(app.indexOf('const unQueue = window.dy.queue.onChanged'),
+      app.indexOf('function applyStatus'));
+    expect(push).toMatch(/noteRead\('queue', null\)/);
+    expect(app).toMatch(/function applyStatus\(s\) \{[\s\S]{0,400}noteRead\('status', null\);/);
+  });
+
+  it('读数失败时不许把列表清空（那等于把故障画成"没有数据"）', () => {
+    const fn = app.slice(app.indexOf('const reloadVideos = useCallback'),
+      app.indexOf('const reloadDrafts = useCallback'));
+    expect(fn.length).toBeGreaterThan(50);
+    expect(fn).not.toMatch(/setVideos\(\[\]\)/);
+    expect(fn).not.toMatch(/setVideoTotal\(0\)/);
+    expect(fn).toMatch(/noteRead\('videos', r\.error/);
+  });
+
+  it('describeStatus 的失败支排在"检测中"之前，两处调用点都传第二个实参', () => {
+    const st = src('status.js');
+    before(st, "state: 'unreadable'", "state: 'unknown'", '读不到与还在读');
+    expect(st).toMatch(/export function describeStatus\(status, readError\)/);
+    // 判据只有一份实现：侧栏与状态条都调同一个函数、都传 readError
+    for (const f of ['components/Sidebar.jsx', 'components/StatusBand.jsx']) {
+      expect(src(f), f).toMatch(/describeStatus\(status, readError\)/);
+    }
+  });
+
+  it('账本真的传到每一页（只 setState 不传 = 那一页还是看不见）', () => {
+    expect(app).toMatch(/<Sidebar[\s\S]{0,400}readError=\{readErrors\.status\}/);
+    expect(app).toMatch(/<QueueView\s+state=\{queueState\}\s+readError=\{readErrors\.queue\}/);
+    expect(app).toMatch(/<WorksView[\s\S]{0,220}readError=\{readErrors\.videos\}/);
+    expect(app).toMatch(/<ConnectionView\s+status=\{status\}\s+readError=\{readErrors\.status\}/);
+  });
+
+  /**
+   * 「守卫这一支」必须**整行**对得上。
+   *
+   * 原来这里只 `indexOf(条件子串)`，于是把整支短路成
+   * `: false && list.length === 0 && readError` 也照样通过（子串还在、顺序没变）
+   * —— 变异检查 M7 就是这么漏的。锚到整行之后，加前缀、改条件、挪位置都会红。
+   */
+  const guards = (hay, re, after, what) => {
+    const m = re.exec(hay);
+    expect(m, `${what}：没找到守卫 ${re}`).not.toBeNull();
+    const ib = hay.indexOf(after);
+    expect(ib, `${what}：找不到「${after}」`).toBeGreaterThanOrEqual(0);
+    expect(hay.indexOf(m[0]) < ib,
+      `${what}：守卫排在「${after}」之后 —— 失败时会先画出「${after}」`).toBe(true);
+  };
+
+  it('每一页的空态都排在失败支之后：失败时不说"没有"', () => {
+    guards(src('views/QueueView.jsx'),
+      /^\s*\{tasks\.length === 0 && !state && readError$/m, 'title="队列是空的。"', '队列页空态');
+    guards(src('views/WorksView.jsx'),
+      /^\s*: list\.length === 0 && readError$/m, '还没有作品记录', '作品页空态');
+    guards(src('views/WorkspaceView.jsx'),
+      /^\s*if \(!stats && statsError\) \{$/m, '统计还在读', '工作台空态');
+    guards(src('views/ConnectionView.jsx'),
+      /^\s*\{!status && readError \? \($/m, '<SetupGuide', '连接页安装引导');
+  });
+
+  it('每条失败支都带一颗真能用的重读按钮（不许只报坏、不给出口）', () => {
+    expect(src('views/QueueView.jsx')).toMatch(/<button className="btn" onClick=\{actions\.reloadQueue\}>重新读取<\/button>/);
+    expect(src('views/WorksView.jsx')).toMatch(/<button className="btn" onClick=\{onRefresh\}>重新读取<\/button>/);
+    const ws = src('views/WorkspaceView.jsx');
+    expect(ws).toMatch(/onRetry=\{\(\) => reload\(\)\}/);
+    // 传了回调还不够 —— 失败支里那一颗必须真的挂着它（换成一个 <span> 就是死字）
+    expect(ws).toMatch(/onClick=\{onRetry\}>重新读取<\/button>/);
+    // 列表整体 reject 时也要落账：改造前那里只有 finally，页面会永远停在「还在读」
+    const reload = ws.slice(ws.indexOf('async function reload()'), ws.indexOf('async function doReload'));
+    expect(reload).toMatch(/catch \(e\) \{/);
+    expect(reload).toMatch(/setStatsError\(failText\(e && e\.message/);
+    expect(ws).toMatch(/setStatsError\(s\.ok \? null :/);
+  });
+
+  it('诊断页汇总的四个槽位与 App 记的账本是同一批键（两份清单不许漂）', () => {
+    const diag = src('views/DiagnosticsView.jsx');
+    const slots = [...diag.matchAll(/const READ_SLOTS = \[\s*([\s\S]*?)\n\];/g)]
+      .flatMap(m => [...m[1].matchAll(/\{ key: '(\w+)'[^\n]*?retry: '(\w+)'/g)])
+      .map(m => ({ key: m[1], retry: m[2] }));
+    expect(slots.length).toBe(4);
+    const noted = new Set([...app.matchAll(/noteRead\('(\w+)'/g)].map(m => m[1]));
+    // 诊断页列的 = App 记的。少一个键 = 那一处坏了没人说；多一个键 = 那一行永远是空的
+    expect(slots.map(s => s.key).sort()).toEqual([...noted].sort());
+    // 每行那颗「重新读取」必须接在 App 的 actions 上真存在的函数
+    const actionKeys = parseTopLevelKeys(sliceObjectBody(appCode, 'const actions = {'));
+    for (const s of slots) {
+      expect(actionKeys, `READ_SLOTS 的 retry='${s.retry}' 在 App 的 actions 里不存在`)
+        .toContain(s.retry);
+    }
+  });
+});
+
+describe('第二十二轮补：探针真渲染抓到的三处（两条数字 + 两处挤压）', () => {
+  // 这一批全是**只有真渲染才看得见**的：静态比对 JSX 分支、单测 core 都抓不到。
+  // 跑法是 scripts/_probe.js + 真库副本（storage/_verify-r22），
+  // 再把 .shell 强行收到 940px —— 那是 app/main/window.js 里的产品最小宽度，
+  // 也就是用户把窗口拖到最小时看到的样子。
+  const stripComments = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const src = (rel) => stripComments(
+    fs.readFileSync(path.join(RENDERER_SRC, rel), 'utf8')
+  );
+  const style = stripComments(fs.readFileSync(STYLES, 'utf8'));
+  /** 取某条规则的花括号内容（选择器必须整段对上，`.tab` 不会误配 `.tab-search`） */
+  const rule = (sel) => {
+    const m = new RegExp(sel + '\\s*\\{([^}]*)\\}').exec(style);
+    expect(m, `styles.css 里找不到 ${sel} { … } 这条规则`).not.toBeNull();
+    return m[1];
+  };
+
+  it('队列页：唯一那次读数没回来时，「共 0 个已完成」是句假话', () => {
+    const q = src('views/QueueView.jsx');
+    // 「0」是"没有"的形状。state 还没读回来时只能报未知。
+    expect(q).toMatch(/state \? `共 \$\{counts\.done \|\| 0\} 个已完成` : '已完成数未知'/);
+    // 配额一节同理：QuotaRow 在 policy 为空时整块不渲染，标题下面空着
+    expect(q).toMatch(/\{!policy && \(/);
+    expect(q).toMatch(/配额未知/);
+  });
+
+  it('工作台头部：940 宽度下按钮排不许把标题压成一条竖字', () => {
+    // 改前量到 .ws-title 只剩 145px（.ws-actions 要 417px），
+    // 「待处理 = 本地 − 已回…」那段解释排成一列一个字，.ws-head 高 992px
+    expect(rule('.ws-head')).toMatch(/flex-wrap:\s*wrap/);
+    // min-width:0 的 flex:1 永远"放得下"，所以换行必须靠一个真的基准宽度
+    expect(rule('.ws-title')).toMatch(/flex:\s*1 1 (3[0-9]{2}|4[0-9]{2})px/);
+  });
+
+  it('筛选行：标签不许被压到中文断词', () => {
+    expect(rule('.tab')).toMatch(/flex:\s*none/);
+    expect(rule('.tab')).toMatch(/white-space:\s*nowrap/);
   });
 });

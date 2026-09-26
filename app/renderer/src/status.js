@@ -3,12 +3,38 @@
 // 放在独立模块里，是因为"怎么描述状态"和"怎么画状态"是两件事：
 // 前者以后托盘、通知、日志都要用同一套说法，不能各写各的。
 
+import { errorText } from './errors.js';
+
 /**
  * @param {object|null} status - 来自主进程的桥接状态
+ * @param {string|Error|null} [readError] - 这一次读**失败**的理由（没失败就别传）
  * @returns {{state:string, word:string, note:string, hint?:{title:string, steps:string[]}, actions:string[]}}
  */
-export function describeStatus(status) {
+export function describeStatus(status, readError) {
   if (!status) {
+    // ⚠️ 光看 status 分不清这两种情况，而它们该说的话完全相反：
+    //   · 还没读回来 → 「检测中」是对的，等一秒就有答案
+    //   · 读失败了   → 「检测中」是**假话**，等多久都不会有答案
+    // 第二种以前会永远停在「检测中」：bridge:status 没包 safe()，失败是一个
+    // reject，而调用点只有一个 .then()（§2.38 那一类）。
+    if (readError) {
+      return {
+        state: 'unreadable',
+        word: '读不到状态',
+        note: `应用自己出了故障，连接状态没读回来 —— 所以现在能不能发是未知的，`
+          + `这句不是"还没连上"。原因：${errorText(readError)}`,
+        hint: {
+          title: '按这个顺序试',
+          steps: [
+            '点右边的「重新检测」再读一次 —— 单次调用没回来是常见的，重读就好',
+            '还是读不到：退出应用再打开，数据都在本地，不会丢',
+            '到「诊断」页看运行环境，那一页会把读到的与读不到的都列出来',
+          ],
+        },
+        // 保留 refresh：失败支必须带得出口，而且那颗按钮本轮真的会处理失败
+        actions: ['refresh'],
+      };
+    }
     return { state: 'unknown', word: '检测中', note: '正在读取桥接服务状态…', actions: [] };
   }
 

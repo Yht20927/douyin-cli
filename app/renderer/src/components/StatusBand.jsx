@@ -10,8 +10,9 @@ import { describeStatus } from '../status.js';
  * 彩色只出现在这里（左侧色条 + 状态词），因为在这个工具里
  * "现在能不能发"就是唯一值得用颜色标出的信息。
  */
-export default function StatusBand({ status, actions, busy }) {
-  const d = describeStatus(status);
+export default function StatusBand({ status, readError, actions, busy }) {
+  // 第二个实参 = "这一次读失败了"。侧栏用的是同一个函数，所以两处只会说同一种话
+  const d = describeStatus(status, readError);
 
   const buttonFor = (key) => {
     if (key === 'refresh') {

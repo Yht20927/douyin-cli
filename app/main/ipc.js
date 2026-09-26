@@ -385,12 +385,22 @@ function registerIpc(opts) {
   ipcMain.handle('queue:result', (_e, id) => ({ ok: true, result: opts.queue.getResult(String(id)) }));
 
   // ── 本地数据（读 SQLite，不走队列：无风控风险，也不该占串行队列）──
-  // 每个 handle 都包一层 try：数据层出错应该是界面显示一条错误，而不是整个调用炸掉
-  const safe = (fn) => (_e, ...args) => {
+  /**
+   * 把 handler 的返回统一包成 { ok, data | error } —— 数据层出错应该是界面
+   * 上的一条错误，而不是整个调用炸掉。
+   *
+   * ⚠️ 必须 `await`。原版是同步 try/catch，那种写法碰到 async 函数时 catch
+   * 住的是一个 Promise：它不抛，于是返回 `{ ok: true, data: <Promise> }`，
+   * 而过 IPC 序列化后 Promise 什么都不剩 —— 渲染层拿到的是 `{ok:true,
+   * data:{}}`。那比 reject 更糟：全应用共用的那句判断「ok 为真才可信」直接
+   * 变成假话，且没有任何一处会报错。await 之后同步与异步两种 fn 共用一条
+   * 失败出口，`data:*` 这一层从此只可能以 {ok:false} 失败。
+   */
+  const safe = (fn) => async (_e, ...args) => {
     try {
-      return { ok: true, data: fn(...args) };
+      return { ok: true, data: await fn(...args) };
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: (e && e.message) || String(e) };
     }
   };
 

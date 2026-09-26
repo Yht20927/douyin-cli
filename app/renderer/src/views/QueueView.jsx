@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import ProgressBar from '../components/ProgressBar.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
-import { describeError } from '../errors.js';
+import { describeError, errorText } from '../errors.js';
 import { duration, mmss } from '../format.js';
 import { useNow } from '../useNow.js';
 
@@ -186,7 +186,7 @@ function QuotaRow({ policy }) {
   );
 }
 
-export default function QueueView({ state, status, actions, busy }) {
+export default function QueueView({ state, readError, status, actions, busy }) {
   const tasks = (state && state.tasks) || [];
   const policy = state && state.policy;
   const counts = (state && state.stats && state.stats.counts) || {};
@@ -201,6 +201,26 @@ export default function QueueView({ state, status, actions, busy }) {
         所有命令都排成一条队列逐条执行 —— 并发或过快间隔会触发抖音风控，
         这一步由代码兜住，不靠自觉。
       </p>
+
+      {/* 整页只有一份读数（queue.state()），它失败时下面的每一块都受影响。
+          改造前这里一个字都不说：策略读不到 → 页首那一行「能不能发」直接不渲染，
+          任务读不到 → 说"队列是空的"。于是"应用自己出了故障"长得和
+          "一切正常、只是没活干"一模一样，而这一页恰恰是判断能不能发的那一页。 */}
+      {readError && (
+        <div className="notice notice-bad">
+          <div>
+            <b>队列最近一次没读回来：</b>{errorText(readError)}
+            <div className="muted" style={{ marginTop: 6 }}>
+              {state
+                ? '下面显示的还是上一次读到的结果，节奏状态可能已经不是现在的了 —— 别按它放新任务。'
+                : '这一次启动还没读到过任何队列数据，所以「能不能发」是未知的，不是"可以发"。'}
+            </div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={actions.reloadQueue}>重新读取</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <WriteGate policy={policy} status={status} onGotoConnection={actions.gotoConnection} />
 
@@ -229,6 +249,15 @@ export default function QueueView({ state, status, actions, busy }) {
             而它目前没有任何调用方。设置页已把 stopAfterConsecutiveSkips 标为「不生效」。
             哪天把批量筛选接到 policy 上，这行可以照原样加回来。 */}
         <QuotaRow policy={policy} />
+        {/* 探针真渲染时看到的：读数失败后这一节只剩一个标题，下面空着。
+            空着的「配额」读起来像"没有配额这回事"，而真相是这一页唯一的读数没回来。 */}
+        {!policy && (
+          <p className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
+            {readError
+              ? '配额未知 —— 这一页只有一个读数，它没读回来，所以"今天还能发多少条"现在是不知道的。'
+              : '配额还在读。'}
+          </p>
+        )}
       </section>
 
       <section className="section">
@@ -265,7 +294,9 @@ export default function QueueView({ state, status, actions, busy }) {
         <div className="section-head">
           <h2 className="section-title">任务</h2>
           <span className="section-meta">
-            {active.length > 0 ? `${active.length} 个进行中` : `共 ${counts.done || 0} 个已完成`}
+            {active.length > 0
+              ? `${active.length} 个进行中`
+              : state ? `共 ${counts.done || 0} 个已完成` : '已完成数未知'}
             {failedCount > 0 && ` · ${failedCount} 个未成功`}
           </span>
           {/* 排队中的任务此前没有取消入口 —— 队列排了十几条想收手时，
@@ -278,15 +309,17 @@ export default function QueueView({ state, status, actions, busy }) {
           )}
         </div>
 
-        {tasks.length === 0
-          ? <EmptyState title="队列是空的。" hint="上面挑一个操作试试。" />
-          : (
-            <div className="list">
-              {tasks.slice().reverse().map((t) => (
-                <TaskRow key={t.id} task={t} onCancel={() => actions.cancelTask(t.id)} />
-              ))}
-            </div>
-          )}
+        {tasks.length === 0 && !state && readError
+          ? <EmptyState title="队列没读回来。" hint="上面那句原因处理完，点「重新读取」。" />
+          : tasks.length === 0
+            ? <EmptyState title="队列是空的。" hint="上面挑一个操作试试。" />
+            : (
+              <div className="list">
+                {tasks.slice().reverse().map((t) => (
+                  <TaskRow key={t.id} task={t} onCancel={() => actions.cancelTask(t.id)} />
+                ))}
+              </div>
+            )}
       </section>
     </div>
   );
