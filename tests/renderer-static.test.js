@@ -575,16 +575,25 @@ describe('生成这条链路必须有前置检查，且理由看得见', () => {
     expect(read(path.join(ROOT, 'core', 'reply-source'), 'index.js')).toMatch(/ai: require\('\.\.\/llm'\)\.aiReady\(\)/);
   });
 
-  it('界面：两颗生成按钮按同一个结论禁用', () => {
+  it('界面：两颗生成按钮按同一个结论禁用，且这个结论只有一份', () => {
     const code = ws();
-    expect(code).toMatch(/replyDesc\.ai/);
+    const ready = read(path.join(RENDERER_SRC, 'readiness.js'));
+    // 视图只许从这一个函数取判据（第二十三轮抽出去的）
+    expect(code).toMatch(/const ready = replyReadiness\(replyDesc, replyError\);/);
+    expect(code).toMatch(/const \{[^}]*genBlock[^}]*\} = ready;/);
+    // 判据本体在 readiness 里，而且是 core 的那份结果，界面不自己算
+    expect(ready).toMatch(/const aiOk = !desc \|\| !desc\.ai \|\| desc\.ai\.ok;/);
+    expect(code).not.toMatch(/!replyDesc \|\| !replyDesc\.ai/);
     expect(code).toMatch(/disabled=\{!!bulkTaskId \|\| !!genBlock\}/);
     expect(code).toMatch(/disabled=\{genRunning \|\| selected\.replied \|\| !!genBlock\}/);
   });
 
   it('界面：理由写在明面上，并且给一个去「设置」的出口', () => {
     const code = ws();
-    expect(code).toMatch(/现在生成不了：\{genBlock\}/);
+    // 「读到了但被拦住」与「这次没读回来所以不知道」是两句话，两句都必须在，
+    // 而且都紧跟 {genBlock} —— 只留一句的话，另一支就又变成没根据的断言了
+    expect(code).toMatch(/现在生成不了：'\}\{genBlock\}。/);
+    expect(code).toMatch(/ready\.state === 'unreadable' \? '现在不知道能不能生成：'/);
     expect(code).toMatch(/goto\('settings'\)/);
   });
 
@@ -592,8 +601,10 @@ describe('生成这条链路必须有前置检查，且理由看得见', () => {
     const code = ws();
     // 补丁里只有这一项 —— 用户点的是一颗具体的出口，不是一次"保存设置"
     expect(code).toMatch(/config\.set\(\{ reply: \{ mode: 'fixed' \} \}\)/);
-    // 改完必须重读结论：否则那三颗按钮还按旧模式灰着，看起来像没生效
-    expect(code).toMatch(/await window\.dy\.reply\.describe\(\)/);
+    // 改完必须重读结论：否则那三颗按钮还按旧模式灰着，看起来像没生效。
+    // 第二十三轮起这句在 reloadReply 里，且调用方必须拿它返回值决定收尾怎么说
+    expect(code).toMatch(/return window\.dy\.reply\.describe\(\)/);
+    expect(code).toMatch(/const confirmed = await reloadReply\(\);/);
     // 固定列表本身空着时不给这条路（改了只是把同一个坑换个位置踩）
     expect(code).toMatch(/genBlock !== FIXED_EMPTY && fixedUsable > 0/);
   });
@@ -1169,12 +1180,12 @@ describe('第二十二轮：主进程读数失败在界面上必须有形状', (
     expect(ws).toMatch(/setStatsError\(s\.ok \? null :/);
   });
 
-  it('诊断页汇总的四个槽位与 App 记的账本是同一批键（两份清单不许漂）', () => {
+  it('诊断页汇总的槽位与 App 记的账本是同一批键（两份清单不许漂）', () => {
     const diag = src('views/DiagnosticsView.jsx');
     const slots = [...diag.matchAll(/const READ_SLOTS = \[\s*([\s\S]*?)\n\];/g)]
       .flatMap(m => [...m[1].matchAll(/\{ key: '(\w+)'[^\n]*?retry: '(\w+)'/g)])
       .map(m => ({ key: m[1], retry: m[2] }));
-    expect(slots.length).toBe(4);
+    expect(slots.length).toBe(5);
     const noted = new Set([...app.matchAll(/noteRead\('(\w+)'/g)].map(m => m[1]));
     // 诊断页列的 = App 记的。少一个键 = 那一处坏了没人说；多一个键 = 那一行永远是空的
     expect(slots.map(s => s.key).sort()).toEqual([...noted].sort());
@@ -1226,5 +1237,176 @@ describe('第二十二轮补：探针真渲染抓到的三处（两条数字 + �
   it('筛选行：标签不许被压到中文断词', () => {
     expect(rule('.tab')).toMatch(/flex:\s*none/);
     expect(rule('.tab')).toMatch(/white-space:\s*nowrap/);
+  });
+});
+
+describe('第二十三轮：读失败不许退成乐观的默认值', () => {
+  // 判据：**一次读数失败被丢掉时，屏幕停在那个初值上 —— 而初值往往是一句假话。**
+  // 这一轮抓到五处同源的丢法：
+  //   `if (r && r.ok) setOrders(...)`   → 排序下拉变成一个空壳（"这应用只有一种排序"）
+  //   `if (r && r.ok) setReplyDesc(...)` → 三颗按钮按"能生成"画，按下去等一轮间隔才报错
+  //   `count > 0 && <角标>`             → 角标消失本身成了"没有"这句话
+  //   `if (!history) return null`       → 读失败等于这一节不存在
+  //   `queue.result(id).then(...)`      → 取结果被拒时，那一屏的回报整条不出现
+  // 共同点：没有任何一处会红。故障时那一屏说的话比平时更可信，因为它带着数字。
+  const stripComments = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const src = (rel) => stripComments(
+    fs.readFileSync(path.join(RENDERER_SRC, rel), 'utf8')
+  );
+  const style = stripComments(fs.readFileSync(STYLES, 'utf8'));
+  /**
+   * 「守卫这一支排在 X 之前」必须**整行**对得上。
+   *
+   * 上一轮栽过：只 `indexOf(条件子串)` 的话，把整支短路成
+   * `: false && list.length === 0 && readError` 也照样通过（子串还在、顺序没变），
+   * 而屏幕上失败支已经死了（§2.42）。锚到整行之后，加前缀、改条件、挪位置都会红。
+   */
+  const lineBefore = (hay, re, after, what) => {
+    const m = re.exec(hay);
+    expect(m, `${what}：没找到守卫 ${re}`).not.toBeNull();
+    const ib = hay.indexOf(after);
+    expect(ib, `${what}：找不到「${after}」`).toBeGreaterThanOrEqual(0);
+    expect(hay.indexOf(m[0]) < ib,
+      `${what}：守卫排在「${after}」之后 —— 失败时会先画出「${after}」`).toBe(true);
+  };
+
+  it('回复来源的判据只有一份，而「读不到」这一支在页面上真的被用上', () => {
+    const ws = src('views/WorkspaceView.jsx');
+    // 判据本体在 readiness.js，页面只 destructuring 用（这条与第十七轮那两条同源）
+    expect(ws).toMatch(/const ready = replyReadiness\(replyDesc, replyError\);/);
+    // 只有一份不够 —— 页面必须真的按这一支画过两处：批量条那一段 + 拦下的那块提示
+    const n = (ws.match(/ready\.state === 'unreadable'/g) || []).length;
+    expect(n, 'unreadable 这一支在页面上少于两处 = 有一处仍按猜的数画').toBeGreaterThanOrEqual(2);
+    // 「重读」这一颗必须挂得上：三处 unreadable/stale 出口都调 reloadReply
+    expect((ws.match(/onClick=\{reloadReply\}/g) || []).length).toBeGreaterThanOrEqual(3);
+    // 而固定那颗在读不到时不许被顺手灰掉（它不调 AI，灰掉等于把读不到说成不能干活）
+    expect(src('readiness.js')).toMatch(/fixedDisabled: false,/);
+  });
+
+  it('排序选项读失败时不许留一个空壳下拉', () => {
+    const ws = src('views/WorkspaceView.jsx');
+    // 三形状：失败那一支必须在 <select 之前，否则失败时先画出空下拉
+    lineBefore(ws, /^\s*\{orders\.length === 0 && ordersError \? \($/m, '<select', '排序三形状');
+    expect(ws).toMatch(/排序方式没读回来/);
+    // 还在读那一支仍要画下拉，但不许能选（初值那一条选项是 disabled 的）
+    expect(ws).toMatch(/disabled=\{orders\.length === 0\}/);
+    expect(ws).toMatch(/\{orders\.length === 0 && <option value=\{order\} disabled>排序读取中…<\/option>\}/);
+    // 而那条被丢掉的裸写法不许回来
+    expect(ws).not.toMatch(/commentOrders\(\)\.then\(r => \{ if \(r && r\.ok\)/);
+  });
+
+  it('草稿箱：失败支排在两支空态之前，两处角标都从 navBadge 拿', () => {
+    const d = src('views/DraftsView.jsx');
+    lineBefore(d, /^\s*: list\.length === 0 && readError$/m, '草稿箱是空的', '草稿箱失败支');
+    expect(d).toMatch(/这不是"没有草稿"/);
+    // 非空但这次没重新读回来时也要说出来（否则用户拿上一次那份列表当现状用）
+    expect(d).toMatch(/草稿箱这次没重新读回来/);
+    const app = src('App.jsx');
+    expect(app).toMatch(/draftsError=\{readErrors\.drafts\}/);
+    expect(app).toMatch(/readError=\{readErrors\.drafts\}/);
+  });
+
+  it('侧栏角标不许再用「大于 0 才画」—— 消失本身就是一句话', () => {
+    const sb = src('components/Sidebar.jsx');
+    expect(sb).not.toMatch(/queueCount > 0 &&/);
+    expect(sb).not.toMatch(/draftCount > 0 &&/);
+    // 两枚都从同一份判据拿（只换一枚 = 另一枚继续在故障时沉默）
+    expect(sb).toMatch(/queue: navBadge\(queueCount, queueError\)/);
+    expect(sb).toMatch(/draft: navBadge\(draftCount, draftsError\)/);
+    expect(sb).toMatch(/warn \? ' nav-badge-warn'/);
+  });
+
+  /**
+   * 每一个 queue.result 调用点都必须接得住 reject。
+   *
+   * 全目录扫而不是列名单：`queue:result` 是没包 safe() 的通道，它坏掉是一个 reject，
+   * 而"谁调它"会随页面增加变多 —— 名单式护栏对新加的那一处完全无感。
+   * 判据是结构性的：这一处调用往后 45 行内必须出现 `.catch(` 或 `catch (e)`。
+   */
+  it('取任务结果被拒时，那一屏的回报不许整条消失（全目录扫）', () => {
+    const bad = [];
+    const sites = [];
+    for (const f of collectSources(RENDERER_SRC)) {
+      const rel = path.relative(RENDERER_SRC, f);
+      const lines = src(rel).split('\n');
+      lines.forEach((ln, i) => {
+        if (!/queue\.result\(/.test(ln)) return;
+        sites.push(`${rel}:${i + 1}`);
+        const win = lines.slice(i, Math.min(lines.length, i + 45)).join('\n');
+        if (!/\.catch\(/.test(win) && !/catch \(/.test(win)) bad.push(`${rel}:${i + 1}`);
+      });
+    }
+    expect(bad, `这些 queue.result 调用点没有接 reject 的那一支：${bad.join('、')}`).toEqual([]);
+    // 至少要有 6 处：少一处说明某个页面的取结果被删掉了，这条护栏也就空转了
+    expect(sites.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('搜索历史：读失败不许等于"这一节不存在"，也不许等于"这台机器没搜过"', () => {
+    const d = src('views/DiscoverView.jsx');
+    // 落进同一个形状：{ok:false} 与 reject 都要写出 error，且这一节继续渲染
+    expect(d).toMatch(/error: \(r && r\.error\) \|\| '未知原因'/);
+    expect(d).toMatch(/error: failText\(e && e\.message, '搜索历史没读回来'\)/);
+    expect(d).toMatch(/if \(history\.error\) \{/);
+    expect(d).toMatch(/搜索历史这次没读回来/);
+    // 裸写法不许回来：那一支会让 history 永远停在 null，而 `if (!history) return null`
+    expect(d).not.toMatch(/searchHistory\(\{ limit: 8 \}\)\.then\(\(r\) => \{\s*if \(!alive\) return;\s*if \(r && r\.ok\)/);
+    // 取回结果那一步：!r.ok / 结果太大 两种都不能画成"抖音没有返回"
+    expect(d).toMatch(/if \(!r \|\| !r\.ok \|\| !r\.result\) \{/);
+    expect(d).toMatch(/列表空着不代表抖音没有返回/);
+  });
+
+  it('设置页：整页只有一支「正在读取」时，失败必须自成一支', () => {
+    const s = src('views/SettingsView.jsx');
+    lineBefore(s, /^\s*if \(!described\) \{$/m, 'className="page-sub"', '整页失败支');
+    lineBefore(s, /^\s*\{loadError \? \($/m, '<LoadingState', '读失败排在还在读之前');
+    expect(s).toMatch(/配置没读回来/);
+    expect(s).toMatch(/这不是"配置是空的"/);
+    // 那颗重读键必须真挂得上（写成 <span> 就是死字）
+    expect(s).toMatch(/onClick=\{\(\) => load\(\)\}>重新读取<\/button>/);
+    expect(s).toMatch(/catch \(e\) \{/);
+  });
+
+  it('界面文案里不许出现 Markdown 强调（渲染层是纯文本，星号会原样露出来）', () => {
+    // 本轮探针渲染抓到三处，其中两处是这一轮自己写的：
+    //   「现在**不知道**「批量生成」会按什么走」
+    //   「这条**没有重复发送**，但请到抖音的聊天里确认一下」
+    // 第三处是旧债：诊断页「三张表都是**只增不减**的」。
+    // 屏幕不是 Markdown —— 星号不会被吃掉，只会露出来。
+    // 第二十一轮为「检查更新」那一块写过一条局部断言，但它管不到别的页。
+    const bad = [];
+    for (const f of collectSources(RENDERER_SRC)) {
+      const rel = path.relative(RENDERER_SRC, f);
+      const hits = (stripComments(fs.readFileSync(f, 'utf8')).match(/\*\*[^*\n]{1,40}\*\*/g) || []);
+      if (hits.length) bad.push(`${rel}：${hits[0]}`);
+    }
+    expect(bad, `这些星号会原样出现在屏幕上：${bad.join(' ｜ ')}`).toEqual([]);
+  });
+
+  it('styles.css 里用到的每一个 var(--x) 都必须真的声明过', () => {
+    // 本轮真的先写了 `background: var(--warn-soft)` —— 那张表里没有这两个令牌，
+    // 于是这一格画出来是**透明的**：类名有规则、拼写也对，只有颜色不见了，
+    // 而"className 必须有对应 CSS 规则"那条护栏管不到这一类。
+    const root = /:root\s*\{([\s\S]*?)\n\}/.exec(style);
+    expect(root, 'styles.css 里找不到 :root { … }').not.toBeNull();
+    const declared = new Set([...root[1].matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map(m => m[1]));
+    const used = new Set([...style.matchAll(/var\((--[a-zA-Z0-9-]+)\)/g)].map(m => m[1]));
+    const missing = [...used].filter(u => !declared.has(u)).sort();
+    expect(missing, `这些自定义属性用在样式里但没声明过：${missing.join('、')}`).toEqual([]);
+    // 本轮那一枚警告态角标必须真的有色（只加类名不加规则 = 透明的）
+    const badge = /(\.nav-badge\.nav-badge-warn|\.nav-badge-warn)\s*\{([^}]*)\}/.exec(style);
+    expect(badge, 'styles.css 里找不到 .nav-badge-warn 这条规则').not.toBeNull();
+    expect(badge[2]).toMatch(/background:/);
+    expect(badge[2]).toMatch(/color:/);
+  });
+
+  it('排序那一格在 940 宽度下不许被挤断词', () => {
+    // 与上一轮那两条同源：那一格里有一段话 + 一颗按钮，
+    // 按钮必须 flex:none + white-space:nowrap，否则 940px 时"重新读取"断成两行
+    const m = /\.ws-ordersfail \.btn\s*\{([^}]*)\}/.exec(style);
+    expect(m, 'styles.css 里找不到 .ws-ordersfail .btn { … } 这条规则').not.toBeNull();
+    expect(m[1]).toMatch(/flex:\s*none/);
+    expect(m[1]).toMatch(/white-space:\s*nowrap/);
   });
 });

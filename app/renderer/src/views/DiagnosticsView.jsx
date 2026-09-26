@@ -188,6 +188,7 @@ const READ_SLOTS = [
   { key: 'queue', label: '队列', where: '「队列」页整页与侧栏角标', retry: 'reloadQueue' },
   { key: 'account', label: '当前账号', where: '侧栏「当前账号」与所有按号过滤的数据', retry: 'reloadAccount' },
   { key: 'videos', label: '作品列表', where: '「我的作品」页与工作台入口', retry: 'reloadWorks' },
+  { key: 'drafts', label: '草稿箱', where: '「草稿箱」页那一屏与侧栏那枚角标', retry: 'refreshDrafts' },
 ];
 
 /** 诊断页那一节：把失败的读数逐行列出，每行一个真能重读的按钮 */
@@ -499,7 +500,7 @@ export default function DiagnosticsView({ info, infoError, onRetryInfo, readErro
       <section className="section">
         <h2 className="section-title" style={{ marginBottom: 12 }}>数据清理</h2>
         <p className="muted chart-note" style={{ marginTop: 0 }}>
-          评论、操作记录、回复语料三张表都是**只增不减**的。这里按时间清掉旧的，
+          评论、操作记录、回复语料三张表都只增不减。这里按时间清掉旧的，
           让库不要一直长。（作品、草稿、用户资料不会被删。）
         </p>
         <div className="row" style={{ marginTop: 12 }}>

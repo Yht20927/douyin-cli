@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import ProgressBar from '../components/ProgressBar.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import Spinner from '../components/Spinner.jsx';
-import { describeError, errorText } from '../errors.js';
+import { describeError, errorText, failText } from '../errors.js';
 import { duration, mmss } from '../format.js';
 import { useNow } from '../useNow.js';
 
@@ -338,6 +338,7 @@ export default function QueueView({ state, readError, status, actions, busy }) {
 function ResultPeek({ task }) {
   const [full, setFull] = useState(undefined);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
 
   if (task.status !== 'done' || !task.resultSummary) return null;
 
@@ -347,13 +348,19 @@ function ResultPeek({ task }) {
       : String(s.value || '').slice(0, 60);
 
   async function load() {
-    if (full !== undefined) { setFull(undefined); return; }
+    if (full !== undefined) { setFull(undefined); setErr(null); return; }
     // 拉评论这类结果可能几十上百 KB，取出与序列化都要时间。
     // 改造前这里点下去毫无反应，用户会以为按钮坏了而连点。
     setBusy(true);
+    setErr(null);
     try {
       const r = await window.dy.queue.result(task.id);
       setFull(r && r.result !== undefined ? r.result : null);
+    } catch (e) {
+      // queue:result 是**没包 safe()** 的通道之一，它坏掉是一个 reject。
+      // 只有 finally 的话这一屏回到"什么都没发生"：任务仍写着「已完成」，
+      // 而用户刚点的那一颗没有任何回应 —— 于是他会再点一次。
+      setErr(failText(e && e.message, '取结果那次调用没成功'));
     } finally {
       setBusy(false);
     }
@@ -365,6 +372,11 @@ function ResultPeek({ task }) {
         {busy && <Spinner size={12} />}
         {full === undefined ? '查看结果' : '收起'}
       </button>
+      {err && (
+        <span className="muted">　结果没取回来（{err}）—— 任务本身仍是「已完成」，
+          这一句只说明这一次没把明细读回来。
+          <b className="text-bad">可以再点一次「查看结果」。</b>摘要：{hint}</span>
+      )}
       {full !== undefined && (
         <pre className="task-result">
           {full === null

@@ -95,7 +95,7 @@ function skipNotes(skipped) {
  * @param {function} props.onPresetUsed - 应用完预选后回调，让 App 层把它清掉
  */
 export default function DraftsView({ drafts, total, matched, unattributed = 0, bulkPublish, loading, actions, reload,
-  presetPicked = null, onPresetUsed }) {
+  presetPicked = null, onPresetUsed, readError }) {
   // 注：「发布成功后把草稿标记为已发布」的跟踪**不在这个组件里** ——
   // 它只在草稿箱页面挂载，用户一点发布就切到队列页的话组件卸载，
   // 标记永远不会执行（草稿留在箱里 → 用户再点一次 → 被重复回复策略拦下）。
@@ -657,35 +657,60 @@ export default function DraftsView({ drafts, total, matched, unattributed = 0, b
 
       {loading && list.length === 0
         ? <LoadingState rows={3} title />
-        : list.length === 0
+        : list.length === 0 && readError
           ? (
-            query
-              ? (
-                // 搜不到不等于箱子空了 —— 清空搜索词的按钮必须在这里，
-                // 否则用户只能把输入框删空，而"搜索到 0 条"很容易被读成"草稿没了"
-                <EmptyState
-                  title={`没有草稿含「${query}」。`}
-                  hint={<>草稿箱里仍有 {boxTotal} 条待发布。搜索会同时匹配草稿正文、视频标题，以及被回复的那条评论的原文。</>}
-                  action={<button className="btn" onClick={() => setQuery('')}>清空搜索</button>}
-                />
-              )
-              : (
-                // 不给行动按钮：草稿的来源在别的页面，这里放一个按钮要么是空动作、
-                // 要么把用户送到一个他本来就不想去的地方。写清去哪儿做就够了。
-                <EmptyState
-                  title="草稿箱是空的。"
-                  hint="在「我的作品」里点进任意作品就是评论工作台，对某条评论点「存草稿」即可；工作台批量条上的「批量生成」和「用固定回复存草稿」，结果也落到这里。"
-                />
-              )
+            // 「读失败」必须与「没有」不同形。这一屏原来的画法是「草稿箱是空的。」
+            // 再加侧栏那枚消失的角标 —— 两处互相印证一个错误结论，而唯一那句报错
+            // 是一条六秒后就消失的 toast（§2.44 记的就是这一类）
+            <EmptyState
+              title="草稿箱这次没读回来。"
+              hint={<>这不是"没有草稿"。原因：{readError}。列表和侧栏那个数都停在上一次读到的结果上，
+                重新读一次就有答案 —— 读失败不会动到任何一条草稿。</>}
+              action={<button className="btn" onClick={() => reload()}>重新读取</button>}
+            />
           )
-          : (
-            <>
-              {/* 只有一组时不加分组壳（showGroups），否则平铺能一眼看完的东西要多点一次 */}
-              {showGroups
-                ? groups.map(renderGroup)
-                : <div className="list">{list.map(d => renderDraft(d, false))}</div>}
-            </>
-          )}
+          : list.length === 0
+            ? (
+              query
+                ? (
+                  // 搜不到不等于箱子空了 —— 清空搜索词的按钮必须在这里，
+                  // 否则用户只能把输入框删空，而"搜索到 0 条"很容易被读成"草稿没了"
+                  <EmptyState
+                    title={`没有草稿含「${query}」。`}
+                    hint={<>草稿箱里仍有 {boxTotal} 条待发布。搜索会同时匹配草稿正文、视频标题，以及被回复的那条评论的原文。</>}
+                    action={<button className="btn" onClick={() => setQuery('')}>清空搜索</button>}
+                  />
+                )
+                : (
+                  // 不给行动按钮：草稿的来源在别的页面，这里放一个按钮要么是空动作、
+                  // 要么把用户送到一个他本来就不想去的地方。写清去哪儿做就够了。
+                  <EmptyState
+                    title="草稿箱是空的。"
+                    hint="在「我的作品」里点进任意作品就是评论工作台，对某条评论点「存草稿」即可；工作台批量条上的「批量生成」和「用固定回复存草稿」，结果也落到这里。"
+                  />
+                )
+            )
+            : (
+              <>
+                {readError && (
+                  // 列表非空 + 这次重读失败 = 屏幕上是一批**旧的**草稿，而且看起来完全正常。
+                  // 只靠一条会消失的 toast 等于没说
+                  <div className="notice notice-warn" style={{ marginBottom: 12 }}>
+                    <div>
+                      草稿箱这次没重新读回来（{readError}）—— 下面列的是上一次读到的结果，
+                      刚生成的草稿可能不在里面。
+                      <button className="btn btn-quiet" style={{ marginLeft: 8 }} onClick={() => reload()}>
+                        重新读取
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {/* 只有一组时不加分组壳（showGroups），否则平铺能一眼看完的东西要多点一次 */}
+                {showGroups
+                  ? groups.map(renderGroup)
+                  : <div className="list">{list.map(d => renderDraft(d, false))}</div>}
+              </>
+            )}
 
       {editOpen && (
         <Modal

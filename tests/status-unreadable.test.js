@@ -102,3 +102,52 @@ describe('describeStatus：读失败自成一支', () => {
     expect(d.note).toMatch(/还没连上/);
   });
 });
+
+/**
+ * navBadge —— 第二十三轮收进同一份文件的第二个判据。
+ *
+ * 改造前侧栏写的是 `count > 0 && <span className="nav-badge">{count}</span>`。
+ * 这个条件本身没错，错在它让**角标消失**成了一句话：`queue:state` / `data:drafts`
+ * 读失败时那两个数恰好停在初值 0，于是屏幕上「这次没读回来」与「队列是空的」
+ * 「箱里没草稿」长得一模一样，而草稿箱那一屏同一时刻还在说「草稿箱是空的。」——
+ * 两处互相印证同一个错误结论。
+ */
+describe('navBadge：读失败时角标不许消失', () => {
+  it('没有失败时维持原行为：有数才画，0 就是真的没有', async () => {
+    const { navBadge } = await load();
+    expect(navBadge(3, null)).toEqual({ text: '3', title: '' });
+    expect(navBadge(0, null)).toBe(null);
+    expect(navBadge(null, null)).toBe(null);
+  });
+
+  it('读失败而数停在 0 时，角标必须继续站着并带一个问号', async () => {
+    const { navBadge } = await load();
+    const b = navBadge(0, new Error("Error invoking remote method 'queue:state': Error: x"));
+    expect(b).toBeTruthy();
+    expect(b.text).toBe('?');
+    expect(b.warn).toBe(true);
+    expect(b.title).toMatch(/不等于没有/);
+  });
+
+  it('读失败但手里还有一个旧数时，那个数要带着问号一起留着', async () => {
+    const { navBadge } = await load();
+    const b = navBadge(7, '主进程没有返回草稿箱');
+    expect(b.text).toBe('7?');
+    expect(b.warn).toBe(true);
+    expect(b.title).toMatch(/上一次读到的/);
+  });
+
+  it('非数字的 count 按 0 处理，不许把 NaN 画上屏幕', async () => {
+    const { navBadge } = await load();
+    expect(navBadge('abc', null)).toBe(null);
+    expect(navBadge(undefined, null)).toBe(null);
+    expect(navBadge('abc', 'x').text).toBe('?');
+  });
+
+  it('角标那一格是纯文本：不许出现 Markdown 强调', async () => {
+    const { navBadge } = await load();
+    for (const b of [navBadge(1, null), navBadge(0, 'x'), navBadge(9, 'x')]) {
+      expect(`${b.text}\n${b.title}`).not.toMatch(/\*\*/);
+    }
+  });
+});

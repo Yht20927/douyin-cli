@@ -290,7 +290,9 @@ code {
 /* 多账号同时在线时的选择器：占满侧栏宽度，别让它把侧栏挤变形 */
 .sidebar-account-select { width: 100%; font-size: 12.5px; padding: 4px 6px; min-height: 26px; }
 
-/* 侧栏导航上的任务数角标：切到别的页面也知道队列没空 */
+/* 侧栏导航上的任务数角标：切到别的页面也知道队列没空。
+   "有数才露面"这个老写法会让**角标消失**变成一句话（等于"没有"），
+   所以读数失败时由 status.js 的 navBadge 换成一枚带问号的，见下一一条规则 */
 .nav-badge {
   margin-left: auto;
   font-size: var(--fs-xs);
@@ -299,6 +301,10 @@ code {
   background: var(--bg-4);
   color: var(--text-2);
   font-family: var(--mono);
+}
+.nav-badge-warn {
+  background: var(--wait-soft);
+  color: var(--wait);
 }
 
 .sidebar-foot { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); }
@@ -997,6 +1003,13 @@ code {
 
 /* 工作台筛选行的排序下拉与列表规模提示 */
 .tab-sort { margin-left: 0; font-size: 12.5px; padding: 5px 8px; }
+/* 排序读数没回来时对那颗下拉的替换物：句子要能自然换行（这一行本来就 flex-wrap），
+   但那颗键不许被挤扁 —— 与 .tab 同一条纪律（§2.43） */
+.ws-ordersfail {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--text-2);
+}
+.ws-ordersfail .btn { flex: none; white-space: nowrap; }
 .ws-listmeta {
   font-size: var(--fs-xs); padding: 0 2px 9px;
   display: flex; align-items: baseline; gap: 10px;

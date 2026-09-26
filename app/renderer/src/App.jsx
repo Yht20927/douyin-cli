@@ -271,6 +271,7 @@ export default function App() {
         setDraftTotal(r.data.total || 0);
         setDraftMatched(r.data.matched || 0);
         setDraftUnattributed(r.data.unattributed || 0);
+        noteRead('drafts', null);
         // 加载上限一直是不可见的：第 201 条草稿既不会出现也不会有任何提示，
         // 于是"草稿箱只有 200 条"这个界面事实与库里事实悄悄分叉
         if (r.data.truncated) {
@@ -279,11 +280,19 @@ export default function App() {
       } else {
         // 失败不能伪装成"草稿箱是空的"：那会让用户以为草稿被删了，
         // 而侧栏角标同时变成 0，两边互相印证一个错误结论。
-        // 这里保留上一次的列表，只报错。
-        flash(`读取草稿箱失败：${failText(r.error, '未知错误')}`, 'bad');
+        // 这里保留上一次的列表，只报错 —— 并且**落进账本**：一句 toast 会在
+        // 六秒后消失，而那一屏的「草稿箱是空的。」会一直站着（第二十二轮那份账本）。
+        noteRead('drafts', (r && r.error) || '主进程没有返回草稿箱');
+        flash(`读取草稿箱失败：${failText(r && r.error, '未知错误')}`, 'bad');
       }
+    } catch (e) {
+      // data:drafts 包了 safe()，正常失败是 {ok:false}；这条 catch 兜的是
+      // "那次调用根本没发出去"（通道没注册 / 探针桩缺函数）—— 没有它这里
+      // 是一个未处理的 rejection，屏幕上停在初值而且连一句报错都没有
+      noteRead('drafts', e);
+      flash(`读取草稿箱失败：${failText(e && e.message, '未知错误')}`, 'bad');
     } finally { setLoadingDrafts(false); }
-  }, []);
+  }, [noteRead]);
 
   /**
    * 读运行环境（版本、数据目录、配置文件在哪）。
@@ -761,7 +770,9 @@ export default function App() {
         accountError={readErrors.account}
         onSwitchAccount={actions.setAccount}
         queueCount={activeCount}
+        queueError={readErrors.queue}
         draftCount={draftTotal}
+        draftsError={readErrors.drafts}
         version={info && info.version}
         onQuit={actions.quit}
       />
@@ -836,6 +847,7 @@ export default function App() {
                     onPresetUsed={() => setDraftPreset(null)}
                     actions={actions}
                     reload={reloadDrafts}
+                    readError={readErrors.drafts}
                   />
                 )}
                 {view === 'analytics' && <AnalyticsView actions={actions} />}

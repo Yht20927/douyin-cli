@@ -128,7 +128,12 @@ export default function UserView({ uid, actions, onBack }) {
             setNotice(cid
               ? `抖音已接收这条私信（会话 ····${cid.slice(-6)}）—— 对方看没看到，只能在抖音的聊天里确认`
               : '抖音已接收这条私信 —— 会话号没取回来，请到抖音的聊天里确认');
-          });
+          }).catch((e) => setNotice(
+            // 「已接收」这句仍然站得住：它来自任务状态本身（core 判的是抖音
+            // 响应里 error_desc 为空），不来自这份没取回来的结果
+            `抖音已接收这条私信 —— 会话号没取回来（${failText(e && e.message, '未知原因')}），`
+            + '这条没有重复发送，但请到抖音的聊天里确认一下'
+          ));
         } else {
           setNotice({ text: `私信未发出：${failText(t.error, '未知原因')}`, warn: true });
         }

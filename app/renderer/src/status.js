@@ -141,3 +141,23 @@ export function unconnectedAccounts(account, status) {
   return ((account && account.accounts) || [])
     .filter(a => !a.online && !a.current && !listed.has(String(a.uid)));
 }
+
+/**
+ * 侧栏那两枚角标（队列 / 草稿箱）该显示成什么。
+ *
+ * 以前的写法是 `count > 0 && <span>{count}</span>` —— 只在有数的时候露面。
+ * 这个条件本身没错，错在它让**角标消失**成了一句话：「队列没读回来」与
+ * 「队列是空的」在屏幕上完全一样，而那两份读数失败时 `count` 恰好停在 0。
+ * 所以失败时角标必须继续站着，并带着一个问号 —— 「不知道」不等于「没有」。
+ *
+ * @param {number|string|null} count - 上一次读到的数（读不到时是初值 0）
+ * @param {string|Error|null} error - 这一格在 App 那份账本里的失败理由
+ * @returns {{text:string, warn?:boolean, title:string}|null} null = 不画角标
+ */
+export function navBadge(count, error) {
+  const n = Number(count) || 0;
+  if (!error) return n > 0 ? { text: String(n), title: '' } : null;
+  return n > 0
+    ? { text: `${n}?`, warn: true, title: `这次没读回来 —— ${n} 是上一次读到的数，可能已经变了` }
+    : { text: '?', warn: true, title: '这个数这次没读回来 —— 不知道有没有，不等于没有' };
+}

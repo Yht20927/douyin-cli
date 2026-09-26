@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Modal from '../components/Modal.jsx';
 import PublishDialog from '../components/PublishDialog.jsx';
 import EmptyState from '../components/EmptyState.jsx';
@@ -8,6 +8,7 @@ import TaskActivity from '../components/TaskActivity.jsx';
 import Notice from '../components/Notice.jsx';
 import { ago, fileNameOf } from '../format.js';
 import { failText } from '../errors.js';
+import { replyReadiness, FIXED_EMPTY } from '../readiness.js';
 import useAutoRefresh from '../useAutoRefresh.js';
 
 /**
@@ -123,6 +124,17 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
   const [liked, setLiked] = useState(null);
   /** 当前的回复来源配置（模式 / 固定内容条数 / 图片开关），用于在按钮旁讲清楚会怎么生成 */
   const [replyDesc, setReplyDesc] = useState(null);
+  /**
+   * 这一次读回复来源 / 读排序选项**失败**的理由。
+   *
+   * 必须有这一个状态：两份读数都由 safe() 包着，失败长的是 `{ok:false}` 而不是异常，
+   * 原来那句 `if (r && r.ok) setX(...)` 等于把失败扔掉 —— 屏幕上就只剩初值。
+   * 初值不是中性的：`orders=[]` 让排序下拉变成空的，`replyDesc=null` 让三颗按钮
+   * 按"能生成"画。所以失败必须说出来，见 readiness.js。
+   */
+  const [replyError, setReplyError] = useState(null);
+  const [ordersError, setOrdersError] = useState(null);
+  const [replyBusy, setReplyBusy] = useState(false);
   /**
    * 固定回复的复用间隔（「同一条至少隔几条才再用」）。
    *
@@ -254,10 +266,24 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
   // 自动重读会在用户正打字/正选评论时替换列表；要开由用户在设置页开。
   useAutoRefresh('workspace', () => reload());
 
-  // 排序选项由 core 提供，界面不自己写一份
-  useEffect(() => {
-    window.dy.data.commentOrders().then(r => { if (r && r.ok) setOrders(r.data); });
-  }, []);
+  /**
+   * 排序选项由 core 提供，界面不自己写一份 —— 但**读不到必须说出来**。
+   * 原来这句 `if (r && r.ok) setOrders(r.data)` 失败时被整条丢掉，
+   * `orders` 停在 `[]`，屏幕上那颗排序下拉变成一个空壳：
+   * 「这个应用只有一种排序」与「排序没读回来」同形（§2.44 同一类）。
+   */
+  const reloadOrders = useCallback(() => window.dy.data.commentOrders()
+    .then((r) => {
+      if (r && r.ok) {
+        setOrders(r.data || []);
+        setOrdersError(null);
+        return;
+      }
+      setOrdersError(failText(r && r.error, '主进程没有返回排序选项'));
+    })
+    .catch((e) => setOrdersError(failText(e && e.message, '排序选项没读回来'))), []);
+
+  useEffect(() => { reloadOrders(); /* eslint-disable-next-line */ }, []);
 
   useEffect(() => { selectedCidRef.current = selectedCid; }, [selectedCid]);
   useEffect(() => { draftTextRef.current = draftText; }, [draftText]);
@@ -272,15 +298,40 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
     if (onMemo) onMemo({ tab, search, searchInput, order, picked: [...picked] });
   }, [tab, search, searchInput, order, picked]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 回复来源配置随设置页改动而变，进工作台时取一次就够（切视频会重新挂载）
+  /**
+   * 回复来源配置随设置页改动而变，进工作台时取一次就够（切视频会重新挂载）。
+   *
+   * 失败要留在 `replyError` 里，而不是把 `replyDesc` 清空：
+   * 第一次就失败 → readiness 走 `unreadable`（按钮拦下来）；
+   * 读回来过、这次重读失败 → 走 `stale`（上面的说法仍按上一次的结果，但要标出来）。
+   */
+  const reloadReply = useCallback(() => {
+    setReplyBusy(true);
+    return window.dy.reply.describe()
+      .then((r) => {
+        if (r && r.ok) {
+          setReplyDesc(r.data);
+          setReplyError(null);
+          return true;
+        }
+        setReplyError(failText(r && r.error, '主进程没有返回回复来源'));
+        return false;
+      })
+      .catch((e) => {
+        setReplyError(failText(e && e.message, '回复来源没读回来'));
+        return false;
+      })
+      .finally(() => setReplyBusy(false));
+  }, []);
+
   useEffect(() => {
-    window.dy.reply.describe().then(r => { if (r && r.ok) setReplyDesc(r.data); });
+    reloadReply();
     window.dy.config.describe().then((r) => {
       const gap = r && r.ok && r.data.config && r.data.config.reply
         && r.data.config.reply.fixed && r.data.config.reply.fixed.minGapBetweenReuse;
       if (Number.isInteger(gap) && gap > 0) setFixedMinGap(gap);
     });
-  }, [awemeId]);
+  }, [awemeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 队列变化 → 完成自己关心的事情
   useEffect(() => {
@@ -300,7 +351,11 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
             // 而 core 早就把 localRemoved/localUnmarked/localError 返回了 ——
             // 之前界面只看任务状态，一律报"已删除"，用户于是对着一条
             // 抖音上根本不存在、本地仍显示「已回复」的评论纳闷。
-            window.dy.queue.result(t.id).then((r) => setNotice(describeDelete(r && r.result)));
+            window.dy.queue.result(t.id)
+              .then((r) => setNotice(describeDelete(r && r.result)))
+              // queue:result 是**没包 safe()** 的通道之一，它坏掉是一个 reject。
+              // 只有 .then() 的话这次删除在界面上一个字都不变 —— 连"明细没取回来"都没有
+              .catch((e) => setNotice(describeDelete(null, failText(e && e.message, '未知原因'))));
           }
           reload();
         } else if (p.kind === 'publish') {
@@ -365,6 +420,14 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
             const res = r && r.result;
             setBulk(summarizeBulk(res));
             if (actions.refreshDrafts) actions.refreshDrafts();
+          }).catch((e) => {
+            // 取结果被拒时批量那一屏必须有个收尾：不写这一支的话 setBulk 永远不执行，
+            // 而草稿其实**已经存进去了** —— 屏幕停在"进行中"，用户以为要再点一次
+            setBulk({
+              error: `批量生成跑完了，但结果明细没取回来（${failText(e && e.message, '未知原因')}）`
+                + ' —— 生成的草稿应该已经在草稿箱里，去那里确认，不要重复点这一颗。',
+            });
+            if (actions.refreshDrafts) actions.refreshDrafts();
           });
         } else {
           setBulk({ error: failText(t.error, '批量生成失败') });
@@ -400,7 +463,10 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
             } else {
               setNotice('生成成功但没解析出文本，请查看队列里的结果');
             }
-          });
+          }).catch((e) => setNotice(
+            `生成跑完了，但结果没取回来（${failText(e && e.message, '未知原因')}）`
+            + ' —— 编辑框里是空的，这一次已经调用过一趟 AI。要再用一次得重新生成。'
+          ));
         } else {
           setNotice(failText(t.error, '生成失败'));
           setGenInfo(null);
@@ -687,45 +753,20 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
     ? ((queueState && queueState.tasks) || []).find((t) => t.id === fetchTaskId)
     : null;
 
-  // 让用户点按钮之前就知道这次会不会真的调 AI（固定内容是秒回的）
-  const modeHint = replyDesc && {
-    ai: 'AI 生成较慢',
-    fixed: '当前是固定内容模式，秒回',
-    hybrid: `当前是混合模式（AI 占 ${Math.round(replyDesc.hybridRatio * 100)}%）`,
-  }[replyDesc.mode];
-
   // 纯图回复没有文字，发布按钮不能按"有没有文字"来禁用
   const canPublish = !!(draftText.trim() || (genInfo && genInfo.imagePath));
 
   /**
-   * 固定回复列表里有几条真的能用。core 判的（被禁用、正文空白、weighted 下权重 0
-   * 都不算），界面不重复这套规则。replyDesc 还没回来时先当作可用 ——
-   * 一个"还在读"的中间态不该把按钮灰掉。
-   */
-  const fixedUsable = (replyDesc && replyDesc.fixed && replyDesc.fixed.usable) || 0;
-  const fixedReady = !replyDesc || fixedUsable > 0;
-  const FIXED_EMPTY = '固定回复列表里还没有可用内容 —— 先到设置页的「回复策略」添加几条，'
-    + '或把被禁用的启用起来';
-  const fixedHint = fixedReady
-    ? '只这一批用固定回复列表：不改全局「回复模式」，也不调 AI，秒完成。'
-      + '结果同样进草稿箱，发布仍由你在草稿箱里确认。'
-    : FIXED_EMPTY;
-
-  /** AI 那条腿通不通（判据在 core/reply-source，界面只读结果）。还在读时先别灰按钮。 */
-  const aiOk = !replyDesc || !replyDesc.ai || replyDesc.ai.ok;
-  /**
-   * 按全局「回复模式」走的那两颗按钮（「生成回复」「批量生成」）现在点下去有没有结果。
+   * 「现在点这颗按钮有没有结果」的唯一判据（在 readiness.js 里）。
    *
-   * 不拦的话 core 也会拒（llm.complete() 里刚补了同样的检查），但那是入队之后 ——
-   * 占掉一个任务位、等过一轮间隔，才换回一句报错。混合模式不拦：固定列表还能兜底，
-   * 降级这件事由结果里的来源标签说。
+   * 以前这里是六个各自写一遍的常量，共同的一句假设是"replyDesc 还没回来时先当作可用"
+   * —— 那句话只在**还在读**时成立。读失败时 `replyDesc` 同样停在 null，
+   * 于是屏幕上「读不到」与「一切正常」是同一个形状，用户按下「批量生成」，
+   * 等一轮间隔才换回 core 的一句报错，而第十七轮加的那颗出口按钮此时根本画不出来
+   * （它按 `genBlock !== FIXED_EMPTY && fixedUsable > 0` 判断，而 fixedUsable 也是猜的）。
    */
-  const genBlock = !replyDesc ? null
-    : replyDesc.mode === 'fixed' ? (fixedReady ? null : FIXED_EMPTY)
-      : aiOk ? null
-        : (replyDesc.mode === 'hybrid' && fixedUsable > 0) ? null
-          : `${(replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还生成不了'}`
-            + '；把「回复模式」改成「固定内容」不需要它';
+  const ready = replyReadiness(replyDesc, replyError);
+  const { modeHint, fixedUsable, fixedReady, fixedDisabled, fixedHint, aiOk, aiReason, genBlock } = ready;
 
   /**
    * 只把「回复模式」改成「固定内容」。
@@ -742,9 +783,18 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
         setNotice(`没能改成「固定内容」：${failText(r && r.error, '未知原因')}`);
         return;
       }
-      const d = await window.dy.reply.describe();
-      if (d && d.ok) setReplyDesc(d.data);
-      setNotice('已改用「固定内容」生成 —— 不再需要 AI。想换回来在设置页的「回复策略」里。');
+      const confirmed = await reloadReply();
+      setNotice(confirmed
+        ? '已改用「固定内容」生成 —— 不再需要 AI。想换回来在设置页的「回复策略」里。'
+        : '「回复模式」已经写进配置了，但界面没能重新读回来确认 —— '
+          + '所以下面那几颗按钮还按上一次读到的结果画。点旁边的「重新读取」补一次就准了。');
+    } catch (e) {
+      // 上面那句 `!r || !r.ok` 才是这个通道的主要失败形状（handler 自己带 try/catch）。
+      // 这一支接的是 IPC 外壳层面的 reject：结果序列化不了、通道没注册上。
+      // 不接住的话这一颗按钮按下去毫无回应 —— 用户只会再点一次，
+      // 而这一次和上一次一样没写进配置
+      setNotice(`没能改成「固定内容」：${failText(e && e.message, '未知原因')}`
+        + ' —— 「回复模式」没有被写进去，下面那几颗按钮仍按上一次读到的结果画。');
     } finally {
       setSwitchingMode(false);
     }
@@ -814,7 +864,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
           <button className="btn" onClick={analyzeComments} disabled={!actions.canQueue || !aiOk}
             title={!actions.canQueue
               ? '浏览器未连接 —— 先到「连接」页接上抖音'
-              : !aiOk ? ((replyDesc && replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还调用不了')
+              : !aiOk ? aiReason
                 : '用 AI 逐条分析本视频的评论（情绪 / 优先级），跑完列表会按优先级重排。要调用 AI，会花时间与 token'}>
             用 AI 分析
           </button>
@@ -892,16 +942,27 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
           value={searchInput}
           onChange={e => setSearchInput(e.target.value)}
         />
-        <select
-          className="input tab-sort"
-          value={order}
-          onChange={e => setOrder(e.target.value)}
-          title={order === 'priority' && listMeta && !listMeta.priorityReady
-            ? '排序方式 —— 「优先级」要用 AI 分析写回的那一列，而这个视频的评论还没分析过：现在它等同「点赞最多 + 最新」'
-            : '排序方式'}
-        >
-          {orders.map(o => <option key={o.name} value={o.name}>{o.label}</option>)}
-        </select>
+        {orders.length === 0 && ordersError ? (
+          // 读失败时不画那颗没有选项的下拉：一个空壳下拉在屏幕上等于
+          // "这个应用只有一种排序"，而真相是"排序选项没读回来"
+          <span className="ws-ordersfail">
+            排序方式没读回来 —— 列表仍按现在的排序排（默认「最多点赞 + 最新」）。
+            <button className="btn btn-quiet" onClick={reloadOrders}>重新读取</button>
+          </span>
+        ) : (
+          <select
+            className="input tab-sort"
+            value={order}
+            onChange={e => setOrder(e.target.value)}
+            disabled={orders.length === 0}
+            title={order === 'priority' && listMeta && !listMeta.priorityReady
+              ? '排序方式 —— 「优先级」要用 AI 分析写回的那一列，而这个视频的评论还没分析过：现在它等同「点赞最多 + 最新」'
+              : '排序方式'}
+          >
+            {orders.length === 0 && <option value={order} disabled>排序读取中…</option>}
+            {orders.map(o => <option key={o.name} value={o.name}>{o.label}</option>)}
+          </select>
+        )}
       </div>
 
       {/* 列表的规模如实说清楚：改造前把「取了 300 条」当总数显示，
@@ -948,7 +1009,19 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                 而那之前用户以为自己是随便勾的 */}
             <span className="muted num"> / {MAX_PICK}</span> 条
             {picked.size >= MAX_PICK && <span className="text-bad">（已到一次能生成的上限，先取消几条或分两批）</span>}
-            {replyDesc && (
+            {ready.state === 'unreadable' ? (
+              // 这一段必须存在：readiness 把「批量生成」拦下来了，
+              // 而拦下一颗按钮却不说话，对不懂技术的人等于"这个应用坏了"
+              <span className="muted">
+                　·　回复来源没读回来，所以现在不知道「批量生成」会按什么走 ——
+                这一颗先拦下来，免得等一轮间隔才换回一句报错。
+                「用固定回复存草稿」不调 AI、仍然可以点，但固定列表里这次有没有可用条目同样没读到。
+                <b className="text-bad">　原因：{replyError}。</b>
+                <button className="btn btn-quiet drafts-pickall" onClick={reloadReply} disabled={replyBusy}>
+                  {replyBusy ? '读取中…' : '重新读取'}
+                </button>
+              </span>
+            ) : replyDesc && (
               <span className="muted">
                 　·　「批量生成」按当前设置走（
                 {replyDesc.mode === 'ai' ? 'AI 生成'
@@ -963,13 +1036,22 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                 {/* 拦下生成这件事必须写在明面上：灰掉的按钮配一句悬停提示，
                     对不懂技术的人等于没有 —— 他不会去悬停一颗他不敢点的按钮 */}
                 {!aiOk && replyDesc.mode !== 'fixed' && (
+                  <b className="text-bad">　{aiReason}。</b>
+                )}
+                {/* 读回来过、这次重读失败：上面的说法仍按上一次那份结果，必须标出来 */}
+                {ready.state === 'stale' && (
                   <b className="text-bad">
-                    　{(replyDesc.ai && replyDesc.ai.reason) || 'AI 现在还生成不了'}。
+                    　这一次没能重新读回来（{replyError}），上面是按上一次读到的结果说的。
                   </b>
                 )}
                 {genBlock && (
                   <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('settings')}>
                     去「设置」
+                  </button>
+                )}
+                {ready.state === 'stale' && (
+                  <button className="btn btn-quiet drafts-pickall" onClick={reloadReply} disabled={replyBusy}>
+                    {replyBusy ? '读取中…' : '重新读取'}
                   </button>
                 )}
               </span>
@@ -989,7 +1071,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
             </button>
           )}
           <button className="btn" onClick={() => startBulk('fixed')}
-            disabled={!!bulkTaskId || !fixedReady} title={fixedHint}>
+            disabled={!!bulkTaskId || fixedDisabled} title={fixedHint}>
             用固定回复存草稿
           </button>
           <button className="btn btn-primary" onClick={() => startBulk('setting')}
@@ -1257,7 +1339,7 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                 {genBlock && (
                   <div className="notice notice-warn reply-genblock">
                     <div>
-                      现在生成不了：{genBlock}。
+                      {ready.state === 'unreadable' ? '现在不知道能不能生成：' : '现在生成不了：'}{genBlock}。
                       {/* 只在"确实是被 AI 挡住"且"固定列表真的有货"时给这条路：
                           固定列表本身空着时改模式只是把同一个坑换个位置踩。 */}
                       {genBlock !== FIXED_EMPTY && fixedUsable > 0 && replyDesc && replyDesc.mode !== 'fixed' && (
@@ -1268,6 +1350,17 @@ export default function WorkspaceView({ awemeId, queueState, actions, onBack, me
                           title={`只改「回复模式」这一项，其它设置不动；固定内容列表里有 ${fixedUsable} 条可用`}
                         >
                           {switchingMode ? '改中…' : `改用「固定内容」（${fixedUsable} 条可用）`}
+                        </button>
+                      )}
+                      {/* 读不到时这条路只有一个动作：再读一次。「改用固定内容」不能出现 ——
+                          那颗按钮上的条数是这次没读回来的数 */}
+                      {ready.state === 'unreadable' && (
+                        <button
+                          className="btn btn-quiet drafts-pickall"
+                          onClick={reloadReply}
+                          disabled={replyBusy}
+                        >
+                          {replyBusy ? '读取中…' : '重新读取'}
                         </button>
                       )}
                       <button className="btn btn-quiet drafts-pickall" onClick={() => actions.goto('settings')}>
@@ -1473,9 +1566,13 @@ function summarizeBulk(res) {
  *     upsert 已有行，`replied` 标记不会被纠正回来，那条仍显示「已回复」。
  *   - 本地没有这一行（命令行删的、或从没拉过）：列表本来就不变，别报成失败。
  */
-function describeDelete(res) {
+function describeDelete(res, reason) {
   if (!res || typeof res !== 'object') {
-    return { text: '抖音那边已删除；本地回退明细没取回来，看这条评论是否已从「已回复」里消失即可确认。', warn: false };
+    return {
+      text: '抖音那边已删除；本地回退明细没取回来'
+        + `${reason ? `（${reason}）` : ''}，看这条评论是否已从「已回复」里消失即可确认。`,
+      warn: !!reason,
+    };
   }
   if (res.localError) {
     return { text: `抖音那边已删除，但本地没回退干净：${res.localError} —— 列表里那条可能仍显示「已回复」，重新拉取也不会自动纠正`, warn: true };

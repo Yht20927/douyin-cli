@@ -35,9 +35,14 @@ const PAGE_SIZE = 200;
  * 要说"跑完了、明细没取回来"，不能把 undefined 当成 0 条 ——
  * 那一趟真的发了请求也写了库，报"补全 0 条"会让人以为没生效而再点一次，白跑一遍。
  */
-function describeEnrich(res) {
+function describeEnrich(res, reason) {
   if (!res || typeof res !== 'object') {
-    return { text: '补全跑完了，但结果明细太大没能取回来 —— 看列表里的标题是否补上即可确认', warn: false };
+    return {
+      text: '补全跑完了，但结果明细没能取回来'
+        + `${reason ? `（${reason}）` : '（结果太大）'}`
+        + ' —— 看列表里的标题是否补上即可确认',
+      warn: !!reason,
+    };
   }
   const requested = Number(res.requested) || 0;
   const done = Number(res.updatedCount) || 0;
@@ -125,7 +130,11 @@ export default function TargetsView({ actions, queueState }) {
           // 数量只在完整结果里（resultSummary 对对象只有键名清单）。
           // 200 条的 updated 数组有可能超过队列 64KB 的结果上限 ——
           // 那时取回 null，**不能**报成"补全 0 条"，那是在说一件没发生的事。
-          window.dy.queue.result(id).then((r) => setEnrichResult(describeEnrich(r && r.result)));
+          window.dy.queue.result(id)
+            .then((r) => setEnrichResult(describeEnrich(r && r.result)))
+            .catch((e) => setEnrichResult(
+              describeEnrich(null, failText(e && e.message, '取结果那次调用没成功'))
+            ));
         } else {
           setEnrichResult({ text: `补全未完成：${failText(t.error, '未知原因')}`, warn: true });
         }

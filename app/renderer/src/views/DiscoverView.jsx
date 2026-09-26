@@ -73,6 +73,14 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
       setHistory(r && r.ok
         ? { ...r.data, error: null }
         : { items: [], scanned: 0, truncated: false, error: (r && r.error) || '未知原因' });
+    // 没有这一支时 history 永远停在 null，而 HistoryChips 的第一句是
+    // `if (!history) return null` —— "读失败了"在屏幕上等于"这一节不存在"
+    }).catch((e) => {
+      if (!alive) return;
+      setHistory({
+        items: [], scanned: 0, truncated: false,
+        error: failText(e && e.message, '搜索历史没读回来'),
+      });
     });
     return () => { alive = false; };
   }, []);
@@ -108,7 +116,26 @@ export default function DiscoverView({ actions, memo, onMemo, queueState }) {
       setJustDone(null);
       return;
     }
-    const r = await window.dy.queue.result(taskId);
+    // 这一句必须接住两件事：queue:result **没包 safe()**（失败是 reject，而这个
+    // async 函数一旦被抛掉，下面整段都不执行 —— 页面就停在"任务完成了但列表空着"），
+    // 以及取回 null 时 normalize 给的是 []，那**不等于**"抖音没返回结果"
+    let r = null;
+    let fetchFail = null;
+    try {
+      r = await window.dy.queue.result(taskId);
+    } catch (e) {
+      fetchFail = failText(e && e.message, '取结果那次调用没成功');
+    }
+    if (!r || !r.ok || !r.result) {
+      setResults([]);
+      setPicked(new Set());
+      setJustDone(null);
+      setError('这次搜索跑完了，但结果没取回来'
+        + `${fetchFail ? `（${fetchFail}）` : '（结果太大，队列把它丢掉了）'}`
+        + ' —— 列表空着不代表抖音没有返回。缩小一点范围（一次少勾几条视频）再搜一次。');
+      setNotice(null);
+      return;
+    }
     // ⚠️ kind 必须取自入队时记下的那个，**不能**拿 pending（它是任务 id）。
     // 写成 normalize(pending, …) 的话两个分支都会走错那个，
     // 表现是"搜索结果永远是空的" —— 而错误本身不抛，只是没结果。

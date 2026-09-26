@@ -1,5 +1,5 @@
 import React from 'react';
-import { describeStatus, unconnectedAccounts } from '../status.js';
+import { describeStatus, unconnectedAccounts, navBadge } from '../status.js';
 
 /**
  * 导航分两组：「运行」是日常工作会来回切的页面，「通用」是配置与排障。
@@ -34,13 +34,18 @@ const NAV_GROUPS = [
 ];
 
 export default function Sidebar({
-  view, onNavigate, status, readError, queueCount, draftCount, version, onQuit,
-  account, accountError, onSwitchAccount,
+  view, onNavigate, status, readError, queueCount, queueError, draftCount, draftsError,
+  version, onQuit, account, accountError, onSwitchAccount,
 }) {
   // 第二个实参是"这一次读没读回来"。没有它，读失败与"还没开始读"都只剩
   // 一份 null，屏幕上都是「检测中」—— 见 status.js 的 describeStatus
   const d = describeStatus(status, readError);
-  const badges = { queue: queueCount, draft: draftCount };
+  // 角标同样要带失败：队列 / 草稿那份读数没回来时 count 停在 0，
+  // `> 0` 一判角标就消失，而"消失"在屏幕上等于"没有"
+  const badges = {
+    queue: navBadge(queueCount, queueError),
+    draft: navBadge(draftCount, draftsError),
+  };
 
   // 当前账号由主进程解析（跟随浏览器当前登录的号），这里只显示与切换。
   //
@@ -74,9 +79,16 @@ export default function Sidebar({
               >
                 <span className="nav-marker" />
                 {item.label}
-                {/* 有任务在跑/在等、或有待发草稿时标一个数 —— 切到别的页面也能看到 */}
-                {item.badge && badges[item.badge] > 0 && (
-                  <span className="nav-badge num">{badges[item.badge]}</span>
+                {/* 有任务在跑/在等、或有待发草稿时标一个数 —— 切到别的页面也能看到。
+                    判据在 status.js 的 navBadge：读数失败时它给的是带问号的一枚，
+                    而不是让角标消失（消失＝"没有"，而那恰恰是没读回来时的假话） */}
+                {item.badge && badges[item.badge] && (
+                  <span
+                    className={`nav-badge num${badges[item.badge].warn ? ' nav-badge-warn' : ''}`}
+                    title={badges[item.badge].title || undefined}
+                  >
+                    {badges[item.badge].text}
+                  </span>
                 )}
               </button>
             ))}

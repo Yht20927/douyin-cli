@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LoadingState from '../components/LoadingState.jsx';
+import EmptyState from '../components/EmptyState.jsx';
+import { failText } from '../errors.js';
 import { GROUPS, T } from '../settings/schema.js';
 import Field from '../settings/fields.jsx';
 import PersonasField from '../settings/PersonasField.jsx';
@@ -23,6 +25,8 @@ import { getPath, flatten, buildPatch } from '../settings/patch.js';
  */
 export default function SettingsView() {
   const [described, setDescribed] = useState(null);
+  /** 这一次配置没读回来的理由：没有它，失败与「还在读」在屏幕上同形 */
+  const [loadError, setLoadError] = useState(null);
   const [draft, setDraft] = useState({});
   const [dirty, setDirty] = useState(() => new Set());
   /**
@@ -72,9 +76,24 @@ export default function SettingsView() {
   }, []);
 
   const load = useCallback(async () => {
-    const r = await window.dy.config.describe();
-    if (r && r.ok) applyDescribed(r.data);
-    else setNotice((r && r.error) || '读取配置失败');
+    try {
+      const r = await window.dy.config.describe();
+      if (r && r.ok) {
+        applyDescribed(r.data);
+        setLoadError(null);
+        return;
+      }
+      setLoadError(failText(r && r.error, '主进程没有返回配置'));
+      setNotice((r && r.error) || '读取配置失败');
+    } catch (e) {
+      // 上面那一支 {ok:false} 已经是这个通道的主要失败形状（handler 自己带 try/catch）。
+      // 这里接的是剩下那一种：IPC 外壳层面的 reject —— 结果序列化不了，
+      // 或这个通道压根还没注册上（第二十二轮 §2.41 说的就是这一层的串）。
+      // 不接住它，described 永远停在 null，整页永远写着「正在读取配置…」，
+      // 而它不会再有结果了。
+      setLoadError(failText(e && e.message, '配置没读回来'));
+      setNotice('配置没读回来 —— 这一页现在一个字段都没有');
+    }
   }, [applyDescribed]);
 
   useEffect(() => { load(); }, [load]);
@@ -135,7 +154,18 @@ export default function SettingsView() {
     return (
       <div className="main-col">
         <h1 className="page-title">设置</h1>
-        <LoadingState variant="text" label="正在读取配置…" />
+        {loadError ? (
+          // 这一支必须与"还在读"不同形：读不回来时这一页永远不会出现字段，
+          // 而「正在读取配置…」承诺的是"再过一秒就有了"
+          <EmptyState
+            title="配置没读回来。"
+            hint={<>这不是"配置是空的"。原因：{loadError}。所以这一页现在一个字段都看不到，
+              也看不到任何当前值 —— 值仍留在磁盘上没被动过，改不了也不会被改。</>}
+            action={<button className="btn" onClick={() => load()}>重新读取</button>}
+          />
+        ) : (
+          <LoadingState variant="text" label="正在读取配置…" />
+        )}
       </div>
     );
   }
