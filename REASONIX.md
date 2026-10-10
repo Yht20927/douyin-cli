@@ -66,6 +66,7 @@ Bridge Server 代码已本地化（server.js + lib/server/ + lib/client/ + lib/s
 | `node cli.js dashboard [--video <id>] [--days N]` | 运营仪表盘 |
 | `node cli.js log [--tail N] [--video <id>] [--failed]` | 操作日志 |
 | `node cli.js profile <uid>` | 用户交互历史 |
+| `node cli.js videos [--mine] [--account <uid>] [--json]` | 记忆层视频列表（含归属账号） |
 
 ## 前置条件
 1. Bridge Server 运行中：`node server.js`（本目录）

@@ -100,9 +100,9 @@ function poll(account, ms = 800) {
 
 // 用 spawnSync 而不是 execFileSync：后者成功时只给你 stdout，
 // stderr 直接漏到父进程终端，拿不到账号横幅
-function cli(args) {
+function cli(args, extraEnv) {
   const r = spawnSync(process.execPath, [path.join(WORK, 'cli.js'), ...args],
-    { cwd: WORK, encoding: 'utf8', timeout: 20000, env: cliEnv() });
+    { cwd: WORK, encoding: 'utf8', timeout: 20000, env: { ...cliEnv(), ...(extraEnv || {}) } });
   return { code: r.status == null ? -1 : r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
@@ -236,8 +236,9 @@ function check(name, ok, detail) {
         && after.accounts.find(a => a.account === 'ACC_B').nickname === '小号B',
       JSON.stringify(after.accounts.map(a => ({ account: a.account, nickname: a.nickname }))));
 
-    // dedup 是纯本地命令：用它观察横幅，不会打 bridge
-    const banner = cli(['dedup', '一段测试文本']);
+    // events 是本地查询命令（走账号解析、打横幅），且不打 bridge —— 用它观察横幅。
+    // 注意别用 dedup 之类「账号无关」命令：它们已被设计为不打账号横幅。
+    const banner = cli(['events']);
     check('每次调用都在 stderr 打印在线账号（无别名时用昵称）',
       /\[账号\] 在线 2：主号\(ACC_A\)、小号B\(ACC_B\)/.test(banner.stderr),
       (banner.stderr.split('\n')[0] || '').trim());
@@ -269,6 +270,18 @@ function check(name, ok, detail) {
       lenient.code === 0 && !/未知账号/.test(lenient.stderr),
       `code=${lenient.code} stderr=${JSON.stringify(lenient.stderr.trim())}`);
 
+    // 账号无关命令（读全局表）必须忽略账号：既不能因 DOUYIN_ACCOUNT 环境变量误伤
+    // （campaign daemon 会设它），显式 --account 也只是提示、不报错。
+    const agnosticEnv = cli(['replied', '--count'], { DOUYIN_ACCOUNT: 'NOPE_ENV' });
+    check('账号无关命令（replied）忽略 DOUYIN_ACCOUNT 环境变量，不报未知账号',
+      agnosticEnv.code === 0 && !/未知账号/.test(agnosticEnv.stderr),
+      `code=${agnosticEnv.code} stderr=${JSON.stringify(agnosticEnv.stderr.trim())}`);
+
+    const agnosticExplicit = cli(['replied', '--count', '--account', 'NOPE_OFFLINE']);
+    check('账号无关命令显式 --account → 忽略并提示，不报错',
+      agnosticExplicit.code === 0 && /已忽略 --account/.test(agnosticExplicit.stderr),
+      `code=${agnosticExplicit.code} stderr=${JSON.stringify(agnosticExplicit.stderr.trim())}`);
+
     // ── 5. 旧版脚本必须被标出来 ──
     // 这是"脚本太旧"与"新脚本但探测失败"的唯一区分手段：
     // 前者压根不带 clientVersion，后者带了但 nickname 为空。
@@ -279,7 +292,7 @@ function check(name, ok, detail) {
       !!oldRow && oldRow.scriptOutdated === true && oldRow.clientVersion === null,
       oldRow ? `clientVersion=${oldRow.clientVersion} outdated=${oldRow.scriptOutdated}` : 'null');
 
-    const bannerOld = cli(['dedup', '一段测试文本']);
+    const bannerOld = cli(['events']);
     check('横幅提示旧脚本需去 Tampermonkey 重装',
       /油猴脚本不是最新版/.test(bannerOld.stderr) && /Tampermonkey 重装/.test(bannerOld.stderr),
       (bannerOld.stderr.split('\n').filter(Boolean).pop() || '').trim());

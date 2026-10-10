@@ -150,7 +150,20 @@ async function resolveAccount(raw, online, opts = {}) {
  * 只读本地记忆、把 --account 当过滤条件的命令：账号不必在线（可查历史）。
  * 这些命令的 --account 不参与 bridge 路由，所以解析可以宽松。
  */
-const LOCAL_QUERY = new Set(['log', 'events', 'profile', 'dashboard']);
+const LOCAL_QUERY = new Set(['log', 'events', 'profile', 'dashboard', 'videos']);
+
+/**
+ * 与账号**无关**的命令：只读写本地全局数据（用户画像 / 评论实体 / 语料 / 失败模式 /
+ * 视频表 / prompt 模板 …），不碰 bridge，也不按账号过滤。
+ *
+ * 为什么要把它们和 LOCAL_QUERY 分开：`--account`（更常见的是**环境变量 DOUYIN_ACCOUNT**，
+ * campaign 的 daemon 会设它）对这些命令毫无意义，却会在入口被严格解析 ——
+ * 账号离线时直接报"未知账号"，把一条纯本地命令打挂。这里直接忽略账号。
+ */
+const ACCOUNT_AGNOSTIC = new Set([
+  'whois', 'note', 'corpus', 'failures', 'dedup', 'replied', 'comment',
+  'cleanup', 'preflight', 'repo-info', 'factcheck', 'validate-prompts',
+]);
 
 /**
  * 判断这次调用会不会在平台上产生写操作。
@@ -412,6 +425,7 @@ Douyin Comment CLI (Bridge Framework)
   node cli.js dashboard --video <aweme_id> --days 14
   node cli.js log [--tail N] [--video <id>] [--uid <uid>] [--command <cmd>] [--failed]
   node cli.js profile <uid>                   用户交互历史（事件流）
+  node cli.js videos [--mine] [--account X] [--limit N] [--json]   记忆层视频列表（含归属账号）
   node cli.js whois <uid>                     用户全量画像（评论 + 我的回复 + 标签）
   node cli.js note <uid> [--tier vip|normal|blacklist|spam] [--tag T] [--untag T] [--notes "..."] [--clear]
   node cli.js events [--tail N] [--video <id>] [--uid <uid>] [--cmd <cmd>] [--status success|error] [--since <ts>] [--json]
@@ -494,10 +508,12 @@ async function main() {
   }
 
   // 摘掉 --account，并解析本次调用的账号
-  let args, rawAccount;
+  let args, rawAccount, explicitAccount;
   try {
     const ex = extractAccountArg(argv.slice(1));
     args = ex.args;
+    // 显式 --account（用于"账号无关命令"的提示；env 继承来的不算）
+    explicitAccount = ex.raw || null;
     // 环境变量兜底：campaign 的 daemon 是独立子进程，靠它把身份传下来
     rawAccount = ex.raw || process.env.DOUYIN_ACCOUNT || null;
   } catch (e) {
@@ -514,13 +530,23 @@ async function main() {
 
   try {
     const online = await fetchAccounts();
-    currentAccount = await resolveAccount(rawAccount, online, { lenient: LOCAL_QUERY.has(cmd) });
-    const mode = accountMode(cmd, args);
-    // 写操作 / 读取自身数据必须能落到一个明确账号：多账号时强制要求 --account
-    if (mode !== 'read') await ensureAccount(online, mode);
-    // 让"本地命令零 bridge 调用"也带上账号归属（如 dedup 这类纯本地命令）
-    audit.setAccount(currentAccount);
-    printAccountBanner(rawAccount, online, mode);
+    const mode = ACCOUNT_AGNOSTIC.has(cmd) ? 'read' : accountMode(cmd, args);
+    if (ACCOUNT_AGNOSTIC.has(cmd)) {
+      // 账号无关命令：不解析账号、不注入归属、不打横幅。
+      // 显式 --account 才提示一句（多半是习惯性带上）。
+      currentAccount = null;
+      if (explicitAccount) {
+        console.error('[账号] 该命令只读写本地全局数据、与账号无关 —— 已忽略 --account');
+      }
+    } else {
+      currentAccount = await resolveAccount(rawAccount, online, { lenient: LOCAL_QUERY.has(cmd) });
+      // 写操作 / 读取自身数据必须能落到一个明确账号：多账号时强制要求 --account
+      if (mode !== 'read') await ensureAccount(online, mode);
+      // 本地查询命令（log/events/profile/dashboard/videos）的 --account 当过滤条件，
+      // 也写进审计归属，方便回溯"这条记录属于哪个号"
+      audit.setAccount(currentAccount);
+      printAccountBanner(rawAccount, online, mode);
+    }
 
     const result = await handler(ctx, args);
 

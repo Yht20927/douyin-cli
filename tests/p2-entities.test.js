@@ -28,6 +28,7 @@ function withTempProject(fn) {
       '../lib/memory/users', '../lib/memory/comments', '../lib/memory/videos',
       '../lib/audit',
       '../lib/commands/get', '../lib/commands/whois', '../lib/commands/note',
+      '../lib/commands/videos',
     ].forEach(m => {
       try { delete require.cache[require.resolve(m)]; } catch (e) {}
     });
@@ -257,5 +258,55 @@ describe('P2: cmdNote', () => {
     const { AuditLogger } = require('../lib/audit');
     await expect(cmdNote({ audit: new AuditLogger() }, ['u1', '--tier', 'bad']))
       .rejects.toThrow(/tier/);
+  }));
+});
+
+// ── cmdVideos：记忆层视频列表（含账号归属）──
+// cmdVideos 是同步执行体（无 await），可以直接用捕获 console.log 的方式断言输出。
+function captureLog(fn) {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.map(String).join(' '));
+  try { return Promise.resolve(fn()).then(r => ({ result: r, output: lines.join('\n') })); }
+  finally { console.log = orig; }
+}
+
+describe('P2: cmdVideos', () => {
+  it('列出视频 + 归属账号；--mine 只列自己的；ctx.account 按账号过滤', withTempProject(async () => {
+    const cmdVideos = require('../lib/commands/videos');
+    const videos = require('../lib/memory/videos');
+    videos.upsert({ awemeId: 'v1', isMine: true, title: 'A 的作品', account: 'ACC_A' });
+    videos.upsert({ awemeId: 'v2', isMine: true, title: 'B 的作品', account: 'ACC_B' });
+    videos.upsert({ awemeId: 'v3', isMine: false, title: '别人的视频' });
+
+    const all = await captureLog(() => cmdVideos({}, []));
+    expect(all.output).toContain('v1');
+    expect(all.output).toContain('v3');
+    expect(all.output).toContain('acct=ACC_A');
+
+    const mine = await captureLog(() => cmdVideos({}, ['--mine']));
+    expect(mine.output).toContain('v1');
+    expect(mine.output).not.toContain('v3'); // is_mine=false 不该出现
+
+    const byAcct = await captureLog(() => cmdVideos({ account: 'ACC_B' }, []));
+    expect(byAcct.output).toContain('v2');
+    expect(byAcct.output).not.toContain('v1');
+  }));
+
+  it('--json 输出结构化结果（含 account 归属）', withTempProject(async () => {
+    const cmdVideos = require('../lib/commands/videos');
+    const videos = require('../lib/memory/videos');
+    videos.upsert({ awemeId: 'v1', isMine: true, title: 'X', account: 'ACC_A' });
+    const out = await captureLog(() => cmdVideos({}, ['--json']));
+    const parsed = JSON.parse(out.output);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].awemeId).toBe('v1');
+    expect(parsed[0].account).toBe('ACC_A');
+  }));
+
+  it('空表 → No matching videos.', withTempProject(async () => {
+    const cmdVideos = require('../lib/commands/videos');
+    const out = await captureLog(() => cmdVideos({}, []));
+    expect(out.output).toContain('No matching videos.');
   }));
 });

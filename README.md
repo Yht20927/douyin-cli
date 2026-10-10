@@ -122,7 +122,8 @@ node cli.js getReply <aweme_id> --batch
 - 一条连接 = 一个「站点 + 登录账号」，服务端按通道 `site#uid` 区分；**未登录的标签页不接入**。
 - **公共读操作**（`get` / `search` / `user` …）未指定账号时按账号**轮换**，且**同一条命令内钉扎在同一账号**（避免分页 cursor 跨号错乱）。
 - **写操作**（`post` / `like` / `delete-comment` / `dm send` …）与**读取自身数据**（`my` / `dm list`）在**多账号下必须 `--account` 显式指定**，绝不静默改投；指定了未知账号会直接报错并列出可用账号。
-- `log` / `events` / `profile` / `dashboard` 的 `--account` 是**过滤条件**，账号离线也能查历史（不参与路由）。
+- `log` / `events` / `profile` / `dashboard` / `videos` 的 `--account` 是**过滤条件**，账号离线也能查历史（不参与路由）。
+- `whois` / `note` / `corpus` / `replied` / `failures` / `dedup` / `comment` 等只读写**本地全局数据**的命令**与账号无关**：`--account`（含 `DOUYIN_ACCOUNT` 环境变量）一律忽略，不会因账号离线而报错。
 
 ```bash
 # 列出在线账号（uid / 别名 / 昵称 / 最近服务时间）
@@ -138,6 +139,7 @@ node cli.js post <aweme_id> "内容" --account 主号
 # 本地记忆按账号过滤（不用 --account = 全部账号）
 node cli.js log --account 主号
 node cli.js events --account 主号
+node cli.js videos --account 主号 --mine      # 该号在记忆层里记录的作品
 ```
 
 **数据归属**：`events` / `videos` / `drafts` / `campaigns` 记 `account`，可回答「这件事是哪个号做的」；平台内容表（`comments` / `users` / `reply_corpus`）**全局共享**（刻意设计：两个自己的号去回同一条评论是明显的异常信号）。
@@ -273,6 +275,7 @@ node cli.js browse 穿搭 美食 --max-notes 3
 | `comment` | **单条评论实体查询** |
 | `profile` | 用户交互历史 |
 | `events` | 原始事件流 |
+| `videos` | 记忆层视频列表（`--mine` / `--account` / `--json`） |
 | `log` | 操作日志 |
 
 ### 守卫与推广

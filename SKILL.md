@@ -105,7 +105,8 @@ node cli.js post <aweme_id> "内容" --account 主号    # 写操作：多账号
 - 「已回复 cid」（`comments.replied`）与回复语料（`reply_corpus`）**全局共享**——任一账号回过的评论，其他账号都不会再回。
 - 事件（`events`）、草稿（`drafts`）、活动（`campaigns`）按账号记录。`events.account` 记的是**实际服务该次调用的账号**（含按轮换落到的号）。
 - 视频（`videos`）的 `is_mine` 是**归属声明**，`videos.account` 记它属于哪个号（非 is_mine 的视频为 NULL）。
-- **本地查询命令 `log` / `events` / `dashboard` / `profile` 也吃 `--account`**：作为过滤条件只看该账号的记录；不指定 = 全部账号。
+- **本地查询命令 `log` / `events` / `dashboard` / `profile` / `videos` 也吃 `--account`**：作为过滤条件只看该账号的记录；不指定 = 全部账号。
+- **`whois` / `note` / `corpus` / `replied` / `failures` / `dedup` / `comment` 等只读写本地全局数据的命令与账号无关**：`--account`（含 `DOUYIN_ACCOUNT` 环境变量）一律忽略，不会因账号离线而报错。
 - 油猴端收到写操作时会先比对自身登录账号，不一致则**拒绝执行**并把错误回传（防止容器/登录态切换的竞态用错号发评论）。
 
 不用浏览器也能验一遍服务端契约（起临时 server + 两个假客户端，跑完自动收尾）：
@@ -328,6 +329,7 @@ node cli.js profile <uid> [--account <uid|别名>] # 用户交互历史（事件
 node cli.js whois <uid>                        # 用户全量画像（评论 + 我的回复 + 标签）
 node cli.js note <uid> [--tier vip|normal|blacklist|spam] [--tag T] [--untag T] [--notes "..."] [--clear]
 node cli.js events [--tail N] [--video <id>] [--uid <uid>] [--cmd <cmd>] [--status success|error] [--since <ts>] [--json] [--account <uid|别名>]
+node cli.js videos [--mine] [--account <uid|别名>] [--limit N] [--json]  # 记忆层视频列表（含归属账号）
 node cli.js corpus <search|recent|stats> [...] [--limit N] [--video <id>]
 node cli.js replied [--json] [--aweme <aweme_id>] [--count]
 node cli.js comment <cid>                      # 查询单条评论实体
