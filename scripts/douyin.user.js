@@ -1091,7 +1091,7 @@ window.__bridge = {
   // 我的作品列表。
   // expectedUid：调用方（CLI）传入"这条命令应落到哪个账号"，用于 sec_uid 对齐校验。
   myPosts: async function(cursor,count,expectedUid){
-    var secUid=this._getMySecUid(expectedUid);
+    var secUid=await this._getMySecUid(expectedUid);
     if(!secUid){
       // 旧实现读 info.user.sec_uid 恒为空（那个接口只回顶层 {id,user_uid,...}），
       // 拿空 sec_user_id 去查会静默返回空/别人的列表 —— 宁可报错也不静默发错。
@@ -1185,54 +1185,57 @@ window.__bridge = {
   },
   // 取当前登录账号的 sec_uid —— myPosts 查「我的作品」必须要有它。
   //
-  // 踩过的坑：/aweme/v1/web/query/user/ 换哪组参数都只回顶层
-  //   {id, user_uid, user_uid_type, status_code}
-  // —— 没有 user 对象。旧 myPosts 读 info.user.sec_uid 因此恒空，拿空
-  // sec_user_id 去查只会返回空/别人的列表。与昵称同策：改读零请求的本地来源，
-  // 且**必须与严格探测出的 uid 对齐** —— 本地值可能是别的账号（或登出后残留）
-  // 写的，uid 不符就宁可拿不到，由 myPosts 明确报错。
+  // 权威来源：/aweme/v1/web/user/profile/self/（实测回包 user.{uid,sec_uid,nickname}）。
+  //   这是「自己」的资料接口，随会话走 —— 会话落到哪个号就返回哪个号，不存在
+  //   本地残留串号问题。（旧实现读 /query/user/ 的 info.user.sec_uid；那个接口只回
+  //   顶层 {id,user_uid,...}，恒空，拿空 sec_user_id 去查只会返回空/别人的列表。）
+  // 兜底：接口失败时退回零请求的本地来源（user_info / __INITIAL_STATE__）——
+  //   本地值可能是别的账号或登出残留写的，**必须与严格探测出的 uid 对齐**，不符宁可拿不到。
   //
-  // expectedUid 为空（单账号未指定）时无从校验，直接采用；来源里没有 uid 字段
-  // 时也无法证伪，采用但在 diag 里标「未校验」，便于日后抓包收紧。
-  _getMySecUid: function(expectedUid){
+  // expectedUid：CLI 传入"这条命令应落到哪个账号"；非空时与来源的 uid 交叉校验（防串号）。
+  _getMySecUid: async function(expectedUid){
     if(this._secUidCache!==null)return this._secUidCache;
-    this._secUidCache='';
     var uid=String(expectedUid||'');
     var diag=[];
+    // expectedUid 已知且来源给了 uid 时必须相等；任一为空表示无从校验 → 放行
+    function ok(u){ return !uid || !u || u===uid; }
     function pickSec(o){
       if(!o||typeof o!=='object')return '';
       var s=o.sec_uid||o.sec_user_id||o.secUid||o.sec_userid;
       return typeof s==='string'?s.trim():'';
     }
-    function pickUid(o){
-      if(!o||typeof o!=='object')return '';
-      return String(o.uid||o.user_id||o.short_id||o.user_uid||'');
-    }
-    // expectedUid 已知且来源给了 uid 时必须相等；任一为空表示无从校验 → 放行
-    function ok(u){ return !uid || !u || u===uid; }
-    // 来源 1：localStorage.user_info（网页端登录后写入；昵称/uid 也在这里）
+    // 来源 1（权威）：self profile 接口。随会话走，天然是当前账号。
+    try{
+      var p=new URLSearchParams(Object.assign(this._q(),{}));
+      var info=await bridgeFetchJson('profileSelf','/aweme/v1/web/user/profile/self/?'+p,{credentials:'include'},true);
+      var u=info&&info.user;
+      var s0=pickSec(u);var u0=u?String(u.uid||u.user_uid||''):'';
+      if(s0&&ok(u0)){this._secUidCache=s0;console.log('[Bridge] sec_uid(self) =',s0);return s0;}
+      diag.push('profile/self'+(s0?('uid不符('+u0+'≠'+uid+')'):'无user.sec_uid'));
+    }catch(e){diag.push('profile/self异常:'+e.message);}
+    // 来源 2：localStorage.user_info（网页端登录后写入）
     try{
       var ui=JSON.parse(localStorage.getItem('user_info')||'null');
       if(ui&&typeof ui==='object'&&!Array.isArray(ui)){
-        var s1=pickSec(ui);var u1=pickUid(ui);
+        var s1=pickSec(ui);var u1=String(ui.uid||ui.user_id||ui.short_id||ui.user_uid||'');
         if(s1&&ok(u1))this._secUidCache=s1;
         diag.push('user_info{'+Object.keys(ui).join(',')+'}'+(s1?(u1===uid?'✓':(ok(u1)?'未校验':'uid不符('+u1+'≠'+uid+')')):'无sec_uid字段'));
       }else{diag.push('user_info=空');}
     }catch(e){diag.push('user_info异常:'+e.message);}
-    // 来源 2：页面 hydration state（顶层键名打进 diag，便于判断下次从哪取）
+    // 来源 3：页面 hydration state（顶层键名打进 diag，便于判断下次从哪取）
     if(!this._secUidCache){
       try{
         var st=window.__INITIAL_STATE__;
         if(st&&typeof st==='object'){
           var cand=st.userInfo||(st.user&&st.user.userInfo)||st.userStore||st.user_store||st;
-          var s2=pickSec(cand);var u2=pickUid(cand);
+          var s2=pickSec(cand);var u2=String(cand.uid||cand.user_id||cand.short_id||cand.user_uid||'');
           if(s2&&ok(u2))this._secUidCache=s2;
           diag.push('INITIAL_STATE{'+Object.keys(st).slice(0,25).join(',')+'}'+(s2?(u2===uid?'✓':'未校验'):'无sec_uid字段'));
         }else{diag.push('INITIAL_STATE=空');}
       }catch(e){diag.push('INITIAL_STATE异常:'+e.message);}
     }
-    if(this._secUidCache)console.log('[Bridge] sec_uid =',this._secUidCache);
-    else console.warn('[Bridge] sec_uid 探测未取到 →',diag.join(' | '));
+    if(this._secUidCache)console.log('[Bridge] sec_uid(local) =',this._secUidCache);
+    else{this._secUidCache='';console.warn('[Bridge] sec_uid 探测未取到 →',diag.join(' | '));}
     return this._secUidCache;
   },
   _getMyUid: async function(){

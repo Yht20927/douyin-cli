@@ -115,75 +115,113 @@ describe('油猴端昵称探测（douyin）', () => {
   });
 });
 
-// ── sec_uid 探测：myPosts 的来源，同样必须与严格探测出的 uid 对齐 ──
-// 旧实现读 /aweme/v1/web/query/user/ 的 info.user.sec_uid，但那个接口只回顶层
-// {id, user_uid, ...}，永远取不到 → 拿空 sec_user_id 查「我的作品」返回空/别人的。
-// 新实现读本地来源（与昵称同源），且 uid 不符就宁可拿不到（由 myPosts 报错）。
+// ── sec_uid 探测：myPosts 的来源 ──
+// 权威来源 = /aweme/v1/web/user/profile/self/ 回包的 user.sec_uid（随会话走，天然是当前
+// 账号）。接口失败才退回本地来源（user_info / __INITIAL_STATE__），本地值必须与严格探测
+// 出的 uid 对齐，不符宁可拿不到（由 myPosts 报错），防把 A 号的 sec_uid 用到 B 号。
 function loadSecUidProbe() {
   const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'douyin.user.js'), 'utf8');
-  const m = src.match(/_getMySecUid: function\(expectedUid\)\{[\s\S]*?\n  \}/);
+  const m = src.match(/_getMySecUid:\s*(?:async\s+)?function\(expectedUid\)\{[\s\S]*?\n  \}/);
   if (!m) throw new Error('scripts/douyin.user.js 里找不到 _getMySecUid');
   const body = m[0].replace(/^_getMySecUid:\s*/, '');
   // eslint-disable-next-line no-new-func
-  return new Function('localStorage', 'window', 'console', 'return (' + body + ');');
+  return new Function('localStorage', 'window', 'console', 'bridgeFetchJson', 'return (' + body + ');');
 }
 
 describe('油猴端 sec_uid 探测（douyin）', () => {
-  /** @param {object|null} stored user_info 的内容 @param {object} win 额外的 window 字段 */
-  function probe(stored, expectedUid, win = {}) {
+  /**
+   * @param {object} o
+   * @param {object|Error} [o.api] self profile 接口的返回（Error = 抛错）
+   * @param {object|null} [o.stored] localStorage.user_info
+   * @param {object} [o.win] 额外 window 字段
+   * @param {string} [o.expectedUid]
+   */
+  async function probe({ api, stored = null, win = {}, expectedUid = '' } = {}) {
     const build = loadSecUidProbe();
+    const calls = { n: 0 };
+    const fetchImpl = async () => {
+      calls.n++;
+      if (api instanceof Error) throw api;
+      return api;
+    };
     const fn = build(
       { getItem: () => (stored === null ? null : JSON.stringify(stored)) },
       win,
       { log() {}, warn() {} },
+      fetchImpl,
     );
-    return fn.call({ _secUidCache: null }, expectedUid);
+    const value = await fn.call({ _secUidCache: null, _q: () => ({}) }, expectedUid);
+    return { value, calls: calls.n };
   }
 
-  it('user_info 有 sec_uid 且 uid 一致 → 采用', () => {
-    expect(probe({ uid: '111', sec_uid: 'MS4wLjABAAAA' }, '111')).toBe('MS4wLjABAAAA');
+  it('权威来源：self profile 的 user.sec_uid（uid 一致）', async () => {
+    const { value, calls } = await probe({
+      api: { user: { uid: '111', sec_uid: 'MS4wLjABAAAA' } }, expectedUid: '111',
+    });
+    expect(value).toBe('MS4wLjABAAAA');
+    expect(calls).toBe(1);
   });
 
-  it('uid 不一致 → 空（防把 A 号的 sec_uid 用到 B 号）', () => {
-    expect(probe({ uid: '222', sec_uid: 'MS4wLjABAAAA' }, '111')).toBe('');
+  it('self profile 的 uid 与指定账号不符 → 拒绝，回落本地', async () => {
+    const { value } = await probe({
+      api: { user: { uid: '222', sec_uid: 'SEC_bad' } },
+      stored: { uid: '111', sec_uid: 'SEC_local' }, expectedUid: '111',
+    });
+    expect(value).toBe('SEC_local');
   });
 
-  it('expectedUid 为空（单账号未指定）→ 无从校验，采用', () => {
-    expect(probe({ uid: '999', sec_uid: 'SEC_q' }, '')).toBe('SEC_q');
+  it('接口抛错 → 回落本地（uid 对齐）', async () => {
+    const { value } = await probe({
+      api: new Error('network'), stored: { uid: '111', sec_uid: 'SEC_local' }, expectedUid: '111',
+    });
+    expect(value).toBe('SEC_local');
   });
 
-  it('兼容 sec_user_id / secUid 命名', () => {
-    expect(probe({ user_id: '111', sec_user_id: 'SEC_a' }, '111')).toBe('SEC_a');
-    expect(probe({ short_id: '111', secUid: 'SEC_b' }, '111')).toBe('SEC_b');
+  it('接口失败 + 本地 uid 不符 → 空（防串号）', async () => {
+    const { value } = await probe({
+      api: new Error('network'), stored: { uid: '222', sec_uid: 'SEC_x' }, expectedUid: '111',
+    });
+    expect(value).toBe('');
   });
 
-  it('user_info 无 sec_uid → 叠加空（不回退到别的字段）', () => {
-    expect(probe({ uid: '111', nickname: '小九' }, '111')).toBe('');
+  it('接口失败 + 无本地来源 → 空', async () => {
+    expect((await probe({ api: new Error('x'), expectedUid: '111' })).value).toBe('');
   });
 
-  it('user_info 空时回落到 __INITIAL_STATE__（uid 对齐）', () => {
-    expect(probe(null, '111', { __INITIAL_STATE__: { userInfo: { uid: '111', sec_uid: 'SEC_st' } } })).toBe('SEC_st');
+  it('expectedUid 为空（单账号未指定）→ 接口成功即采用', async () => {
+    const { value } = await probe({ api: { user: { uid: '999', sec_uid: 'SEC_q' } }, expectedUid: '' });
+    expect(value).toBe('SEC_q');
   });
 
-  it('__INITIAL_STATE__ 的 uid 不一致 → 空', () => {
-    expect(probe(null, '111', { __INITIAL_STATE__: { userInfo: { uid: '222', sec_uid: 'SEC_st' } } })).toBe('');
+  it('接口无 user.sec_uid → 回落本地（兼容 sec_user_id / secUid 命名）', async () => {
+    expect((await probe({ api: { user: {} }, stored: { user_id: '111', sec_user_id: 'SEC_a' }, expectedUid: '111' })).value).toBe('SEC_a');
+    expect((await probe({ api: null, stored: { short_id: '111', secUid: 'SEC_b' }, expectedUid: '111' })).value).toBe('SEC_b');
   });
 
-  it('来源无 uid 字段（无法证伪）→ 采用（diag 标未校验）', () => {
-    expect(probe({ sec_uid: 'SEC_noverify' }, '111')).toBe('SEC_noverify');
+  it('接口与 user_info 都空时回落到 __INITIAL_STATE__（uid 对齐）', async () => {
+    const { value } = await probe({
+      api: null, expectedUid: '111',
+      win: { __INITIAL_STATE__: { userInfo: { uid: '111', sec_uid: 'SEC_st' } } },
+    });
+    expect(value).toBe('SEC_st');
   });
 
-  it('结果缓存：第二次不再读 localStorage', () => {
+  it('本地来源无 uid 字段（无法证伪）→ 采用（diag 标未校验）', async () => {
+    expect((await probe({ api: null, stored: { sec_uid: 'SEC_noverify' }, expectedUid: '111' })).value).toBe('SEC_noverify');
+  });
+
+  it('结果缓存：第二次不再打接口', async () => {
     const build = loadSecUidProbe();
-    let reads = 0;
+    const calls = { n: 0 };
     const fn = build(
-      { getItem: () => { reads++; return JSON.stringify({ uid: '111', sec_uid: 'SEC' }); } },
+      { getItem: () => JSON.stringify({ uid: '111', sec_uid: 'SEC' }) },
       {},
       { log() {}, warn() {} },
+      async () => { calls.n++; return { user: { uid: '111', sec_uid: 'SEC' } }; },
     );
-    const self = { _secUidCache: null };
-    expect(fn.call(self, '111')).toBe('SEC');
-    expect(fn.call(self, '111')).toBe('SEC');
-    expect(reads).toBe(1);
+    const self = { _secUidCache: null, _q: () => ({}) };
+    expect(await fn.call(self, '111')).toBe('SEC');
+    expect(await fn.call(self, '111')).toBe('SEC');
+    expect(calls.n).toBe(1);
   });
 });

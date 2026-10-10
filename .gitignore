@@ -18,9 +18,10 @@ downloads/
 *.log
 *.bak
 
-# 抓包样本（含真实用户数据，不入库）
+# 抓包样本（含真实用户数据/session cookie，不入库）
 请求.txt
 响应.txt
+*.har
 
 # 崩溃堆栈转储
 *.stackdump

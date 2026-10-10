@@ -70,7 +70,7 @@ $ node cli.js post <aweme_id> "内容" --account 主号
 
 昵称来源（douyin）：只读零请求的 `localStorage.user_info`，且**必须与严格探测出的 uid 一致**才采用——那份本地数据可能是别的账号或登出残留写下的，uid 对不上就宁可不要昵称，也不能把 A 号的名字挂到 B 号上。拿不到就留空，不影响接入。
 
-> `/aweme/v1/web/query/user/` 换哪组参数都只回顶层 `{id, user_uid, user_uid_type, status_code}`，**没有昵称、也没有 `user` 对象**。所以不要试图从这个接口要昵称或 `sec_uid`——昵称与 `myPosts` 要的 `sec_uid` 都改读零请求的本地来源（同上，且同样要与严格探测出的 uid 对齐）。
+> `/aweme/v1/web/query/user/` 换哪组参数都只回顶层 `{id, user_uid, user_uid_type, status_code}`，**没有昵称、也没有 `user` 对象**——别想从这个接口要昵称或 `sec_uid`。昵称读本地来源（`localStorage.user_info`，与严格 uid 对齐）；`sec_uid` 读 `/aweme/v1/web/user/profile/self/` 的 `user.sec_uid`（见下）。
 
 ```jsonc
 // node cli.js accounts
@@ -122,10 +122,9 @@ node scripts/smoke-accounts.js
 node cli.js my                                   # 我的作品（多账号必须 --account：读的是「哪个号」自己的作品）
 node cli.js my --count 20
 node cli.js my --account 主号                     # 多账号下指定是哪个号
-# sec_uid 来源：_getMySecUid 从本地来源（localStorage.user_info / __INITIAL_STATE__）取，
-#   并与严格探测出的 uid 对齐（CLI 把 --account 落到的号经 myPosts 第 3 参传进去）；
-#   取不到就**明确报错**，不再用空 sec_user_id 静默查询（那会返回空/别人的列表）。
-#   注：真实字段来源尚未用抓包证实——若报错，重装最新脚本并回传 Console 的 [Bridge] sec_uid diag。
+# sec_uid 来源：权威来源 = /aweme/v1/web/user/profile/self/ 回包的 user.sec_uid（随会话走，
+#   天然是当前账号）；接口失败才退回本地来源并做 uid 对齐（CLI 把 --account 落到的号经
+#   myPosts 第 3 参传入）。取不到就**明确报错**，不再用空 sec_user_id 静默查询。
 
 node cli.js user <sec_user_id>                   # 任意用户主页作品
 node cli.js user <主页URL>                        # URL 形式亦可
