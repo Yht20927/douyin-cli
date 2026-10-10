@@ -45,6 +45,7 @@ const router = new Router({
   requestTimeout: config.bridge.requestTimeout || 30000,
   token: config.bridge.token,
   maxBodySize: config.bridge.maxBodySize,
+  accounts: config.accounts,
 });
 
 // 创建 HTTP Server

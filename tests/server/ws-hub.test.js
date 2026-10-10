@@ -28,8 +28,8 @@ function connect(opts = {}) {
   });
 }
 
-function hello(ws, site = 'douyin.com') {
-  ws.send(JSON.stringify({ type: 'hello', site, url: 'https://www.douyin.com/', title: '抖音' }));
+function hello(ws, site = 'douyin.com', account = 'ACC_A') {
+  ws.send(JSON.stringify({ type: 'hello', site, account, url: 'https://www.douyin.com/', title: '抖音' }));
 }
 
 beforeAll(async () => {

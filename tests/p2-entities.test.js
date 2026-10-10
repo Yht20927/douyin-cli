@@ -138,6 +138,34 @@ describe('P2: videos repo', () => {
     expect(v.title).toBe('My Video');
     expect(v.lastPostTs).toBe(5000);
   }));
+
+  // ── 多账号：is_mine 归属（P3）──
+  it('account 记下 is_mine 视频归属哪个号', withTempProject(async () => {
+    const videos = require('../lib/memory/videos');
+    videos.upsert({ awemeId: 'v1', isMine: true, title: 'A 的作品', account: 'ACC_A' });
+    videos.upsert({ awemeId: 'v2', isMine: true, title: 'B 的作品', account: 'ACC_B' });
+    expect(videos.get('v1').account).toBe('ACC_A');
+    expect(videos.get('v2').account).toBe('ACC_B');
+  }));
+
+  it('后续不带 account 的观察（markGet）不会抹掉已有归属', withTempProject(async () => {
+    const videos = require('../lib/memory/videos');
+    videos.upsert({ awemeId: 'v1', isMine: true, account: 'ACC_A' });
+    videos.markGet('v1', 5, 1000); // 别的号 get 到这条视频：不带 account
+    expect(videos.get('v1').account).toBe('ACC_A');
+    expect(videos.get('v1').isMine).toBe(true);
+  }));
+
+  it('list 可按 account 过滤（只列某号的作品）', withTempProject(async () => {
+    const videos = require('../lib/memory/videos');
+    videos.upsert({ awemeId: 'v1', isMine: true, account: 'ACC_A' });
+    videos.upsert({ awemeId: 'v2', isMine: true, account: 'ACC_B' });
+    videos.upsert({ awemeId: 'v3', isMine: true, account: 'ACC_A' });
+    const a = videos.list({ isMine: true, account: 'ACC_A' });
+    expect(a.map(v => v.awemeId).sort()).toEqual(['v1', 'v3']);
+    expect(videos.list({ isMine: true, account: 'ACC_B' }).map(v => v.awemeId)).toEqual(['v2']);
+    expect(videos.list({ isMine: true })).toHaveLength(3); // 不指定 = 全部账号
+  }));
 });
 
 describe('P2: cmdGet.persistEntities', () => {

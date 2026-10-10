@@ -32,3 +32,47 @@ describe('dashboard HTML 注入防护', () => {
     expect(html).toContain('评论总数');
   });
 });
+
+// ── 多账号：仪表盘按账号过滤（P3）──
+describe('dashboard 多账号过滤', () => {
+  const auditFile = path.join(process.env.DOUYIN_LOG_DIR, 'audit.json');
+
+  function writeAudit(ops) {
+    fs.writeFileSync(auditFile, JSON.stringify({
+      version: '2.0', updated: new Date().toISOString(),
+      sessions: [{ sessionId: 's1', started: new Date().toISOString(), ended: null, operations: ops }],
+    }));
+  }
+  // 一条成功的 get 操作；account 决定它归属哪个号
+  const getOp = (account, comments) => ({
+    command: 'get', status: 'success',
+    started: new Date().toISOString(),
+    args: { aweme_id: 'v1' }, summary: { comments }, account,
+  });
+  // 从 HTML 里抠出「评论总数」卡片的值（0 会渲染成 —）
+  const totalOf = (html) => {
+    const m = html.match(/评论总数<\/div><div class="value">([^<]+)</);
+    return m ? m[1] : null;
+  };
+
+  it('不指定账号 → 统计全部账号', () => {
+    writeAudit([getOp('ACC_A', 3), getOp('ACC_B', 5)]);
+    expect(totalOf(generateDashboardHTML(null, 7))).toBe('8');
+  });
+
+  it('指定账号 → 只统计该账号', () => {
+    writeAudit([getOp('ACC_A', 3), getOp('ACC_B', 5)]);
+    expect(totalOf(generateDashboardHTML(null, 7, 'ACC_A'))).toBe('3');
+    expect(totalOf(generateDashboardHTML(null, 7, 'ACC_B'))).toBe('5');
+  });
+
+  it('该账号无数据 → 显示 —（不把别的号算进来）', () => {
+    writeAudit([getOp('ACC_B', 5)]);
+    expect(totalOf(generateDashboardHTML(null, 7, 'ACC_A'))).toBe('—');
+  });
+
+  it('账号名走 HTML 转义（防注入）', () => {
+    writeAudit([getOp('ACC_A', 1)]);
+    expect(generateDashboardHTML(null, 7, '<b>x</b>')).toContain('&lt;b&gt;x&lt;/b&gt;');
+  });
+});

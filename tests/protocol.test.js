@@ -4,15 +4,29 @@ const { validateHello, validateResult, validateCallRequest } = require('../lib/s
 
 describe('validateHello', () => {
   it('有效消息', () => {
-    const r = validateHello({ type: 'hello', site: 'douyin.com', url: 'https://douyin.com' });
+    const r = validateHello({ type: 'hello', site: 'douyin.com', account: 'ACC_A', url: 'https://douyin.com' });
     expect(r.valid).toBe(true);
     expect(r.data.site).toBe('douyin.com');
+    expect(r.data.account).toBe('ACC_A');
+  });
+
+  it('nickname 可选：带上就传，缺省归一为空串', () => {
+    expect(validateHello({ type: 'hello', site: 'douyin.com', account: 'A', nickname: '小九' }).data.nickname).toBe('小九');
+    expect(validateHello({ type: 'hello', site: 'douyin.com', account: 'A' }).data.nickname).toBe('');
+    expect(validateHello({ type: 'hello', site: 'douyin.com', account: 'A', nickname: 42 }).data.nickname).toBe('');
   });
 
   it('缺少 site', () => {
     const r = validateHello({ type: 'hello' });
     expect(r.valid).toBe(false);
     expect(r.error).toContain('site');
+  });
+
+  it('缺少 account 被拒（未登录的标签页不应连接）', () => {
+    expect(validateHello({ type: 'hello', site: 'douyin.com' }).valid).toBe(false);
+    expect(validateHello({ type: 'hello', site: 'douyin.com', account: '' }).valid).toBe(false);
+    expect(validateHello({ type: 'hello', site: 'douyin.com', account: 123 }).valid).toBe(false);
+    expect(validateHello({ type: 'hello', site: 'douyin.com' }).error).toContain('account');
   });
 
   it('错误的 type', () => {

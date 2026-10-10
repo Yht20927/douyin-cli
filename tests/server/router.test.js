@@ -188,7 +188,7 @@ describe('Router _call 三路分发', () => {
   });
 
   it('方式1：WS 连接在线 → sendEval + result 回填 → pending 正常消费', async () => {
-    registry.register('douyin.com', { readyState: 1 });
+    registry.register('douyin.com', { readyState: 1 }, { account: 'ACC_A' });
     const callPromise = router.handle(
       makeReq({ method: 'POST', url: '/api/call', body: CALL_BODY }),
       makeRes(),
@@ -205,6 +205,8 @@ describe('Router _call 三路分发', () => {
   });
 
   it('方式2/3：无 WS → 入 poll 队列 → /api/poll 取走 → /api/result 回填 → 200 polling-queued', async () => {
+    // 一个已注册但当前没有在等待的轮询客户端（真实的"命令先到、poll 后到"时序）
+    registry.register('douyin.com', null, { account: 'A' });
     const callRes = makeRes();
     const callPromise = router.handle(
       makeReq({ method: 'POST', url: '/api/call', body: CALL_BODY }),
@@ -217,7 +219,7 @@ describe('Router _call 三路分发', () => {
 
     // poll 客户端取走命令
     const pollRes = makeRes();
-    await router.handle(makeReq({ method: 'GET', url: '/api/poll?site=douyin.com&id=c1' }), pollRes);
+    await router.handle(makeReq({ method: 'GET', url: '/api/poll?channel=douyin.com%23A&id=c1' }), pollRes);
     expect(pollRes.body.type).toBe('eval');
     expect(pollRes.body.expression).toBe('1 + 1');
     const msgId = pollRes.body.id;
@@ -234,17 +236,26 @@ describe('Router _call 三路分发', () => {
     expect(callRes.statusCode).toBe(200);
     expect(callRes.body.value).toBe('ok-value');
     expect(callRes.body.connection).toBe('polling-queued');
+    expect(callRes.body.account).toBe('A');
   });
 
-  it('方式3 超时：无人取队列 → 503 no polling client connected', async () => {
+  it('方式3 超时：有连接但无人取队列 → 503 no polling client connected', async () => {
+    registry.register('douyin.com', null, { account: 'A' });
     const res = makeRes();
     await router.handle(makeReq({ method: 'POST', url: '/api/call', body: CALL_BODY }), res);
     expect(res.statusCode).toBe(503);
     expect(res.body.error).toMatch(/Request timeout.*no polling client connected/s);
   });
 
+  it('完全没有客户端连接 → 立即 503 no_connection（不再空等超时）', async () => {
+    const res = makeRes();
+    await router.handle(makeReq({ method: 'POST', url: '/api/call', body: CALL_BODY }), res);
+    expect(res.statusCode).toBe(503);
+    expect(res.body.code).toBe('no_connection');
+  });
+
   it('WS 在线但一直无结果 → 超时后 fallthrough，最终 503（不再误挂起）', async () => {
-    registry.register('douyin.com', { readyState: 1 });
+    registry.register('douyin.com', { readyState: 1 }, { account: 'ACC_A' });
     const res = makeRes();
     await router.handle(makeReq({ method: 'POST', url: '/api/call', body: CALL_BODY }), res);
     expect(res.statusCode).toBe(503);
@@ -254,5 +265,147 @@ describe('Router _call 三路分发', () => {
     const res = makeRes();
     await router.handle(makeReq({ method: 'POST', url: '/api/result', body: { id: 'gone', value: 1 } }), res);
     expect(res.body.ok).toBe(true);
+  });
+});
+
+// ── 多账号准入与轮换 ──
+
+/** 发起一次调用并把排进队列的命令取走，返回 { res, queued, drained } */
+async function callAndDrain(router, body, channel) {
+  const res = makeRes();
+  const p = router.handle(makeReq({ method: 'POST', url: '/api/call', body }), res);
+  for (let i = 0; i < 30 && ![...router._pollQueue.values()].flat().length; i++) {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  const queued = [...router._pollQueue.values()].flat();
+  if (queued.length) {
+    const pollRes = makeRes();
+    await router.handle(makeReq({ method: 'GET', url: `/api/poll?channel=${encodeURIComponent(channel)}` }), pollRes);
+    const resultRes = makeRes();
+    await router.handle(makeReq({ method: 'POST', url: '/api/result', body: { id: pollRes.body.id, value: 'ok' } }), resultRes);
+    await p;
+  }
+  return { res, queued };
+}
+
+describe('Router 多账号准入与轮换', () => {
+  let registry, hub, router;
+
+  beforeEach(() => {
+    registry = new ConnectionRegistry();
+    hub = makeHubStub();
+    router = new Router({
+      registry, wsHub: hub, token: '', requestTimeout: 80,
+      accounts: { aliases: { A: '主号' }, rotation: { enabled: true, cooldownMs: 15000 } },
+    });
+  });
+
+  it('多账号 + 写操作未指定账号 → 409 account_required 并列出账号', async () => {
+    registry.register('douyin.com', null, { account: 'A' });
+    registry.register('douyin.com', null, { account: 'B' });
+    const res = makeRes();
+    await router.handle(makeReq({
+      method: 'POST', url: '/api/call',
+      body: { site: 'douyin.com', expression: 'x', opType: 'write' },
+    }), res);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe('account_required');
+    expect(res.body.available.map(a => a.account)).toEqual(['A', 'B']);
+    expect(res.body.available[0].alias).toBe('主号');
+  });
+
+  it('单账号 + 写操作未指定账号 → 放行，且只用一个账号时不算歧义', () => {
+    registry.register('douyin.com', null, { account: 'A' });
+    registry.register('douyin.com', null, { account: 'A' }); // 同容器第二个标签页
+    const sel = router._selectConn('douyin.com', null, 'write');
+    expect(sel.conn.account).toBe('A');
+  });
+
+  it('指定未连接的账号 → 404 account_not_connected，不回退到别的账号', async () => {
+    registry.register('douyin.com', null, { account: 'A' });
+    const res = makeRes();
+    await router.handle(makeReq({
+      method: 'POST', url: '/api/call',
+      body: { site: 'douyin.com', expression: 'x', account: 'ZZZ' },
+    }), res);
+    expect(res.statusCode).toBe(404);
+    expect(res.body.code).toBe('account_not_connected');
+  });
+
+  it('读操作按账号轮换：选中最近最少被服务的账号', () => {
+    const a = registry.register('douyin.com', null, { account: 'A' });
+    const b = registry.register('douyin.com', null, { account: 'B' });
+    a.lastServedAt = Date.now() - 60000;
+    b.lastServedAt = Date.now() - 1000;
+    expect(router._selectConn('douyin.com', null, 'read').conn.account).toBe('A');
+  });
+
+  it('写操作把 expectAccount 下发给油猴端（护栏）', async () => {
+    registry.register('douyin.com', null, { account: 'A' });
+    const { queued } = await callAndDrain(router, {
+      site: 'douyin.com', expression: 'x', account: 'A', opType: 'write',
+    }, 'douyin.com#A');
+    expect(queued[0].expectAccount).toBe('A');
+  });
+
+  it('读操作不下发 expectAccount', async () => {
+    registry.register('douyin.com', null, { account: 'A' });
+    const { queued } = await callAndDrain(router, {
+      site: 'douyin.com', expression: 'x',
+    }, 'douyin.com#A');
+    expect(queued[0].expectAccount).toBeNull();
+  });
+
+  it('刚写过评论的账号会被读轮换排到后面', () => {
+    const a = registry.register('douyin.com', null, { account: 'A' });
+    const b = registry.register('douyin.com', null, { account: 'B' });
+    a.lastServedAt = Date.now() - 120000;
+    b.lastServedAt = Date.now() - 60000;
+    // 都过了冷却：A 最久没被读过 → 轮到 A
+    expect(router._selectConn('douyin.com', null, 'read').conn.account).toBe('A');
+    // A 刚发过评论 → 改挑 B，避免同一个号刚写完又立刻被派读
+    registry.markWrite(a.id);
+    expect(router._selectConn('douyin.com', null, 'read').conn.account).toBe('B');
+  });
+
+  it('/api/connect 带 account 注册到对应通道并回传 channel', async () => {
+    const res = makeRes();
+    await router.handle(makeReq({
+      method: 'POST', url: '/api/connect',
+      body: { site: 'douyin.com', account: 'A', url: 'https://www.douyin.com/' },
+    }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.channel).toBe('douyin.com#A');
+    expect(registry.getAccount('douyin.com', 'A')).toBeTruthy();
+  });
+
+  it('/api/connect 注册时带上昵称，/api/status 原样透出', async () => {
+    const conn = makeRes();
+    await router.handle(makeReq({
+      method: 'POST', url: '/api/connect',
+      body: { site: 'douyin.com', account: 'A', nickname: '小九' },
+    }), conn);
+    const res = makeRes();
+    await router.handle(makeReq({ method: 'GET', url: '/api/status' }), res);
+    expect(res.body.accounts['douyin.com'][0].nickname).toBe('小九');
+  });
+
+  it('/api/connect 带 prevId 时精确清掉旧连接（换号重注册）', async () => {
+    const older = registry.register('douyin.com', null, { account: '' });
+    const res = makeRes();
+    await router.handle(makeReq({
+      method: 'POST', url: '/api/connect',
+      body: { site: 'douyin.com', account: 'A', prevId: older.id },
+    }), res);
+    expect(registry.getAccount('douyin.com', '')).toBeNull();
+    expect(registry.getAccount('douyin.com', 'A')).toBeTruthy();
+  });
+
+  it('/api/status 暴露按账号分组的连接与别名', async () => {
+    registry.register('douyin.com', null, { account: 'A' });
+    const res = makeRes();
+    await router.handle(makeReq({ method: 'GET', url: '/api/status' }), res);
+    expect(res.body.accounts['douyin.com'][0].alias).toBe('主号');
+    expect(res.body.accounts['douyin.com'][0].channel).toBe('douyin.com#A');
   });
 });

@@ -138,4 +138,45 @@ describe('audit double-write', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].error).toBe('status_code=8');
   }));
+
+  // ── 多账号归属（P1）：读命令也要能记到"哪个号服务了它" ──
+  it('setAccount 兜底：args 未带 account 时用本次服务账号写入 events', withTempProject(async () => {
+    const { AuditLogger } = require('../lib/audit');
+    const events = require('../lib/memory/events');
+    const a = new AuditLogger();
+    a.setAccount('ACC_A');
+    a.startOperation('get', { aweme_id: 'v1' }); // 读命令不再手动传 account
+    a.endOperation('success', {}, { comments: [] });
+    const [evt] = events.query();
+    expect(evt.command).toBe('get');
+    expect(evt.account).toBe('ACC_A');
+  }));
+
+  it('args.account 优先于 setAccount（campaign 按活动账号归属）', withTempProject(async () => {
+    const { AuditLogger } = require('../lib/audit');
+    const events = require('../lib/memory/events');
+    const a = new AuditLogger();
+    a.setAccount('ACC_A');
+    a.startOperation('post', { aweme_id: 'v1', account: 'ACC_B' });
+    a.endOperation('success', {}, null);
+    expect(events.query()[0].account).toBe('ACC_B');
+  }));
+
+  it('未归属：既不传 account 也不 setAccount → account 为 null', withTempProject(async () => {
+    const { AuditLogger } = require('../lib/audit');
+    const events = require('../lib/memory/events');
+    const a = new AuditLogger();
+    a.startOperation('get', { aweme_id: 'v1' });
+    a.endOperation('success', {}, null);
+    expect(events.query()[0].account).toBeNull();
+  }));
+
+  it('events 可按账号过滤（多号查询）', withTempProject(async () => {
+    const events = require('../lib/memory/events');
+    events.append({ command: 'get', awemeId: 'v1', account: 'ACC_A' });
+    events.append({ command: 'get', awemeId: 'v2', account: 'ACC_B' });
+    events.append({ command: 'my',  awemeId: 'v3', account: 'ACC_A' });
+    expect(events.query({ account: 'ACC_A' })).toHaveLength(2);
+    expect(events.query({ account: 'ACC_B' })).toHaveLength(1);
+  }));
 });

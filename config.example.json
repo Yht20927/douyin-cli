@@ -27,5 +27,13 @@
   "intervals": {
     "write": [40, 55],
     "read": [30, 50]
+  },
+  "accounts": {
+    "_comment": "多账号。aliases 把平台 uid 映射成好记的名字（用 `node cli.js accounts alias <uid> <别名>` 写）；rotation 控制读操作（get/search/…）的账号轮换。写操作（post/like/…）不受 rotation 影响，必须用 --account 显式指定。",
+    "aliases": {},
+    "rotation": {
+      "enabled": true,
+      "cooldownMs": 15000
+    }
   }
 }

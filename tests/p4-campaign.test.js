@@ -96,7 +96,7 @@ describe('P4: campaign 命令族', () => {
   it('create → list → status → pause → resume', withTempProject(async () => {
     const cmdCampaign = require('../lib/commands/campaign');
     const { AuditLogger } = require('../lib/audit');
-    const ctx = { audit: new AuditLogger(), config: {} };
+    const ctx = { audit: new AuditLogger(), config: {}, account: 'acc1' };
 
     const c = await cmdCampaign(ctx, ['create', '--name', '618', '--videos', 'v1,v2', '--daily-quota', '10']);
     expect(c.name).toBe('618');
@@ -128,7 +128,7 @@ describe('P4: campaign 命令族', () => {
     };
     try {
       const ctx = {
-        audit: new AuditLogger(), config: {},
+        audit: new AuditLogger(), config: {}, account: 'acc1',
         cmdGet: async () => [
           { cid: 'c1', text: '求推荐', user: { uid: 'u1' } },
           { cid: 'c2', text: '看看', user: { uid: 'u2' } },
@@ -164,7 +164,7 @@ describe('P4: campaign 命令族', () => {
 
     try {
       const ctx = {
-        audit: new AuditLogger(), config: {},
+        audit: new AuditLogger(), config: {}, account: 'acc1',
         cmdGet: async () => [{ cid: 'c1', text: 'x', user: { uid: 'u1' } }, { cid: 'c2', text: 'y', user: { uid: 'u2' } }],
         cmdPost: async (a) => ({ cid: 'reply-' + a[3], status: 'published' }),
       };
@@ -194,7 +194,7 @@ describe('P4: campaign 命令族', () => {
     const users = require('../lib/memory/users');
     try {
       const ctx = {
-        audit: new AuditLogger(), config: {},
+        audit: new AuditLogger(), config: {}, account: 'acc1',
         cmdGet: async () => [{ cid: 'c1', text: 'x', user: { uid: 'ub' } }],
         cmdPost: async () => { throw new Error('should not be called'); },
       };
@@ -220,7 +220,7 @@ describe('P4: campaign daemon（--daemon / stop）', () => {
   it('status: 无 PID 文件 → daemon.running=false', withTempProject(async () => {
     const cmdCampaign = require('../lib/commands/campaign');
     const { AuditLogger } = require('../lib/audit');
-    const ctx = { audit: new AuditLogger(), config: {} };
+    const ctx = { audit: new AuditLogger(), config: {}, account: 'acc1' };
     const c = await cmdCampaign(ctx, ['create', '--name', 'd0', '--videos', 'v1']);
     const st = await cmdCampaign(ctx, ['status', String(c.id)]);
     expect(st.daemon.running).toBe(false);
@@ -232,7 +232,7 @@ describe('P4: campaign daemon（--daemon / stop）', () => {
     const { AuditLogger } = require('../lib/audit');
     const fs = require('fs');
     const path = require('path');
-    const ctx = { audit: new AuditLogger(), config: {} };
+    const ctx = { audit: new AuditLogger(), config: {}, account: 'acc1' };
     const c = await cmdCampaign(ctx, ['create', '--name', 'd1', '--videos', 'v1']);
     const pidFile = path.join(process.env.DOUYIN_STORAGE_DIR, `campaign-${c.id}.pid`);
     fs.writeFileSync(pidFile, '999999'); // 必定不存在的 pid
@@ -246,7 +246,7 @@ describe('P4: campaign daemon（--daemon / stop）', () => {
     const { AuditLogger } = require('../lib/audit');
     const fs = require('fs');
     const path = require('path');
-    const ctx = { audit: new AuditLogger(), config: {} };
+    const ctx = { audit: new AuditLogger(), config: {}, account: 'acc1' };
     const c = await cmdCampaign(ctx, ['create', '--name', 'd2', '--videos', 'v1']);
     // 无 task：子进程前台 run 立即退出（getDue 空），但 PID 文件已由 spawn 写入
     const r = await cmdCampaign(ctx, ['run', String(c.id), '--daemon']);
