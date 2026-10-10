@@ -113,6 +113,41 @@ node cli.js getReply <aweme_id> --batch
 
 ---
 
+## 👥 多账号（多号同时驱动）
+
+同一套 Bridge 可同时驱动多个抖音账号（一个浏览器容器/窗口登录一个号）。
+
+**核心规则**：
+
+- 一条连接 = 一个「站点 + 登录账号」，服务端按通道 `site#uid` 区分；**未登录的标签页不接入**。
+- **公共读操作**（`get` / `search` / `user` …）未指定账号时按账号**轮换**，且**同一条命令内钉扎在同一账号**（避免分页 cursor 跨号错乱）。
+- **写操作**（`post` / `like` / `delete-comment` / `dm send` …）与**读取自身数据**（`my` / `dm list`）在**多账号下必须 `--account` 显式指定**，绝不静默改投；指定了未知账号会直接报错并列出可用账号。
+- `log` / `events` / `profile` / `dashboard` 的 `--account` 是**过滤条件**，账号离线也能查历史（不参与路由）。
+
+```bash
+# 列出在线账号（uid / 别名 / 昵称 / 最近服务时间）
+node cli.js accounts
+
+# 给账号起个好记的别名（之后 --account 可用别名）
+node cli.js accounts alias <uid> 主号
+
+# 指定账号（读：只落该号；写/自身数据：多号时必填）
+node cli.js my --account 主号
+node cli.js post <aweme_id> "内容" --account 主号
+
+# 本地记忆按账号过滤（不用 --account = 全部账号）
+node cli.js log --account 主号
+node cli.js events --account 主号
+```
+
+**数据归属**：`events` / `videos` / `drafts` / `campaigns` 记 `account`，可回答「这件事是哪个号做的」；平台内容表（`comments` / `users` / `reply_corpus`）**全局共享**（刻意设计：两个自己的号去回同一条评论是明显的异常信号）。
+
+**脚本版本**：油猴脚本会向服务端上报 `clientVersion`；脚本落后于当前注册契约时，`accounts` 与横幅会打 ⚠ 提示去 Tampermonkey 重装 `scripts/douyin.user.js`。
+
+> 设计细节与后续计划见 [`docs/multi-account-roadmap.md`](./docs/multi-account-roadmap.md)。
+
+---
+
 ## 🧠 ReplyEngine 评论生成引擎
 
 独立于 suggest 命令的新一代评论生成系统，支持三种模式：
@@ -255,6 +290,7 @@ node cli.js browse 穿搭 美食 --max-notes 3
 | 命令 | 用途 |
 |------|------|
 | `dm` | 私信发送/监听/列表 |
+| `accounts` | 多账号：列出在线账号 / `accounts alias <uid> <别名>` |
 | `cleanup` | 清理过期记忆（TTL） |
 
 ---
@@ -398,7 +434,7 @@ douyin-cli/
 │   ├── douyin.user.js        # 油猴脚本（页面 fetch + 参数随机化）
 │   ├── _template.user.js     # 新站点油猴模板
 │   └── bridge.sh             # Bridge Server 生命周期管理
-├── tests/                    # vitest（234 用例，21 文件）
+├── tests/                    # vitest（321 用例，24 文件）
 │   ├── server/               # Router 三路分发 / WS 心跳测试
 │   ├── shared/               # 共享工具测试
 │   ├── reply-engine/         # ReplyEngine 测试（v4 新增）

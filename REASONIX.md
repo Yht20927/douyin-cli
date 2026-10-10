@@ -1,6 +1,6 @@
 # REASONIX.md — douyin-comment-cli (Bridge Framework v2)
 
-> 适用版本: v3 · 最后更新: 2026-07-07 · 维护者: Yht20927
+> 适用版本: v4 · 最后更新: 2026-10-10 · 维护者: Yht20927
 
 ## Stack
 - **Node.js** — vanilla, no framework
@@ -34,6 +34,8 @@
 - `scripts/_template.user.js` — 油猴脚本模板（新站点参考）
 - `scripts/import-audit-v2.js` — **v3 历史回灌脚本**（logs/audit.json → events 表，幂等）
 - `docs/v3-roadmap.md` — **v3 升级路线图**（P0-P5 逐阶段任务/schema/验收）
+- `docs/multi-account-roadmap.md` — **多账号路线图**（channel 寻址 / 归属 / 准入 / 未提交变更索引）
+- `scripts/smoke-accounts.js` — 多账号端到端冒烟（隔离 server + 假客户端，无需浏览器）
 - `SKILL.md` — agent 操作手册
 - `reply-strategy.md` — 自动回复策略模板
 
@@ -82,6 +84,29 @@ Bridge Server 代码已本地化（server.js + lib/server/ + lib/client/ + lib/s
 - **删除评论** — 只能删除自己的评论，接口 `/comment/delete?cid=`，POST 无 body
 - **视频下载** — 通过 `/aweme/detail/` 获取视频详情，`play_addr` / `bit_rate` 提取视频 URL，`music.play_url` 提取 BGM；下载保存到 `./downloads/`（已 gitignore）
 - **零 npm 依赖** — ~~安装后无需 `npm install`~~ → v3 起需 `npm install`（新增 `better-sqlite3`，原生模块需要预编译）
+
+---
+
+## 多账号（Multi-account）
+
+一个浏览器容器/窗口 = 一个登录账号；服务端按 **channel = `site#uid`**（`lib/shared/protocol.js` `channelOf`）寻址。完整设计与进度见 `docs/multi-account-roadmap.md`。
+
+### 不变量（改代码前必读）
+- **未登录标签页不接入**：握手 `validateHello` 强校验 `account`，空则 400 `account_required` —— 身份不明的连接既不能承接写、也无法做护栏校验。
+- **写 / 自身数据必须显式账号**：`cli.js` `isWriteInvocation` / `isIdentityScoped` 判定；多账号下缺 `--account` 直接拒绝（服务端再拦一次兜底）。读操作未指定 → 服务端按 `lastWriteAt` 轮换，且**同命令内钉扎**（`bridgeCall` 里 `currentAccount` 一旦确定就不再变，避免分页 cursor 跨号错乱）。
+- **`--account` 双语义**：路由用（`get`/`post`/…）严格解析，未知账号**报错不回退**；本地查询用（`log`/`events`/`profile`/`dashboard`，见 `LOCAL_QUERY`）当**过滤条件**，允许离线历史账号。
+- **字段必须穿过 `BridgeClient.call`**：`account`/`opType`/`noThrottle` 少解构一个就会静默退化成「未指定读操作」——曾踩过（`--account` 形同虚设 + 写护栏失效），`tests/bridge-client.test.js` 钉住透传。
+- **`clientVersion` 契约**：改注册契约或改脚本语义时，同步升 `lib/commands/helpers.js` 的 `CLIENT_PROTOCOL_VERSION` 与 `scripts/douyin.user.js` 的 `CLIENT_VERSION`，否则旧脚本会被当新版静默用错（横幅/`accounts` 会打 ⚠ 提示重装）。
+- **归属注入**：命令未指定 `account` 时，`AuditLogger.setAccount` 用本次实际服务账号兜底写 `events.account`（含读命令）。
+
+### 归属 vs 共享
+- **记 `account`**：`events` / `videos`(schema v10) / `drafts` / `campaigns`
+- **全局共享（刻意不加 account）**：`comments` / `users` / `reply_corpus` —— 两个自己的号去回同一条评论是明显的异常信号
+
+### 身份探测（油猴端）
+- `_getMyUidStrict`：**只认接口** `/aweme/v1/web/query/user/` 顶层 `user_uid`；cookie/localStorage 兜底会串号，一律不用。
+- `_getMyNickname` / `_getMySecUid`：零请求本地来源（`localStorage.user_info` / `__INITIAL_STATE__`），**必须与严格探测出的 uid 对齐**，不符宁可不要。
+- `myPosts` 依赖 `_getMySecUid`，取不到直接报错（旧实现读 `info.user.sec_uid` 恒空 —— 那个接口只回顶层 `{id,user_uid,...}`）。
 
 ---
 
@@ -149,9 +174,9 @@ prompts/
 
 ---
 
-## v3 Memory Layer（P0 已完成）
+## v3 Memory Layer（P0–P4 已完成）
 
-> 完整路线图见 `docs/v3-roadmap.md`。
+> 完整路线图见 `docs/v3-roadmap.md`。当前 schema **v10**。
 
 ### 设计要点
 - **双写过渡**：所有 v2 命令仍旧写 `logs/audit.json`，AuditLogger 末尾旁路写入 SQLite `events` 表。SQLite 写失败不抛异常，audit.json 仍是真实之源。
@@ -159,13 +184,17 @@ prompts/
 - **自愈**：删除 `storage/` 后任意命令自动重建库 + 跑 schema 迁移到最新版本。
 - **跨平台预留**：所有表带 `platform TEXT NOT NULL DEFAULT 'douyin'` 字段，未来与 xiaohongshu skill 共享 reply_corpus / users。
 
-### 当前 schema（v1）
-- `events` — 操作事件流（替代 audit.json 全表扫）
-  - 索引：`(aweme_id, ts) (uid, ts) (command, ts) (session_id)`
+### 当前 schema（v10）
+- `events` — 操作事件流（替代 audit.json 全表扫），v9 起带 `account`
+- `users` / `comments` / `videos` — P2 实体表（`videos` v10 起带 `account` + `is_mine` 归属）
+- `reply_corpus` / `failure_patterns` — P3 语料与避雷清单（文本匹配走 `md5(normalize(text))`）
+- `campaigns` / `campaign_tasks` — P4 推广活动，v9 起带 `account`
+- `drafts` — v9 起带 `account`
 
 ### 模块入口
 - `lib/memory/db.js` — `getDb()` 单例 + WAL + 自动迁移
 - `lib/memory/events.js` — `append() / query() / count() / findLastFetchTime()`
+- `lib/memory/` 下 `users.js` / `videos.js` / `campaigns.js` / `drafts.js` 等实体模块
 - `scripts/import-audit-v2.js` — 历史 audit.json → events 表，幂等
 
 ### Watch out for（v3）
