@@ -31,11 +31,35 @@
     reconnectDelay: 2000,
   };
 
+  // 注册契约版本：随 /api/connect 上报，服务端存下来透出到 accounts。
+  // v3：注册带登录账号、poll 用 channel（site#uid）、写操作校验 expectAccount。
+  // 改动注册契约就 +1，并同步 core/commands/helpers.js 的 CLIENT_PROTOCOL_VERSION。
+  const CLIENT_VERSION = 3;
+
   let connected = false;
   let registered = false;
   let connId = null;           // 服务端返回的连接 ID，poll 时回传用于更新活跃时间
   let retryCount = 0;          // 连续重试次数（指数退避用）
   let pollFailCount = 0;       // 连续 poll 失败次数
+
+  // ── 多账号身份 ──
+  // 一个浏览器连接 = 站点 + 登录账号，服务端按 channel = site#uid 分桶。
+  // 同站点的两个号各占一个 channel，读轮换与写准入都按账号判定。
+  let account = null;          // whoami() 的完整结果（昵称/头像/uid）
+  let registeredUid = '';      // 当前注册对应的账号 uid；'' = 未识别（未登录/旧接口）
+  let channel = CONFIG.site;   // 当前使用的通道键
+  // 轮询代次：换号重连时 +1，让旧的在途 poll 在返回后自行退出。
+  // 没有它的话，refreshAccountIfChanged 里新起的 connect()/poll() 会和旧循环
+  // 叠在一起 —— 每换一次号就多一条长轮询，最终同一页面有 N 条 poll 在跑。
+  let pollGeneration = 0;
+
+  function channelOf(site, uid) {
+    return uid ? site + '#' + uid : site;
+  }
+
+  function uidOf(me) {
+    return me && me.uid ? String(me.uid) : '';
+  }
 
   function gmFetch(url, opts) {
     // 自动注入 Authorization header
@@ -53,21 +77,22 @@
 
   // ── HTTP 连接管理（通过 GM_xmlhttpRequest 绕过 PNA）──
 
-  // 注册前抓一次登录账号信息（whoami 跑在页面上下文，带页面 cookie）。
+  // 注册/换号检测共用：让页面上下文里的 whoami 探测一次登录账号。
+  // force=true 时绕过页面缓存 —— 换号、SPA 导航、重连都必须重新探测，
+  // 否则会把上一个号的身份继续挂在当前连接上。
   // 最多等 5 秒：拿不到（未登录 / 接口变了 / 脚本刚注入 API 还没就绪）
-  // 就按"没有账号"注册 —— 连接本身永远比账号显示优先。
-  // 重新注册（poll 连续失败后的重连）会再抓一次，因此换号后重新登录
-  // 不需要重装脚本，重连即可更新。
-  async function fetchAccount() {
+  // 仍按"未识别账号"注册 —— 读操作还能用，写操作会被服务端拒绝
+  // （无法确认身份的连接不能承担写操作）。
+  async function fetchAccount(force) {
     try {
-      var p = (0, unsafeWindow.eval)(
-        '(window.__bridge && window.__bridge.whoami) ? window.__bridge.whoami() : Promise.resolve(null)'
-      );
-      var account = await Promise.race([
+      var expr = '(window.__bridge && window.__bridge.whoami) ? window.__bridge.whoami('
+        + (force ? 'true' : 'false') + ') : Promise.resolve(null)';
+      var p = (0, unsafeWindow.eval)(expr);
+      var me = await Promise.race([
         Promise.resolve(p),
         new Promise(function (res) { setTimeout(function () { res(null); }, 5000); }),
       ]);
-      return (account && account.nickname) ? account : null;
+      return (me && (me.uid || me.nickname)) ? me : null;
     } catch (e) {
       return null;
     }
@@ -75,7 +100,10 @@
 
   async function connect() {
     if (!registered) {
-      var account = await fetchAccount();
+      // 每次（重）连都强制重探：换号后必须按新 uid 重新注册，
+      // 否则服务端会继续把命令派给旧账号的通道。
+      var me = await fetchAccount(true);
+      var uid = uidOf(me);
       try {
         console.log('[Bridge] Registering via GM_xmlhttpRequest...');
         var r = await gmFetch(CONFIG.server + '/api/connect', {
@@ -83,14 +111,18 @@
           headers: { 'Content-Type': 'application/json' },
           data: JSON.stringify({
             site: CONFIG.site,
+            // 完整对象用于界面展示；uid 是服务端路由的键
+            account: me || undefined,
+            nickname: me && me.nickname ? me.nickname : '',
+            // 脚本能力版本：3 = 注册带账号、poll 带 channel、写操作校验 expectAccount。
+            // 服务端据此区分"旧脚本不会上报"与"新脚本但识别失败"。
+            clientVersion: CLIENT_VERSION,
+            // 换号重注册时让服务端精确清掉自己上一条连接，
+            // 避免旧通道残留（按 site 清理会误伤同站点的其他账号）。
+            prevId: connId || undefined,
             url: location.href,
             title: document.title,
             userAgent: navigator.userAgent,
-            // 脚本能力版本：2 = 注册时会带登录账号信息。
-            // 服务端据此区分"旧脚本不会上报"（提示重装）与"新脚本但识别失败"
-            // （提示登录/刷新），两种情况给用户的指引完全不同。
-            clientVersion: 2,
-            account: account || undefined,
           }),
         });
         if (r.status === 200) {
@@ -99,9 +131,17 @@
           retryCount = 0; // 成功后重置
           var data = JSON.parse(r.responseText);
           connId = data.id || null; // 保存服务端返回的连接 ID
-          console.log('[Bridge] ✓ Registered with Bridge Server, id=' + (connId || '').slice(0, 8));
+          account = me;
+          registeredUid = uid;
+          channel = data.channel || channelOf(CONFIG.site, uid);
+          console.log('[Bridge] ✓ Registered with Bridge Server, id=' + (connId || '').slice(0, 8)
+            + ' account=' + (uid || '未识别') + ' channel=' + channel);
         } else {
-          throw new Error('status ' + r.status);
+          // 把服务端给的原因带出来：否则只看到 "status 400"，
+          // 分不清是"脚本太旧"还是"没登录"
+          var detail = '';
+          try { detail = (JSON.parse(r.responseText) || {}).error || ''; } catch (e) {}
+          throw new Error('status ' + r.status + (detail ? ' — ' + detail : ''));
         }
       } catch (err) {
         retryCount++;
@@ -112,14 +152,16 @@
         return;
       }
     }
-    poll();
+    poll(++pollGeneration);
   }
 
-  async function poll() {
-    if (!registered) return;
+  async function poll(gen) {
+    if (!registered || gen !== pollGeneration) return;
     try {
-      var pollUrl = CONFIG.server + '/api/poll?site=' + CONFIG.site;
-      if (connId) pollUrl += '&id=' + connId;
+      // channel 是账号级寻址键：服务端按 site#uid 分桶，同一站点的
+      // 两个账号各有各的队列，不会互相取走对方的命令。
+      var pollUrl = CONFIG.server + '/api/poll?channel=' + encodeURIComponent(channel);
+      if (connId) pollUrl += '&id=' + encodeURIComponent(connId);
       var r = await gmFetch(pollUrl, { method: 'GET' });
       if (r.status !== 200) throw new Error('status ' + r.status);
       var msg = JSON.parse(r.responseText);
@@ -128,6 +170,30 @@
         connected = true;
         pollFailCount = 0;
         try {
+          // 写操作护栏：服务端下发 expectAccount，身份不符就拒绝执行。
+          // 防的是容器/登录态切换的竞态 —— 用 A 号发了 B 号的评论是不可逆的事故。
+          if (msg.expectAccount) {
+            // 写前**强制重探**当前登录身份，不用缓存。
+            // 缓存的身份在换号瞬间是旧号的 —— 拿它比对会把 A 号的写操作
+            // 放行到已经切成 B 号的页面上，这是本工具最不可逆的事故。
+            // 多一次 profile 请求换一个"绝不串号"，值得。
+            var fresh = await fetchAccount(true);
+            var whoUid = uidOf(fresh) || '';
+            if (!whoUid) {
+              throw new Error('无法确认当前浏览器登录账号，拒绝执行写操作（要求 ' + msg.expectAccount + '）');
+            }
+            if (whoUid !== String(msg.expectAccount)) {
+              // 页面身份已经变了：结束旧轮询，按新身份重新注册。
+              // 当前这条命令仍然拒绝（它属于旧号），不能将错就错。
+              pollGeneration++;
+              registered = false;
+              connected = false;
+              setTimeout(connect, 0);
+              throw new Error('账号不匹配：当前登录 ' + whoUid
+                + '，该操作要求 ' + msg.expectAccount + '，已拒绝执行');
+            }
+            account = fresh;
+          }
           // 在页面上下文执行 eval
           var result = (0, unsafeWindow.eval)(msg.expression);
           if (msg.awaitPromise !== false) result = await Promise.resolve(result);
@@ -135,20 +201,23 @@
           await gmFetch(CONFIG.server + '/api/result', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ id: msg.id, value: safeSerialize(result) }),
+            // 回传实际执行账号：服务端用它做写操作的二次校验（防旧脚本/伪造结果）
+            data: JSON.stringify({ id: msg.id, value: safeSerialize(result), account: uidOf(account) }),
           });
         } catch (e) {
+          // 出错时只回错误：带上不符的 account 会被服务端当成"账号不一致"，
+          // 反而盖掉这里更具体的拒绝原因。
           await gmFetch(CONFIG.server + '/api/result', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify({ id: msg.id, error: e.message || String(e) }),
           });
         }
-        poll();
+        poll(gen);
       } else {
         connected = true;
         pollFailCount = 0;
-        poll();
+        poll(gen);
       }
     } catch (err) {
       pollFailCount++;
@@ -158,10 +227,11 @@
         connected = false;
         registered = false;
         pollFailCount = 0;
+        pollGeneration++;              // 让可能残留的旧循环退出
         setTimeout(connect, CONFIG.reconnectDelay);
       } else {
-        // 单次失败：短暂等待后重试
-        setTimeout(poll, 1000);
+        // 单次失败：短暂等待后重试（同一代次；换号会把它作废）
+        setTimeout(function () { poll(gen); }, 1000);
       }
     }
   }
@@ -179,12 +249,38 @@
   }
 
   // ── SPA 导航检测（拦截页面 history API）──
+  //
+  // 抖音是 SPA：登录/退出/切换账号都不会刷新页面，只会 pushState。
+  // 换号后必须重新探测身份并按新 channel 重注册 —— 否则连接仍挂着旧 uid，
+  // 服务端会把指向新号的写操作派到这个已换号的页面（或反过来）。
   var lastUrl = location.href;
+  var accountCheckTimer = null;
   function checkUrlChange() {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
+      // 合并连续导航（一次登录会触发多次 pushState），300ms 后只探测一次
+      clearTimeout(accountCheckTimer);
+      accountCheckTimer = setTimeout(refreshAccountIfChanged, 300);
     }
   }
+
+  async function refreshAccountIfChanged() {
+    var me = await fetchAccount(true);
+    var uid = uidOf(me);
+    if (uid === registeredUid) {
+      // 同号但资料变了（昵称/头像）：只更新本地展示，连接不用重建
+      if (me) account = me;
+      return;
+    }
+    console.log('[Bridge] 账号变化 ' + (registeredUid || '(未识别)')
+      + ' → ' + (uid || '(未识别)'));
+    // 保留 connId：connect() 会把它作为 prevId 交给服务端清掉旧连接
+    registered = false;
+    connected = false;
+    pollGeneration++;                // 作废在途的旧账号 poll
+    connect();
+  }
+
   var _pushState = unsafeWindow.history.pushState;
   var _replaceState = unsafeWindow.history.replaceState;
   unsafeWindow.history.pushState = function () { _pushState.apply(this, arguments); checkUrlChange(); };
@@ -971,9 +1067,18 @@ window.__bridge = {
     var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:id,cursor:c||0,count:n||20,item_type:'0',pc_img_format:'webp',cut_version:'1'}));
     return await bridgeFetchJson('getComments','/aweme/v1/web/comment/list/?'+p,{credentials:'include'},true);
   },
-  myPosts: async function(cursor,count){
-    var info=await bridgeFetchJson('myPosts.userinfo','/aweme/v1/web/query/user/?device_platform=webapp&aid=6383&channel=channel_pc_web',{credentials:'include'},true);
-    var secUid=(info.user||{}).sec_uid||'';
+  // 我的作品列表。
+  // expectedUid：调用方（CLI --account / GUI 当前账号）传入"这条命令应落到哪个账号"，
+  // 用于 sec_uid 的交叉校验 —— 多账号下拿错 sec_uid 就会把别人的作品当自己的落库。
+  myPosts: async function(cursor,count,expectedUid){
+    var secUid=await this._getMySecUid(expectedUid);
+    if(!secUid){
+      // 旧实现读 /query/user/ 的 info.user.sec_uid；那个接口只回顶层
+      // {id,user_uid,...}，恒空 —— 拿空 sec_user_id 去查只会静默返回空/别人的列表。
+      // 宁可报错也不静默发错。
+      throw new Error('取不到当前账号的 sec_uid，拒绝用空 sec_user_id 查询。'
+        +'请确认已登录抖音网页版，并到 Tampermonkey 重装最新版 scripts/douyin.user.js。');
+    }
     var p=new URLSearchParams(Object.assign(this._q(),{sec_user_id:secUid,max_cursor:cursor||0,count:count||18,locate_query:'false',show_live_replay_strategy:'1',need_time_list:'1',time_list_query:'0',whale_cut_token:'',cut_version:'1',publish_video_strategy_type:'2',from_user_page:'0'}));
     return await bridgeFetchJson('myPosts','/aweme/v1/web/aweme/post/?'+p,{credentials:'include'},true);
   },
@@ -1255,15 +1360,22 @@ window.__bridge = {
     if(!pr)throw new Error('图片提交失败: '+JSON.stringify(commit.body).slice(0,200));
     return {uri:pr.ImageUri,width:pr.ImageWidth,height:pr.ImageHeight,format:pr.ImageFormat,size:pr.ImageSize};
   },
-  // 当前登录账号信息（昵称/头像/uid）。注册连接时上报给 Bridge Server，
+  // 当前登录账号信息（昵称/头像/uid/sec_uid）。注册连接时上报给 Bridge Server，
   // 界面的连接页靠它显示"连的是哪个号"—— 用户关心的是账号，不是页面 URL。
   //
   // 端点选择（按 账号信息.har 实测）：
   //   首选 /user/profile/self/ —— 页面自己取个人资料用的就是它，
   //   返回 { status_code, user: { nickname, uid, short_id, sec_uid, avatar_thumb:{url_list[]} } }
-  //   备选 /query/user/ —— myPosts 同款，作为 profile/self 失效时的退路。
+  //   备选 /query/user/ —— 作为 profile/self 失效时的退路（注意：实测它只回顶层
+  //   {id,user_uid,...}，没有 user 对象，所以这条退路基本不会命中）。
   //   两个都拿不到 user 才返回 null，且每个失败都在控制台留痕，方便排查。
-  whoami: async function(){
+  //
+  // force=true 绕过缓存：换号检测/重连必须拿到当前会话的真实身份，
+  // 用缓存会把上一个号继续挂在连接上。
+  _whoamiCache: null,
+  whoami: async function(force){
+    if(force){ this._whoamiCache = null; this._storageUidCache = null; }
+    if(this._whoamiCache) return this._whoamiCache;
     var endpoints = [
       '/aweme/v1/web/user/profile/self/?device_platform=webapp&aid=6383&channel=channel_pc_web',
       '/aweme/v1/web/query/user/?device_platform=webapp&aid=6383&channel=channel_pc_web',
@@ -1276,7 +1388,7 @@ window.__bridge = {
           var av = '';
           try { av = ((u.avatar_thumb && u.avatar_thumb.url_list) || [])[0] || ''; } catch (e) {}
           var num = function (v) { var n = Number(v); return isFinite(n) && n >= 0 ? Math.floor(n) : null; };
-          return {
+          this._whoamiCache = {
             nickname: String(u.nickname || ''),
             avatar: av,
             secUid: String(u.sec_uid || ''),
@@ -1288,6 +1400,7 @@ window.__bridge = {
             followingCount: num(u.following_count),
             likesReceived: num(u.total_favorited),
           };
+          return this._whoamiCache;
         }
         console.warn('[Bridge] whoami: 第', i + 1, '个接口没有返回 user —', JSON.stringify(info).slice(0, 150));
       } catch (e) {
@@ -1295,6 +1408,28 @@ window.__bridge = {
       }
     }
     return null;
+  },
+  // 取当前登录账号的 sec_uid —— myPosts 查「我的作品」必须要有它。
+  //
+  // 权威来源是 profile/self（whoami 的首选端点）：随会话走，会话落到哪个号
+  // 就返回哪个号，不存在本地残留串号问题。旧实现读 /query/user/ 的
+  // info.user.sec_uid，而那个接口只回顶层字段，恒空。
+  //
+  // expectedUid：调用方指定的账号。来源 uid 与它不一致时强制重探一次；
+  // 仍不一致就返回空（宁可报错，也不能拿别人的 sec_uid 去查）。
+  _getMySecUid: async function(expectedUid){
+    var me = await this.whoami(false);
+    var uid = me && me.uid ? String(me.uid) : '';
+    var want = expectedUid ? String(expectedUid) : '';
+    if (want && uid && uid !== want) {
+      me = await this.whoami(true);
+      uid = me && me.uid ? String(me.uid) : '';
+    }
+    if (want && uid && uid !== want) {
+      console.warn('[Bridge] sec_uid 拒绝：期望账号', want, '实际', uid);
+      return '';
+    }
+    return me && me.secUid ? String(me.secUid) : '';
   },
   getDetail: async function(awemeId){
     var p=new URLSearchParams(Object.assign(this._q(),{aweme_id:awemeId}));

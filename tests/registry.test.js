@@ -203,3 +203,90 @@ describe('ConnectionRegistry: 账号信息', () => {
     expect(registry.removeStalePolling('douyin.com')).toBe(0); // 已经没有条目了，不抛错
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 多账号：channel = site#uid
+//
+// 改造前注册表是 site → connections[]，同站点的两个号只能靠数组顺序，
+// 轮询队列/等待者全按 site 分桶 —— 一个号取走另一个号的命令是结构性的。
+// ═══════════════════════════════════════════════════════════
+describe('ConnectionRegistry: 多账号 channel', () => {
+  const acct = (uid, nickname = '') => ({ account: { uid, nickname }, nickname, clientVersion: 3 });
+
+  it('同站点两个账号落在不同 channel，互不覆盖', () => {
+    const registry = new ConnectionRegistry();
+    const a = registry.register('douyin.com', acct('uidA', 'A号'));
+    const b = registry.register('douyin.com', acct('uidB', 'B号'));
+
+    expect(a.channel).toBe('douyin.com#uidA');
+    expect(b.channel).toBe('douyin.com#uidB');
+    expect(registry.totalConnections).toBe(2);
+    expect(registry.getAccount('douyin.com', 'uidA').id).toBe(a.id);
+    expect(registry.getAccount('douyin.com', 'uidB').id).toBe(b.id);
+    expect(registry.getAccount('douyin.com', 'uidC')).toBeNull();
+    expect(registry.getByChannel('douyin.com#uidA').id).toBe(a.id);
+  });
+
+  it('accountsOf 只返回已识别且在线的账号，未识别连接不冒充账号', () => {
+    const registry = new ConnectionRegistry();
+    registry.register('douyin.com', acct('uidA', 'A号'));
+    registry.register('douyin.com', {});
+    const list = registry.accountsOf('douyin.com');
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ account: 'uidA', uid: 'uidA', nickname: 'A号', channel: 'douyin.com#uidA' });
+  });
+
+  it('removeStalePolling(site, account) 只清自己的 channel', () => {
+    const registry = new ConnectionRegistry();
+    registry.register('douyin.com', acct('uidA'));
+    registry.register('douyin.com', acct('uidB'));
+    expect(registry.removeStalePolling('douyin.com', 'uidA')).toBe(1);
+    expect(registry.getAccount('douyin.com', 'uidA')).toBeNull();
+    expect(registry.getAccount('douyin.com', 'uidB')).toBeTruthy();
+    expect(registry.totalConnections).toBe(1);
+  });
+
+  it('读轮换：两个账号交替，刚服务过的排到后面', () => {
+    const registry = new ConnectionRegistry();
+    registry.register('douyin.com', acct('uidA'));
+    registry.register('douyin.com', acct('uidB'));
+
+    const first = registry.pickForRead('douyin.com', 15000);
+    registry.markServed(first.id);
+    const second = registry.pickForRead('douyin.com', 15000);
+    registry.markServed(second.id);
+    const third = registry.pickForRead('douyin.com', 15000);
+
+    expect([first.uid, second.uid]).toEqual(['uidA', 'uidB']);
+    expect(third.uid).toBe('uidA');
+  });
+
+  it('写后冷却：刚写过的号在窗口内不接读，另一个号优先', () => {
+    const registry = new ConnectionRegistry();
+    const a = registry.register('douyin.com', acct('uidA'));
+    registry.register('douyin.com', acct('uidB'));
+    registry.markWrite(a.id);
+    expect(registry.pickForRead('douyin.com', 15000).uid).toBe('uidB');
+  });
+
+  it('updateAccount 把未识别连接挪进 uid channel，保留 connId 与活跃时间', () => {
+    const registry = new ConnectionRegistry();
+    const conn = registry.register('douyin.com', { url: 'https://www.douyin.com/x', clientVersion: 3 });
+    const id = conn.id;
+    conn.lastActivity = new Date(Date.now() - 1000).toISOString();
+
+    const moved = registry.updateAccount(id, { uid: 'uidA', nickname: 'A号' });
+    expect(moved.id).toBe(id);
+    expect(moved.channel).toBe('douyin.com#uidA');
+    expect(registry.getByChannel('douyin.com')).toBeNull();
+    expect(registry.getAccount('douyin.com', 'uidA').id).toBe(id);
+    expect(moved.lastActivity).toBe(conn.lastActivity);
+  });
+
+  it('注册时只给 uid 字符串（main 分支旧写法）也能路由', () => {
+    const registry = new ConnectionRegistry();
+    const conn = registry.register('douyin.com', { account: 'uidA', clientVersion: 3 });
+    expect(conn.channel).toBe('douyin.com#uidA');
+    expect(registry.getAccount('douyin.com', 'uidA').id).toBe(conn.id);
+  });
+});

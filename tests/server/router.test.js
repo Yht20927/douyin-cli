@@ -429,3 +429,275 @@ describe('Router 连接账号上报', () => {
     expect(legacy.clientVersion).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 多账号：channel 路由 / 写操作准入 / expectAccount 二次校验
+//
+// 核心约束：
+//   - 指定了账号就必须精确命中，绝不回退到别的号；
+//   - 多账号时写操作必须显式指定（服务端 409，不猜）；
+//   - 写操作的 eval 带 expectAccount，结果回填的账号必须一致。
+// ═══════════════════════════════════════════════════════════
+describe('Router 多账号路由与写准入', () => {
+  useTempDataDir();
+  let registry, router;
+
+  beforeEach(() => {
+    registry = new ConnectionRegistry();
+    router = new Router({ registry, token: '', requestTimeout: 800 });
+  });
+
+  async function waitFor(fn, rounds = 120) {
+    for (let i = 0; i < rounds && !fn(); i++) await new Promise(r => setTimeout(r, 5));
+    return fn();
+  }
+
+  async function connect({ uid, nickname = '', prevId } = {}) {
+    const res = makeRes();
+    await router.handle(
+      makeReq({
+        method: 'POST', url: '/api/connect',
+        body: {
+          site: 'douyin.com',
+          account: uid ? { uid, nickname } : undefined,
+          nickname,
+          clientVersion: 3,
+          prevId,
+        },
+      }),
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    return res.body;
+  }
+
+  async function startPoll(conn) {
+    const res = makeRes();
+    await router.handle(
+      makeReq({ url: `/api/poll?channel=${encodeURIComponent(conn.channel)}&id=${encodeURIComponent(conn.id)}` }),
+      res,
+    );
+    return res;
+  }
+
+  async function startLegacyPoll(conn) {
+    const res = makeRes();
+    await router.handle(
+      makeReq({ url: `/api/poll?site=douyin.com&id=${encodeURIComponent(conn.id)}` }),
+      res,
+    );
+    return res;
+  }
+
+  function call(body) {
+    const res = makeRes();
+    const p = router.handle(
+      makeReq({
+        method: 'POST', url: '/api/call',
+        body: { site: 'douyin.com', expression: '1 + 1', ...body },
+      }),
+      res,
+    );
+    return { res, p };
+  }
+
+  async function result(msg, account, value = 'ok') {
+    const res = makeRes();
+    await router.handle(
+      makeReq({ method: 'POST', url: '/api/result', body: { id: msg.id, value, account } }),
+      res,
+    );
+    return res;
+  }
+
+  it('同站点两个账号注册为两个 channel，/api/status 都列出来', async () => {
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const b = await connect({ uid: 'uidB', nickname: 'B号' });
+    expect(a.channel).toBe('douyin.com#uidA');
+    expect(b.channel).toBe('douyin.com#uidB');
+
+    const status = makeRes();
+    await router.handle(makeReq({ url: '/api/status' }), status);
+    expect(status.body.connections['douyin.com']).toHaveLength(2);
+    expect(status.body.accounts['douyin.com']).toHaveLength(2);
+    expect(status.body.accounts['douyin.com'].map(x => x.account).sort()).toEqual(['uidA', 'uidB']);
+  });
+
+  it('指定账号的读操作只落到该账号的 poll，不会串到另一个号', async () => {
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const b = await connect({ uid: 'uidB', nickname: 'B号' });
+    const pollA = await startPoll(a);
+    const pollB = await startPoll(b);
+
+    const { res, p } = call({ account: 'uidB', expression: 'window.bOnly()' });
+    expect(await waitFor(() => pollB._ended)).toBe(true);
+    expect(pollA._ended).toBeFalsy();
+    expect(pollB.body.expression).toBe('window.bOnly()');
+    expect(pollB.body.expectAccount).toBeUndefined(); // 读操作不带写护栏
+
+    await result(pollB.body, 'uidB');
+    await p;
+    expect(res.statusCode).toBe(200);
+    expect(res.body.account).toBe('uidB');
+    pollA.emit('close');
+  });
+
+  it('多账号在线时写操作不带 account → 409 account_required，且不排队', async () => {
+    await connect({ uid: 'uidA', nickname: 'A号' });
+    await connect({ uid: 'uidB', nickname: 'B号' });
+    const { res } = call({ opType: 'write' });
+    await waitFor(() => res._ended);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.code).toBe('account_required');
+    expect(res.body.available).toHaveLength(2);
+    expect([...router._pollQueue.values()].flat()).toHaveLength(0);
+    expect(router._pending.size).toBe(0);
+  });
+
+  it('写操作带 account → eval 带 expectAccount，结果账号一致才放行', async () => {
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const poll = await startPoll(a);
+    const { res, p } = call({ account: 'uidA', opType: 'write', expression: 'window.like()' });
+    expect(await waitFor(() => poll._ended)).toBe(true);
+    expect(poll.body.expectAccount).toBe('uidA');
+
+    await result(poll.body, 'uidA');
+    await p;
+    expect(res.statusCode).toBe(200);
+    expect(res.body.account).toBe('uidA');
+  });
+
+  it('写操作结果回填了另一个账号 → 503 账号不一致（服务端二次校验）', async () => {
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const poll = await startPoll(a);
+    const { res, p } = call({ account: 'uidA', opType: 'write' });
+    expect(await waitFor(() => poll._ended)).toBe(true);
+
+    await result(poll.body, 'uidB');
+    await p;
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toMatch(/账号不一致/);
+  });
+
+  it('--account 传唯一昵称也能精确路由；重复昵称不猜', async () => {
+    const a = await connect({ uid: 'uidA', nickname: '甲号' });
+    const b = await connect({ uid: 'uidB', nickname: '乙号' });
+    const pollA = await startPoll(a);
+    const pollB = await startPoll(b);
+
+    const byNick = call({ account: '乙号' });
+    expect(await waitFor(() => pollB._ended)).toBe(true);
+    expect(pollA._ended).toBeFalsy();
+    await result(pollB.body, 'uidB');
+    await byNick.p;
+    expect(byNick.res.body.account).toBe('uidB');
+
+    // 两个同名账号：宁可 404，也不能随便挑一个发出去
+    await connect({ uid: 'uidC', nickname: '乙号' });
+    const ambiguous = call({ account: '乙号' });
+    await waitFor(() => ambiguous.res._ended);
+    expect(ambiguous.res.statusCode).toBe(404);
+    expect(ambiguous.res.body.code).toBe('account_not_connected');
+    pollA.emit('close');
+  });
+
+  it('指定未连接账号 → 404，并给出在线清单（不回退到别的号）', async () => {
+    await connect({ uid: 'uidA', nickname: 'A号' });
+    const { res } = call({ account: 'uidX', opType: 'write' });
+    await waitFor(() => res._ended);
+    expect(res.statusCode).toBe(404);
+    expect(res.body.code).toBe('account_not_connected');
+    expect(res.body.available).toHaveLength(1);
+    expect(res.body.available[0].account).toBe('uidA');
+  });
+
+  it('未指定账号的读操作按账号轮换，两个号都被用到', async () => {
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const b = await connect({ uid: 'uidB', nickname: 'B号' });
+    const pollA = await startPoll(a);
+    const pollB = await startPoll(b);
+
+    const first = call({ expression: 'first()' });
+    expect(await waitFor(() => pollA._ended || pollB._ended)).toBe(true);
+    const firstPoll = pollA._ended ? pollA : pollB;
+    const secondPoll = firstPoll === pollA ? pollB : pollA;
+    const firstUid = firstPoll === pollA ? 'uidA' : 'uidB';
+    await result(firstPoll.body, firstUid);
+    await first.p;
+    expect(first.res.body.account).toBe(firstUid);
+
+    const second = call({ expression: 'second()' });
+    expect(await waitFor(() => secondPoll._ended)).toBe(true);
+    const secondUid = secondPoll === pollA ? 'uidA' : 'uidB';
+    expect(secondUid).not.toBe(firstUid);
+    await result(secondPoll.body, secondUid);
+    await second.p;
+    expect(second.res.body.account).toBe(secondUid);
+  });
+
+  it('只剩一个在线账号时，写操作可不带 account（服务端自动落到唯一账号）', async () => {
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const poll = await startPoll(a);
+    const { res, p } = call({ opType: 'write' });
+    expect(await waitFor(() => poll._ended)).toBe(true);
+    expect(poll.body.expectAccount).toBe('uidA');
+    await result(poll.body, 'uidA');
+    await p;
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('旧脚本（不报账号、按 site 轮询）仍能读；写操作因身份不明被拒', async () => {
+    const legacy = await connect({});
+    expect(legacy.channel).toBe('douyin.com');
+
+    const poll = await startLegacyPoll(legacy);
+    const read = call({ expression: 'legacyRead()' });
+    expect(await waitFor(() => poll._ended)).toBe(true);
+    expect(poll.body.expression).toBe('legacyRead()');
+    expect(poll.body.expectAccount).toBeUndefined();
+    await result(poll.body, '');
+    await read.p;
+    expect(read.res.statusCode).toBe(200);
+
+    const write = call({ opType: 'write' });
+    await waitFor(() => write.res._ended);
+    expect(write.res.statusCode).toBe(503);
+    expect(write.res.body.error).toMatch(/无客户端连接|未登录/);
+  });
+
+  it('零连接时到达的读请求，后连上的账号能接走，并回报实际执行账号', async () => {
+    const { res, p } = call({ expression: 'earlyRead()' });
+    await waitFor(() => (router._pollQueue.get('douyin.com') || []).length > 0);
+
+    const a = await connect({ uid: 'uidA', nickname: 'A号' });
+    const poll = await startPoll(a);
+    expect(await waitFor(() => poll._ended)).toBe(true);
+    expect(poll.body.expression).toBe('earlyRead()');
+
+    await result(poll.body, 'uidA');
+    await p;
+    expect(res.statusCode).toBe(200);
+    // 选择连接发生在 pending 创建之后，_call 本身没有 conn；
+    // 账号由 /api/result 回传，服务端再回给调用方（归属/翻页都靠它）
+    expect(res.body.account).toBe('uidA');
+  });
+
+  it('换号重注册（prevId）会结束旧连接的长轮询，不让旧通道继续收命令', async () => {
+    const first = await connect({ uid: 'uidA', nickname: 'A号' });
+    const oldPoll = await startPoll(first);
+    expect(oldPoll.headersSent).toBe(false);
+
+    const second = await connect({ uid: 'uidA', nickname: 'A号', prevId: first.id });
+    expect(second.id).not.toBe(first.id);
+    expect(oldPoll._ended).toBe(true);
+    expect(oldPoll.body).toEqual({ ok: true, type: 'idle' });
+    expect(router._pollWaiters.get(first.channel) || []).toHaveLength(0);
+
+    const newPoll = await startPoll(second);
+    const { res, p } = call({ account: 'uidA' });
+    expect(await waitFor(() => newPoll._ended)).toBe(true);
+    await result(newPoll.body, 'uidA');
+    await p;
+    expect(res.statusCode).toBe(200);
+  });
+});

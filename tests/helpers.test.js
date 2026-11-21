@@ -1,6 +1,8 @@
 // tests/helpers.test.js — 命令辅助函数单元测试
 
-const { escapeExpression, getFlag, formatComment } = require('../core/commands/helpers');
+const {
+  escapeExpression, getFlag, formatComment, extractAccountArg, CLIENT_PROTOCOL_VERSION,
+} = require('../core/commands/helpers');
 
 describe('escapeExpression', () => {
   it('转义反斜杠', () => {
@@ -89,5 +91,31 @@ describe('formatComment', () => {
     expect(result.cid).toBeUndefined();
     expect(result.text).toBe('');
     expect(result.likes).toBe(0);
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════
+// 多账号命令行解析
+// ═══════════════════════════════════════════════════════════
+describe('extractAccountArg', () => {
+  it('摘掉 --account 与它的值，其余参数顺序不变', () => {
+    const r = extractAccountArg(['videos', '--account', '主号', '--mine', '--limit', '5']);
+    expect(r.raw).toBe('主号');
+    expect(r.args).toEqual(['videos', '--mine', '--limit', '5']);
+  });
+
+  it('没有 --account 时原样返回', () => {
+    const args = ['get', '123'];
+    expect(extractAccountArg(args)).toEqual({ args, raw: null });
+  });
+
+  it('缺少值或值看起来像另一个选项 → 报错（不把 --mine 当账号）', () => {
+    expect(() => extractAccountArg(['like', '123', '--account'])).toThrow(/需要一个值/);
+    expect(() => extractAccountArg(['like', '123', '--account', '--mine'])).toThrow(/需要一个值/);
+  });
+
+  it('注册契约版本为 3（脚本端 CLIENT_VERSION 必须同步）', () => {
+    expect(CLIENT_PROTOCOL_VERSION).toBe(3);
   });
 });

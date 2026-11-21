@@ -24,7 +24,9 @@ async function cmdMy(ctx, args) {
   // 的作品，数据本身没错；按 author.uid 归属（见下面的 opsUid）就自洽了。
   // 拦下来只会让"我换了个号想看它的作品"这件事做不成 —— 而那正是主用例。
   return withAudit(ctx, 'my', { count }, async () => {
-    const expr = `window.__bridge.myPosts(0, ${count})`;
+    // 第三个参数是"本次应落到哪个账号"：油猴端用它和当前登录账号做交叉校验，
+    // 不一致就拒绝用错误的 sec_uid 拉作品（多账号下这是串号的源头）。
+    const expr = `window.__bridge.myPosts(0, ${count}, ${JSON.stringify(ctx.accountUid || '')})`;
     const data = await ctx.loggedCall('my', { count }, expr);
     const items = (data.aweme_list || []).map(a => ({
       aweme_id: a.aweme_id,

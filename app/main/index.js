@@ -84,11 +84,7 @@ function bootstrap() {
   const accountsModule = require('../../core/memory/accounts');
   function currentAccountUid() {
     try {
-      const online = accountsModule.aliveUids(bridge.getStatus());
-      const stored = accountsModule.currentUid();
-      if (online.length === 1) return online[0];
-      if (online.length > 1) return (stored && online.includes(stored)) ? stored : online[0];
-      return stored || null;
+      return accountsModule.resolveCurrentUid(bridge.getStatus());
     } catch (e) {
       return null;
     }

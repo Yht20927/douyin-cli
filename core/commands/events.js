@@ -25,10 +25,13 @@ async function cmdEvents(ctx, args) {
   const status = getFlag(args, '--status', null);
   const sinceArg = getFlag(args, '--since', null);
   const asJson = args.includes('--json');
+  // 多账号：`--account` 已由 cli.js 解析并摘除，这里拿 ctx.accountUid 当过滤条件
+  const account = ctx.accountUid || null;
 
   const filters = {};
   if (videoId) filters.awemeId = videoId;
   if (uid) filters.uid = uid;
+  if (account) filters.account = account;
   if (command) filters.command = command;
   if (status) filters.status = status;
   if (sinceArg != null) filters.since = parseSince(sinceArg);

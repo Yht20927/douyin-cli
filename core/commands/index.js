@@ -5,6 +5,8 @@ module.exports = {
   get: require('./get'),
   replies: require('./replies'),
   my: require('./my'),
+  // 记忆层视频列表（纯本地）—— 多账号归属/过滤
+  videos: require('./videos'),
   user: require('./user'),
   // 补全视频信息（标题/封面/互动数据）——「运营对象」列表靠它才有标题
   enrich: require('./enrich'),

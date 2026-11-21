@@ -40,7 +40,7 @@ async function cmdDraft(ctx, args) {
       const accounts = require('../memory/accounts');
       const videos = require('../memory/videos');
       const video = videos.get(awemeId);
-      const ownerUid = accounts.currentUid() || (video && video.opsUid) || null;
+      const ownerUid = ctx.accountUid || accounts.currentUid() || (video && video.opsUid) || null;
       const id = drafts.save({
         awemeId,
         text,

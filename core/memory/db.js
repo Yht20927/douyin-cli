@@ -34,7 +34,7 @@ const paths = require('../paths');
 const { Database: SqliteDatabase } = require('./sqlite-driver');
 
 // 当前 schema 版本（每次新增 migration → 自增）
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 let _db = null;
 
@@ -443,6 +443,53 @@ function migrate(db) {
         if (owners.length === 1) {
           db.prepare(`UPDATE drafts SET account_uid = ? WHERE account_uid IS NULL`).run(owners[0]);
         }
+      }
+    },
+    // v14 → v15：与 main 分支的 v9/v10 对齐（跨分支合并）
+    //
+    // 两条线对 schema 的编号含义不同：
+    //   main  v9 = events/drafts/campaigns.account，v10 = videos.account
+    //   desktop v9 = comments.replied 索引，v13 = videos.ops_uid / drafts.account_uid
+    // 直接 merge 会让同一个 user_version 指向不同的迁移。这里不改写历史，
+    // 只补一版**幂等**的兼容层：
+    //
+    //   1. 补齐 main 独有的归属列：events.account / campaigns.account。
+    //   2. 把 main 库里的 videos.account / drafts.account 回填到 desktop 的
+    //      ops_uid / account_uid，否则用 desktop 打开 main 的库时，旧数据的
+    //      账号归属会"看不见"（列还在，但视图只读 ops_uid/account_uid）。
+    //   3. 索引统一命名，重复执行不报错。
+    //
+    // 不新增 videos.account：desktop 全链路用 ops_uid（运营归属）+ author_uid
+    // （作品归属）表达同一件事，再加一列只会让两处永远可能不一致。
+    () => {
+      const tableExists = (name) => !!db.prepare(
+        `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`
+      ).get(name);
+      const colsOf = (name) => db.prepare(`PRAGMA table_info(${name})`).all().map(c => c.name);
+
+      if (tableExists('events')) {
+        if (!colsOf('events').includes('account')) {
+          db.exec(`ALTER TABLE events ADD COLUMN account TEXT`);
+        }
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_events_account_ts ON events(account, ts DESC);`);
+      }
+
+      if (tableExists('campaigns')) {
+        if (!colsOf('campaigns').includes('account')) {
+          db.exec(`ALTER TABLE campaigns ADD COLUMN account TEXT`);
+        }
+      }
+
+      // main 库 → desktop 列的回填。只在列存在且有值时才写，重复跑是 no-op。
+      if (tableExists('videos') && colsOf('videos').includes('account')) {
+        db.prepare(
+          `UPDATE videos SET ops_uid = account WHERE ops_uid IS NULL AND account IS NOT NULL`
+        ).run();
+      }
+      if (tableExists('drafts') && colsOf('drafts').includes('account')) {
+        db.prepare(
+          `UPDATE drafts SET account_uid = account WHERE account_uid IS NULL AND account IS NOT NULL`
+        ).run();
       }
     },
   ];

@@ -94,6 +94,24 @@ describe('memory/events', () => {
     expect(events.findLastFetchTime('v_unknown')).toBe(null);
   }));
 
+  it('account 归属：append 写入，query/count 可按账号过滤', withTempProject(async () => {
+    const events = require('../core/memory/events');
+    events.append({ command: 'post', status: 'success', account: 'uidA' });
+    events.append({ command: 'post', status: 'success', account: 'uidB' });
+    events.append({ command: 'get', status: 'success' });            // 未归属
+    events.append({ command: 'like', status: 'success', args: { account: 'uidC' } });
+
+    expect(events.count({ account: 'uidA' })).toBe(1);
+    expect(events.count({ account: 'uidB' })).toBe(1);
+    const a = events.query({ account: 'uidA' });
+    expect(a).toHaveLength(1);
+    expect(a[0].account).toBe('uidA');
+    // args.account 也能作为兜底（命令未显式传 account 字段时）
+    expect(events.query({ account: 'uidC' })[0].account).toBe('uidC');
+    // 未归属的行保持 null，不会被算到任意账号头上
+    expect(events.query({}).filter(r => r.account === null)).toHaveLength(1);
+  }));
+
   it('SQL 失败时降级返回空，不抛', withTempProject(async () => {
     const events = require('../core/memory/events');
     // 制造异常路径：传 undefined / 空 command 不应崩溃

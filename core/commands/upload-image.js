@@ -19,7 +19,7 @@ async function cmdUploadImage(ctx, args) {
   return withAudit(ctx, 'upload-image', { count: paths.length }, async () => {
     const images = [];
     for (const p of paths) {
-      images.push(await uploadImageViaBridge(ctx.bridgeCall, p));
+      images.push(await uploadImageViaBridge((expr) => ctx.bridgeCall(expr, true, { opType: 'write' }), p));
     }
     return {
       summary: { count: images.length },

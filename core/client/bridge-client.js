@@ -20,14 +20,18 @@ class BridgeClient {
    * 执行 eval 表达式
    * @param {object} params
    * @param {string} params.site - 站点标识
+   * @param {string} [params.account] - 目标账号 uid；省略时读操作由服务端轮换
+   * @param {'read'|'write'} [params.opType='read'] - 写操作强制要求显式账号
    * @param {string} params.expression - JS 表达式
    * @param {boolean} [params.awaitPromise=true]
    * @param {number} [params.timeout]
-   * @returns {Promise<{ok: boolean, value?: any, error?: string, connection?: string}>}
+   * @returns {Promise<{ok: boolean, value?: any, error?: string, connection?: string, account?: string|null, channel?: string}>}
    */
-  async call({ site, expression, awaitPromise = true, timeout }) {
+  async call({ site, account, opType = 'read', expression, awaitPromise = true, timeout }) {
     return this._post('/api/call', {
       site,
+      account: account || undefined,
+      opType: opType === 'write' ? 'write' : 'read',
       expression,
       awaitPromise,
       timeout,

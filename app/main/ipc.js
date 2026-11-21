@@ -415,11 +415,7 @@ function registerIpc(opts) {
   const accounts = require('../../core/memory/accounts');
   function currentAccountUid() {
     try {
-      const online = accounts.aliveUids(bridge.getStatus());
-      const stored = accounts.currentUid();
-      if (online.length === 1) return online[0];
-      if (online.length > 1) return (stored && online.includes(stored)) ? stored : online[0];
-      return stored || null;
+      return accounts.resolveCurrentUid(bridge.getStatus());
     } catch (e) {
       return null;
     }

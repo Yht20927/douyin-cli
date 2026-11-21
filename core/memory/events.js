@@ -18,6 +18,7 @@ const logger = require('../runtime/logger');
  * - args / summary: 任意结构，存为 JSON 文本
  * - error: 错误消息字符串
  * - resultPath: 大结果落地的相对路径（如 logs/results/get-xxx.json）
+ * - account: 执行该操作的账号 uid（多账号；NULL = 未归属）
  * - platform: 默认 'douyin'，预留跨平台
  */
 function append(evt) {
@@ -27,11 +28,11 @@ function append(evt) {
       INSERT INTO events (
         ts, session_id, command, status, duration_ms,
         aweme_id, uid, cid, args_json, summary_json,
-        error, result_path, platform
+        error, result_path, account, platform
       ) VALUES (
         @ts, @sessionId, @command, @status, @durationMs,
         @awemeId, @uid, @cid, @argsJson, @summaryJson,
-        @error, @resultPath, @platform
+        @error, @resultPath, @account, @platform
       )
     `);
     const info = stmt.run({
@@ -47,6 +48,9 @@ function append(evt) {
       summaryJson: evt.summary ? JSON.stringify(evt.summary) : null,
       error: evt.error || null,
       resultPath: evt.resultPath || null,
+      // 本次调用实际落到的账号。命令没在 args 里显式带 account 时，
+      // 由 audit.setAccount() 从运行上下文兜底 —— 否则读操作的归属全是 NULL。
+      account: evt.account || (evt.args && evt.args.account) || null,
       platform: evt.platform || 'douyin',
     });
     return info.lastInsertRowid;
@@ -78,6 +82,7 @@ function _query(filters = {}, opts = {}) {
   }
   if (filters.awemeId)   { where.push('aweme_id = @awemeId');    params.awemeId = filters.awemeId; }
   if (filters.uid)       { where.push('uid = @uid');             params.uid = filters.uid; }
+  if (filters.account)   { where.push('account = @account');     params.account = filters.account; }
   if (filters.status)    { where.push('status = @status');       params.status = filters.status; }
   if (filters.sessionId) { where.push('session_id = @sessionId');params.sessionId = filters.sessionId; }
   if (filters.since)     { where.push('ts >= @since');           params.since = filters.since; }
@@ -88,7 +93,7 @@ function _query(filters = {}, opts = {}) {
   const limit = Math.max(1, Math.min(opts.limit || 100, 100000));
   const sql = `
     SELECT id, ts, session_id, command, status, duration_ms,
-           aweme_id, uid, cid, args_json, summary_json, error, result_path, platform
+           aweme_id, uid, cid, args_json, summary_json, error, result_path, account, platform
     FROM events
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY ts ${order}, id ${order}
@@ -208,6 +213,7 @@ function count(filters = {}) {
     if (filters.command) { where.push('command = @command'); params.command = filters.command; }
     if (filters.status)  { where.push('status = @status');   params.status  = filters.status; }
     if (filters.awemeId) { where.push('aweme_id = @awemeId'); params.awemeId = filters.awemeId; }
+    if (filters.account) { where.push('account = @account');   params.account = filters.account; }
     const sql = `SELECT count(*) AS n FROM events ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`;
     return db.prepare(sql).get(params).n;
   } catch (e) {
@@ -254,6 +260,7 @@ function rowToEvent(r) {
     summary: r.summary_json ? safeParse(r.summary_json) : null,
     error: r.error,
     resultPath: r.result_path,
+    account: r.account || null,
     platform: r.platform,
   };
 }

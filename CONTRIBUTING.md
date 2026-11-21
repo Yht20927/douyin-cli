@@ -21,7 +21,7 @@ bash scripts/bridge.sh ensure
 node cli.js my          # 验证连通
 ```
 
-依赖：Node.js 18+、Chrome + Tampermonkey、（可选）OpenAI 兼容 LLM key。
+依赖：Node.js 24+、Chrome + Tampermonkey、（可选）OpenAI 兼容 LLM key。
 
 ---
 
@@ -38,7 +38,7 @@ npx vitest run tests/p4-campaign.test.js   # 单文件
 - `vitest.config.js` 设 `DOUYIN_NO_THROTTLE=1`，防 `risk-control` 守卫阻塞测试
 - 每个 test file 独立 require cache 清理，保证模块状态隔离
 
-**CI**（`.github/workflows/test.yml`）：push / PR 到 `main` 时在 Node 18 跑 `npm test`。提 PR 前请本地确保全绿。
+**CI**（`.github/workflows/test.yml`）：push / PR 到 `main` 时在 Node 24 跑 `npm test`。提 PR 前请本地确保全绿。
 
 ---
 

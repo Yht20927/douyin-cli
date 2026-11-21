@@ -66,7 +66,7 @@ async function cmdDM(ctx, args) {
 
     // Step 1: 创建/查找会话
     const convExpr = `window.__bridge.createConversation('${escapeExpression(userId)}')`;
-    const conv = await ctx.loggedCall('dm.createConversation', { user_id: userId }, convExpr);
+    const conv = await ctx.loggedCall('dm.createConversation', { user_id: userId }, convExpr, { opType: 'write' });
 
     if (!conv || !conv.conversation_id) {
       const err = new Error('无法创建私信会话: ' + JSON.stringify(safeSerialize(conv || {})));
@@ -81,7 +81,7 @@ async function cmdDM(ctx, args) {
     const sendExpr = `window.__bridge.sendDM('${escapeExpression(convId)}', '${escapeExpression(text)}')`;
     const data = await ctx.loggedCall('dm.send',
       { conversation_id: conv.conversation_id, text },
-      sendExpr);
+      sendExpr, { opType: 'write' });
 
     // ⚠️ IM 接口回的是 protobuf（proto/dm.proto 的 Response），**没有 status_code**：
     // 失败信息只出现在 error_desc（字段 3），成功时是空串。

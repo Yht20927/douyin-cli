@@ -29,7 +29,7 @@ async function cmdLike(ctx, args) {
 
   // type=1 点赞，type=0 取消点赞
   const expr = `window.__bridge.digg('${escapeExpression(awemeId)}', ${type})`;
-  const data = await ctx.loggedCall(action, { aweme_id: awemeId }, expr);
+  const data = await ctx.loggedCall(action, { aweme_id: awemeId }, expr, { opType: 'write' });
 
   if (data.status_code !== undefined && data.status_code !== 0) {
     const err = new Error(`status_code=${data.status_code} — ${unlike ? '取消点赞' : '点赞'}失败，可能被风控`);

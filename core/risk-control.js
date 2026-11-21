@@ -38,7 +38,14 @@ const DEFAULT_INTERVALS = config.DEFAULTS.intervals;
 // 一条都查不到 → 返回 0 → "距上次写 0 秒" → **连发私信之间零间隔**。
 // 私信恰恰是这个工具里最经不起连点的一件事。同理 `writesToday` 也数不到它，
 // 当日写配额对私信完全无效。
-const WRITE_COMMANDS = new Set(['post', 'like', 'unlike', 'delete_comment', 'dm.send']);
+const WRITE_COMMANDS = new Set([
+  'post', 'like', 'unlike', 'delete_comment', 'dm.send',
+  // 单独的 upload-image 会向 ImageX 发真实写请求（imageBegin/append/upload），
+  // 不是纯本地操作。它不计入 policy 的日发布配额（那是 policy 自己的名单），
+  // 但应让「距上次写」看到它 —— 上传完立刻再发内容，请求密度同样该被看见。
+  // `post` 内部的图片上传发生在 post 操作里，不会重复计一次。
+  'upload-image',
+]);
 
 /**
  * 读取间隔配置。

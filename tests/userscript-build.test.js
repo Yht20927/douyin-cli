@@ -166,3 +166,50 @@ describe('油猴脚本 / 源模板不再是模板时拒绝渲染', () => {
     expect(() => renderUserscript({ token: '' })).toThrow(/缺少 token/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 多账号注册契约（v3）
+//
+// 这段代码只能在浏览器里跑，没有可用的单元测试环境 —— 用静态断言把
+// 几条不可回退的契约钉住：按 channel 轮询、写操作带 expectAccount、
+// 换号重探/重注册、myPosts 用 profile/self 的 sec_uid。
+// ═══════════════════════════════════════════════════════════
+describe('油猴脚本多账号契约（v3）', () => {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+
+  it('CLIENT_VERSION 与服务端 CLIENT_PROTOCOL_VERSION 同步为 3', () => {
+    expect(src).toMatch(/const CLIENT_VERSION = 3;/);
+    const { CLIENT_PROTOCOL_VERSION } = require('../core/commands/helpers');
+    expect(CLIENT_PROTOCOL_VERSION).toBe(3);
+  });
+
+  it('poll 用 channel（site#uid），不再只按 site 取命令', () => {
+    expect(src).toContain("'/api/poll?channel='");
+    expect(src).toContain('function channelOf(site, uid)');
+    expect(src).toContain("site + '#' + uid");
+  });
+
+  it('注册带 prevId，让服务端精确清掉自己上一条连接（不误伤同站点其他号）', () => {
+    expect(src).toContain('prevId: connId || undefined');
+  });
+
+  it('写操作执行前强制重探身份，不一致就拒绝并重新注册', () => {
+    expect(src).toContain('if (msg.expectAccount)');
+    expect(src).toContain('var fresh = await fetchAccount(true);');
+    expect(src).toMatch(/账号不匹配/);
+    expect(src).toContain('pollGeneration++');
+  });
+
+  it('SPA 导航/换号会重新探测并按新身份重连', () => {
+    expect(src).toContain('async function refreshAccountIfChanged()');
+    expect(src).toContain('checkUrlChange');
+    expect(src).toContain('_pushState.apply');
+  });
+
+  it('myPosts 由 profile/self 取 sec_uid，并与调用方期望账号交叉校验', () => {
+    expect(src).toContain('_getMySecUid');
+    expect(src).toContain("'/aweme/v1/web/user/profile/self/");
+    expect(src).toContain('myPosts: async function(cursor,count,expectedUid)');
+    expect(src).toContain('_getMySecUid(expectedUid)');
+  });
+});

@@ -18,6 +18,8 @@ async function cmdLog(ctx, args) {
   const uid = getFlag(args, '--uid', null);
   const command = getFlag(args, '--command', null);
   const failedOnly = args.includes('--failed');
+  // 多账号：`--account` 已由 cli.js 解析并摘除，这里拿 ctx.accountUid 当过滤条件
+  const account = ctx.accountUid || null;
 
   // SQL 路径：events 表存在且至少有一行匹配（即使 0 命中也算 SQL 在工作 → 不回退）
   // 但当**整个 events 表为空**时，应回退到 audit.json（兼容 v3 之前的存量历史）
@@ -26,8 +28,8 @@ async function cmdLog(ctx, args) {
   const useSql = totalEvents > 0;
 
   const ops = useSql
-    ? readEvents({ videoId, uid, command, failedOnly, tail }) || readAuditJson(ctx, { videoId, uid, command, failedOnly })
-    : readAuditJson(ctx, { videoId, uid, command, failedOnly });
+    ? readEvents({ videoId, uid, command, failedOnly, tail, account }) || readAuditJson(ctx, { videoId, uid, command, failedOnly, account })
+    : readAuditJson(ctx, { videoId, uid, command, failedOnly, account });
 
   const recent = ops.slice(-tail);
 
@@ -59,11 +61,12 @@ function pickIds(op) {
 }
 
 /** 从 events 表读取并归一化为 cmdLog 需要的形状。返回 null 表示路径不可用，由 caller 回退。 */
-function readEvents({ videoId, uid, command, failedOnly, tail }) {
+function readEvents({ videoId, uid, command, failedOnly, tail, account }) {
   try {
     const filters = {};
     if (videoId) filters.awemeId = videoId;
     if (uid) filters.uid = uid;
+    if (account) filters.account = account;
     if (command) filters.command = command;
     if (failedOnly) filters.status = 'error';
     // 先按 desc 取 tail 行（确保拿到最新），再 reverse 成升序方便 .slice(-tail)
@@ -92,12 +95,13 @@ function readEvents({ videoId, uid, command, failedOnly, tail }) {
 }
 
 /** 兼容 v2：audit.json 全表扫 */
-function readAuditJson(ctx, { videoId, uid, command, failedOnly }) {
+function readAuditJson(ctx, { videoId, uid, command, failedOnly, account }) {
   const a = ctx.audit.load();
   const ops = [];
   for (const s of (a.sessions || [])) {
     for (const op of (s.operations || [])) {
       if (videoId && op.args?.aweme_id !== videoId) continue;
+      if (account && op.args?.account !== account) continue;
       if (uid && op.args?.uid !== uid) continue;
       if (command && op.command !== command) continue;
       if (failedOnly && op.status !== 'error') continue;

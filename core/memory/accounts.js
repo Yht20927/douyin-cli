@@ -10,7 +10,7 @@
 
 const { getDb } = require('./db');
 const logger = require('../runtime/logger');
-const { flattenConnections } = require('../shared/protocol');
+const { flattenConnections, connectionAccountUid } = require('../shared/protocol');
 const PLATFORM = 'douyin';
 
 /**
@@ -72,6 +72,35 @@ function get(uid) {
 function nicknameOf(uid) {
   const a = get(uid);
   return a ? a.nickname : null;
+}
+
+/**
+ * 把用户输入的账号（uid 或昵称）解析成 uid。
+ *
+ * 只查本地名册：CLI 的 `--account` 可能在账号离线时用来过滤历史数据，
+ * 所以解析不出时**原样返回**，由服务端/查询条件去判断，而不是在这里报错。
+ * 同名昵称多于一个时也不猜（返回原值），否则会把 A 的数据显示成 B 的。
+ *
+ * @param {string} raw
+ * @returns {string|null}
+ */
+function resolveUid(raw) {
+  if (raw == null || raw === '') return null;
+  const s = String(raw);
+  try {
+    const db = getDb();
+    const byUid = db.prepare(
+      'SELECT uid FROM accounts WHERE platform = ? AND uid = ?'
+    ).get(PLATFORM, s);
+    if (byUid) return String(byUid.uid);
+    const byNick = db.prepare(
+      'SELECT uid FROM accounts WHERE platform = ? AND nickname = ? ORDER BY last_seen DESC LIMIT 2'
+    ).all(PLATFORM, s);
+    if (byNick.length === 1) return String(byNick[0].uid);
+  } catch (e) {
+    logger.debug(`[accounts] 解析账号 ${s} 失败: ${e.message}`);
+  }
+  return s;
 }
 
 function list() {
@@ -162,7 +191,7 @@ function aliveUids(status) {
   const out = [];
   for (const c of flattenConnections(status)) {
     if (!c || c.alive === false) continue;
-    const uid = c.account && c.account.uid != null ? String(c.account.uid) : null;
+    const uid = connectionAccountUid(c) || null;
     if (uid && !out.includes(uid)) out.push(uid);
   }
   return out;
@@ -215,6 +244,22 @@ async function resolveCurrent(ctx, opts = {}) {
 }
 
 /**
+ * 同步版 resolveCurrent：主进程手里已有轮询缓存（bridge.getStatus()），
+ * 不必再 await 一次 /api/status。规则与 resolveCurrent 保持一致 ——
+ * 两处各写一套的话，"当前账号"迟早会漂移。
+ *
+ * @param {object} status - 与 /api/status 同形（connections 可为对象或数组）
+ * @returns {string|null}
+ */
+function resolveCurrentUid(status) {
+  const online = aliveUids(status);
+  const stored = currentUid();
+  if (online.length === 1) return online[0];
+  if (online.length > 1) return (stored && online.includes(stored)) ? stored : online[0];
+  return stored || null;
+}
+
+/**
  * 本次**实际执行**的账号 —— 以浏览器登录的为准，不受"我在看哪个号"影响。
  *
  * 与 `resolveCurrent` 的分工：
@@ -229,7 +274,12 @@ async function resolveCurrent(ctx, opts = {}) {
  * @returns {Promise<{uid:string|null, candidates:string[]}>}
  */
 async function resolveExecutor(ctx) {
-  const r = await resolveCurrent({ bridge: ctx && ctx.bridge }, {});
+  // 显式账号优先：CLI 的 --account / GUI 当前账号已经由 ctx.accountUid 传入。
+  // 不把它透给 resolveCurrent 的话，多账号下这里会退回"第一个在线连接"，
+  // 于是数据归属被记到另一个号上（命令实际却按 --account 发给了指定号）。
+  const r = await resolveCurrent({ bridge: ctx && ctx.bridge }, {
+    accountUid: ctx && ctx.accountUid,
+  });
   // 顺手记一份。"谁在执行"这件事在**同步**代码里也要用（比如 policy 的判定树
   // 拿不到 ctx），而那里没法 await。这个应用是单用户 + 串行队列，
   // 最近一次解析出的执行者就是当下的事实 —— 比原来那个"作品数最多的号"
@@ -280,7 +330,8 @@ async function checkWriteAccount(ctx, expectedUid) {
 }
 
 module.exports = {
-  upsert, get, nicknameOf, list,
-  currentUid, setCurrent, aliveUids, resolveCurrent, resolveExecutor, checkWriteAccount,
+  upsert, get, nicknameOf, list, resolveUid,
+  currentUid, setCurrent, aliveUids, resolveCurrent, resolveCurrentUid,
+  resolveExecutor, checkWriteAccount,
   lastExecutorUid,
 };

@@ -100,7 +100,7 @@ async function cmdPost(ctx, args) {
   // 图片评论：先把本地图片传到 ImageX 换 uri，再随 publish 一起提交
   const images = [];
   for (const p of imagePaths) {
-    images.push(await uploadImageViaBridge(ctx.bridgeCall, p));
+    images.push(await uploadImageViaBridge((expr) => ctx.bridgeCall(expr, true, { opType: 'write' }), p));
   }
   // ImageX 返回的 uri/width/height/format 都是纯 token，JSON 字面量可安全内联
   const imagesArg = images.length
@@ -165,7 +165,7 @@ async function cmdPost(ctx, args) {
   const expr = `window.__bridge.publish('${escapeExpression(awemeId)}', '${escapeExpression(text)}', ${replyTo ? `'${escapeExpression(replyTo)}'` : 'null'}, ${rrid ? `'${escapeExpression(rrid)}'` : 'null'}, ${mentions}, ${imagesArg})`;
   let data;
   try {
-    data = await ctx.loggedCall('post', { aweme_id: awemeId, text }, expr);
+    data = await ctx.loggedCall('post', { aweme_id: awemeId, text }, expr, { opType: 'write' });
   } catch (e) {
     // transport/bridge 错误也落 failure_patterns（闭环避雷，对齐 xhs post.js）
     try { failures.record(e, { exampleText: text.slice(0, 200) }); } catch (_) {}

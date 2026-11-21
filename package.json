@@ -27,7 +27,7 @@
     "dy": "./cli.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=24"
   },
   "scripts": {
     "server": "node server.js",

@@ -5,6 +5,30 @@ const logger = require('../runtime/logger');
 
 const SITE = 'douyin.com';
 
+// 油猴脚本的注册契约版本。脚本端在 /api/connect 里上报同名的 clientVersion，
+// 服务端存下来透出到 accounts —— 用来一眼判断"浏览器里跑的是不是最新脚本"。
+// v3 起：注册带 account（uid/昵称/资料）、poll 带 channel、写操作校验 expectAccount。
+// 改动注册契约（新增字段/改语义）就 +1，并同步改 scripts/douyin.user.js 里的 CLIENT_VERSION。
+const CLIENT_PROTOCOL_VERSION = 3;
+
+/**
+ * 从参数里摘掉 `--account <x>`，避免污染各命令的位置参数解析。
+ * @param {string[]} args
+ * @returns {{args: string[], raw: string|null}}
+ */
+function extractAccountArg(args) {
+  const list = Array.isArray(args) ? args : [];
+  const idx = list.indexOf('--account');
+  if (idx === -1) return { args: list, raw: null };
+  const val = list[idx + 1];
+  if (val === undefined || val.startsWith('--')) {
+    throw new Error('--account 需要一个值（uid 或昵称）');
+  }
+  const rest = list.slice();
+  rest.splice(idx, 2);
+  return { args: rest, raw: val };
+}
+
 /**
  * 转义字符串，使其可以安全地放进单引号包裹的 JS 表达式。
  *
@@ -219,6 +243,8 @@ async function pace(range, opts = {}) {
 
 module.exports = {
   SITE,
+  CLIENT_PROTOCOL_VERSION,
+  extractAccountArg,
   escapeExpression,
   getFlag,
   formatComment,

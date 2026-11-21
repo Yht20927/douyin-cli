@@ -45,7 +45,7 @@
 | 🔀 **回复来源可切** | AI / 固定内容 / 混合三种模式；固定内容支持**顺序 / 随机 / 洗牌不重复 / 加权**四种循环 |
 | 🛡️ **PolicyEngine** | 运营规则代码化：每日配额、轮次、单轮上限、去重、熔断、发布前内容校验 |
 | ⏱️ **随机器节奏** | 写操作 40–55s / 读操作 30–50s 随机（两个间隔分别生效），写间隔硬强制 |
-| 💾 持久化记忆 | SQLite schema v10（评论/用户/视频/语料/失败模式/草稿/用量） |
+| 💾 持久化记忆 | SQLite schema v15（评论/用户/视频/语料/失败模式/草稿/用量/多账号归属） |
 | 📝 草稿箱 | 生成→审核→发布全流程；草稿可带附图 |
 | 🧩 **配置全部可改** | 9 个分组、60+ 项，改完立即生效；未生效的项目在界面上会被明确标出 |
 
@@ -353,7 +353,7 @@ douyinToolApp/
 │   ├── policy/               # PolicyEngine（运营规则代码化）+ filters（评论筛选决策树）+ rounds
 │   ├── reply-source/         # 回复来源分发（ai/fixed/hybrid）+ 四种循环方式 + 图片附加
 │   ├── reply-engine/         # ReplyEngine（人格绑定 + 三层上下文 + 5 种 prompt 组装）
-│   ├── memory/               # SQLite（经 sqlite-driver 适配 node:sqlite，schema v10）
+│   ├── memory/               # SQLite（经 sqlite-driver 适配 node:sqlite，schema v15）
 │   ├── commands/             # 28 个命令
 │   ├── server/               # 内嵌 Bridge Server（可 start/stop）
 │   ├── shared/               # 序列化 / 解析 / 协议 / 清洗
@@ -382,7 +382,7 @@ douyinToolApp/
 
 ## 📦 依赖
 
-- Node.js 18+
+- Node.js 24+（`node:sqlite`；Electron 40 内置 Node 24）
 - `node:sqlite`（Node 内置，无原生模块）— SQLite
 - Chrome + Tampermonkey + 油猴脚本
 - LLM API key（OpenAI 兼容或 Anthropic 原生）

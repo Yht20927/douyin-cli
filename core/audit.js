@@ -27,9 +27,14 @@ class AuditLogger {
     this._audit = null;
     this._currentOp = null;
     this._noLog = false;
+    // 本次调用实际落到的账号（多账号归属）。命令没在 metadata 里显式带
+    // account 时用它兜底 —— 否则读操作的 events.account 全是 NULL。
+    this._account = null;
   }
 
   setNoLog(v) { this._noLog = v; }
+
+  setAccount(uid) { this._account = uid || null; }
 
   ensureDirs() {
     paths.ensureDir(paths.logsDir());
@@ -162,6 +167,7 @@ class AuditLogger {
           summary: op.summary || null,
           error: op.error || null,
           resultPath: op.resultFile || null,
+          account: (op.args && op.args.account) || this._account || null,
         });
       }
     } catch (e) { /* 静默：events.append 自身已 try/catch */ }

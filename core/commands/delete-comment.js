@@ -51,7 +51,7 @@ async function cmdDeleteComment(ctx, args) {
   ctx.audit.startOperation('delete_comment', { cid });
 
   const expr = `window.__bridge.deleteComment('${escapeExpression(cid)}')`;
-  const data = await ctx.loggedCall('delete_comment', { cid }, expr);
+  const data = await ctx.loggedCall('delete_comment', { cid }, expr, { opType: 'write' });
 
   if (data.status_code !== undefined && data.status_code !== 0) {
     // 把服务端原话一起抛出来：2055 这类码的含义我们是猜的，
