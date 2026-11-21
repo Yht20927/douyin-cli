@@ -16,6 +16,7 @@
 
 const { getFlag } = require('./helpers');
 const videos = require('../memory/videos');
+const logger = require('../runtime/logger');
 
 async function cmdVideos(ctx, args) {
   const limit = getFlag(args, '--limit', 50);
@@ -38,13 +39,13 @@ async function cmdVideos(ctx, args) {
     order: 'publish',
   });
 
-  if (asJson) {
-    console.log(JSON.stringify(rows, null, 2));
-    return rows;
-  }
+  // --json 交给 CLI 统一打印（cli.js 只打印一次返回值）；这里再 console.log
+  // 会让同一条 JSON 出现两遍。人类可读模式走 logger.output —— 它会让 CLI
+  // 知道"本次已有输出"，不再追加一份 JSON，同时 GUI 仍能拿到 rows。
+  if (asJson) return rows;
 
   if (rows.length === 0) {
-    console.log('No matching videos.');
+    logger.output('No matching videos.');
     return rows;
   }
 
@@ -54,7 +55,7 @@ async function cmdVideos(ctx, args) {
     // 他人作品如果没有归属（main 旧数据），就不打这一栏，而不是冒充作者 uid。
     const acct = v.opsUid ? ` acct=${v.opsUid}` : '';
     const seen = v.totalCommentsSeen ? ` seen=${v.totalCommentsSeen}` : '';
-    console.log(`[${tag}] ${v.awemeId}${acct}${seen} — ${(v.title || '').substring(0, 60)}`);
+    logger.output(`[${tag}] ${v.awemeId}${acct}${seen} — ${(v.title || '').substring(0, 60)}`);
   }
   return rows;
 }

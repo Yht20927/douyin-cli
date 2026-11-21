@@ -134,3 +134,21 @@ describe('CLI 多账号写准入', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('CLI 本地命令输出', () => {
+  // videos 是纯本地命令，不依赖上面的假 bridge。这里只看输出次数：
+  // 命令自己 console.log 一份、CLI 又把返回值打印一份，是 main 合过来时
+  // 最容易复发的重复输出问题。
+  it('videos --json 只打印一份 JSON', async () => {
+    const r = await runCli(['videos', '--json']);
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim().split('\n')).toHaveLength(1);
+    expect(JSON.parse(r.stdout)).toEqual([]);
+  });
+
+  it('videos 空库只打印一次提示', async () => {
+    const r = await runCli(['videos']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe('No matching videos.\n');
+  });
+});
